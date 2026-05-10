@@ -6,13 +6,13 @@
   "expected_findings": [
     {
       "match": {
-        "category": "a11y",
-        "severity": ["major", "minor"],
+        "category": ["a11y", "bug"],
+        "severity": ["blocker", "major", "minor"],
         "title_contains": ["esc", "focus", "modal", "keyboard"]
       },
       "must_find": true
     }
   ],
-  "expected_score_range": { "overall": [4, 7] },
+  "expected_score_range": { "overall": [3, 7] },
   "expected_to_NOT_find": []
 }

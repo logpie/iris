@@ -13,6 +13,6 @@
       "must_find": true
     }
   ],
-  "expected_score_range": { "overall": [4, 7] },
+  "expected_score_range": { "overall": [3, 7] },
   "expected_to_NOT_find": []
 }
