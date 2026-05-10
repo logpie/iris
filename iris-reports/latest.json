@@ -1,0 +1,25 @@
+{
+  "session_id": "7f3a1c2e-8b4d-4e9f-a012-3c5d6e7f8901",
+  "url_explored": "unknown",
+  "timestamp": "2026-05-10T00:00:00Z",
+  "surfaces_seen": ["reports_page"],
+  "total_findings": 2,
+  "findings": [
+    {
+      "id": "F-001",
+      "severity": "major",
+      "category": "ux",
+      "title": "Reports page has no empty state — blank white area with no guidance",
+      "where": "h1 (Reports page)",
+      "rationale": "When the Reports section contains no data, the page shows only the 'Reports' heading against a blank white content area. There is no empty state illustration, no explanatory text about what reports are or how to generate them, and no call-to-action directing the user to take the next step. A new user arriving here has no idea what this section does or how to populate it. A well-designed empty state should at minimum explain the feature's purpose and provide a clear next action."
+    },
+    {
+      "id": "F-002",
+      "severity": "major",
+      "category": "bug",
+      "title": "Logo image is broken (shows placeholder X pattern)",
+      "where": "Navigation sidebar — logo/icon area",
+      "rationale": "A broken image placeholder (typically an X or blank box) is shown where the application logo should appear in the navigation sidebar. This affects brand trust and professional appearance on every page of the app."
+    }
+  ]
+}

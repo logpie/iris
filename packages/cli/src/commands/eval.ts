@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { WebTargetAdapter } from '@iris/adapter-web';
 import { ModeSchema, type PersonaName, orchestrator } from '@iris/core';
 import { Command } from 'commander';
+import { runIrisViaSdk } from '../agent-sdk-orchestrator.js';
 import { inferMode } from '../flags.js';
 import { buildLlmClient } from '../llm-factory.js';
 import { loadRubricsByNames } from '../load-rubrics.js';
@@ -43,6 +44,10 @@ export function evalCommand(): Command {
       'persona for the Explorer (default | power_user | novice | adversarial | keyboard_only)',
       'default',
     )
+    .option(
+      '--transport <kind>',
+      'sdk | api | cli — which LLM transport to use. sdk = local Claude Code subscription via Agent SDK (fast, no API key). api = raw Anthropic API (needs ANTHROPIC_API_KEY). cli = `claude -p` subprocess (slow, no API key, fallback). Default: sdk if no API key set, else api.',
+    )
     .action(async (target: string, opts: Record<string, unknown>) => {
       const explicitMode = opts.mode as string | undefined;
       const specPath = opts.spec as string | undefined;
@@ -81,28 +86,60 @@ export function evalCommand(): Command {
         initialTasks.push(...lines);
       }
 
-      const explorerClient = buildLlmClient();
-      const judgeClient = buildLlmClient();
-      const adapter = new WebTargetAdapter({ headless: true, vision_llm_client: explorerClient });
+      // Choose transport
+      const explicitTransport = opts.transport as string | undefined;
+      const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+      const transport = explicitTransport ?? (hasApiKey ? 'api' : 'sdk');
+      process.stderr.write(`iris: transport=${transport}\n`);
 
-      const orch = new orchestrator.Orchestrator({ adapter, explorerClient, judgeClient });
-      const result = await orch.run({
-        target: { kind: 'web', url: target },
-        mode,
-        out_dir: outDir,
-        ...(specText !== undefined ? { spec_text: specText } : {}),
-        ...(specPath !== undefined ? { spec_path: specPath } : {}),
-        ...(initialTasks.length > 0 ? { initial_tasks: initialTasks } : {}),
-        rubric_profiles: rubricProfiles,
-        max_steps: opts.maxSteps as number,
-        max_cost_usd: opts.maxCostUsd as number,
-        timeout_s: opts.timeout as number,
-        ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
-        explorer_model: opts.explorerModel as string,
-        judge_model: opts.judgeModel as string,
-        no_html: opts.html === false,
-        persona: opts.persona as PersonaName,
-      });
+      const adapter = new WebTargetAdapter({ headless: true });
+
+      let result: { report: { headline: { score: number; threshold_passed: boolean; blockers: number; majors: number; minors: number; nits: number; suggestions: number }; meta: { confidence_caveats: string[] } }; out_dir: string; duration_s: number; cost_usd: number; exit_code: 0 | 1 | 2 | 3 };
+
+      if (transport === 'sdk') {
+        result = await runIrisViaSdk(
+          {
+            target: { kind: 'web', url: target },
+            mode,
+            out_dir: outDir,
+            ...(specText !== undefined ? { spec_text: specText } : {}),
+            ...(specPath !== undefined ? { spec_path: specPath } : {}),
+            rubric_profiles: rubricProfiles,
+            max_steps: opts.maxSteps as number,
+            max_cost_usd: opts.maxCostUsd as number,
+            timeout_s: opts.timeout as number,
+            ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
+            explorer_model: opts.explorerModel as string,
+            judge_model: opts.judgeModel as string,
+            no_html: opts.html === false,
+            ...(opts.persona !== undefined ? { persona: opts.persona as string } : {}),
+          },
+          adapter,
+        );
+      } else {
+        const explorerClient = buildLlmClient({ use_claude_cli: transport === 'cli' });
+        const judgeClient = buildLlmClient({ use_claude_cli: transport === 'cli' });
+        // Vision client only makes sense for api/cli; sdk path doesn't currently use vision_describe.
+        (adapter as unknown as { opts: { vision_llm_client?: typeof explorerClient } }).opts.vision_llm_client = explorerClient;
+        const orch = new orchestrator.Orchestrator({ adapter, explorerClient, judgeClient });
+        result = await orch.run({
+          target: { kind: 'web', url: target },
+          mode,
+          out_dir: outDir,
+          ...(specText !== undefined ? { spec_text: specText } : {}),
+          ...(specPath !== undefined ? { spec_path: specPath } : {}),
+          ...(initialTasks.length > 0 ? { initial_tasks: initialTasks } : {}),
+          rubric_profiles: rubricProfiles,
+          max_steps: opts.maxSteps as number,
+          max_cost_usd: opts.maxCostUsd as number,
+          timeout_s: opts.timeout as number,
+          ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
+          explorer_model: opts.explorerModel as string,
+          judge_model: opts.judgeModel as string,
+          no_html: opts.html === false,
+          persona: opts.persona as PersonaName,
+        });
+      }
 
       if (opts.printSummary) {
         const counts = result.report.headline;

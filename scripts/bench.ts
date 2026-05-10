@@ -278,25 +278,24 @@ interface IrisRunArgs {
 
 function runIris(args: IrisRunArgs): Promise<number> {
   return new Promise((resolveRun, reject) => {
-    const proc = spawn(
-      'node',
-      [
-        IRIS_BIN,
-        'eval',
-        args.target,
-        '--spec',
-        args.spec,
-        '--out',
-        args.out_dir,
-        '--no-html',
-        '--no-clips',
-        '--max-steps',
-        '20',
-        '--max-cost-usd',
-        args.max_cost,
-      ],
-      { stdio: 'inherit' },
-    );
+    const cmdArgs = [
+      IRIS_BIN,
+      'eval',
+      args.target,
+      '--spec',
+      args.spec,
+      '--out',
+      args.out_dir,
+      '--no-html',
+      '--no-clips',
+      '--max-steps',
+      '20',
+      '--max-cost-usd',
+      args.max_cost,
+      '--transport',
+      HAS_API_KEY ? 'api' : 'sdk',
+    ];
+    const proc = spawn('node', cmdArgs, { stdio: 'inherit' });
     proc.on('error', reject);
     proc.on('exit', (code) => resolveRun(code ?? 0));
   });
