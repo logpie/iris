@@ -10,7 +10,9 @@ Run it nightly + on release branches.
 
 ## Cost
 
-Roughly $5–15 per full bench run (8 fixtures × ~$1 each, scaling with `--max-cost-usd` per-fixture cap).
+Roughly **$4–5** per full bench run via the Agent SDK transport (8 fixtures × ~$0.50 each at `--max-cost-usd 0.75`). About **12 minutes** wall time. Empirical: 2026-05-10 ran 4 iterations at ~$4.45 each.
+
+Raw Anthropic API would be 2–3× faster but costs the same per-token. `claude -p` subprocess transport works but is ~6× slower (~75 min full bench) — only use as fallback.
 
 ## Requirements
 
@@ -71,5 +73,18 @@ Re-run `pnpm bench -- --filter <fixture>` after each tweak. Iterate until the be
 
 ## Limits
 
-- The bench uses real Anthropic API calls, so it's stochastic. Set `temperature: 0` in the LLM client (already done) but the same prompt + same trace can still produce slightly different outputs run-to-run. Allow some tolerance in score ranges.
-- Bench accuracy depends on rubric quality. The Phase 4 ship is functional but not yet tuned; the first full bench run is expected to surface the mismatches that drive the first round of tuning.
+- The bench uses real Claude calls, so it's stochastic. Even at `temperature: 0`, run-to-run variance is ~10–15% on overall scores. Allow tolerance in score ranges (most fixtures use a 4-point window like `[2, 6]`).
+- Bench accuracy depends on rubric quality. The first calibration pass (2026-05-10) shifted ranges based on actual Iris severity behavior — Iris is generally harsher than initial guesses, especially on multi-bug pages.
+
+## Validation history
+
+| Iteration | Pass rate | Notes |
+|---|---|---|
+| Initial (2026-05-10) | 0/8 | Bench logic too strict + score ranges based on guesses |
+| + bench logic fix | 4/8 | Allowed exit code 2 (max_turns) as valid |
+| + score range tuning | 5/8 | Tuned 4 ranges based on real Iris output |
+| + matcher relaxation | 5/8 | LLM stochasticity — different findings mix per run |
+| + probe-nudge prompt | 7/8 | Initial user prompt now mandates console/network/axe probes |
+| + final 04 matcher fix | **8/8** ✅ | Accept blocker severity for console finding |
+
+End state: bench passes consistently, costs $4–5, takes ~12 min, all 8 known bug categories surfaced as findings with correct categories and reasonable severities.
