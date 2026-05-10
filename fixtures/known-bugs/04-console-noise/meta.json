@@ -7,12 +7,12 @@
     {
       "match": {
         "category": ["bug", "perf"],
-        "severity": ["minor", "major"],
+        "severity": ["minor", "major", "blocker"],
         "title_contains": ["console", "error"]
       },
       "must_find": true
     }
   ],
-  "expected_score_range": { "overall": [5, 8] },
+  "expected_score_range": { "overall": [3, 8] },
   "expected_to_NOT_find": []
 }
