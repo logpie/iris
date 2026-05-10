@@ -13,7 +13,8 @@
     "test": "pnpm -r run test",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "bench": "node --experimental-strip-types scripts/bench.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

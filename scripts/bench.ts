@@ -1,0 +1,291 @@
+#!/usr/bin/env -S node --experimental-strip-types
+/**
+ * Iris bench runner.
+ *
+ * Spawns a static-file server per fixture under fixtures/known-bugs/, runs `iris eval`
+ * against each (using REAL Anthropic API), reads report.json, asserts the meta.json
+ * expectations. Exits non-zero if any fixture fails its assertions.
+ *
+ * Requires ANTHROPIC_API_KEY in env. Cost: ~$5-15 per full run depending on
+ * exploration depth.
+ *
+ * Usage: pnpm bench [--filter <fixture-name>] [--max-cost <usd>]
+ */
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { type AddressInfo, createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { dirname, extname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(SCRIPT_DIR, '..');
+const FIXTURES_ROOT = join(REPO_ROOT, 'fixtures', 'known-bugs');
+const IRIS_BIN = join(REPO_ROOT, 'packages', 'cli', 'dist', 'bin.js');
+
+interface FixtureMeta {
+  name: string;
+  description: string;
+  spec: string;
+  mode: string;
+  expected_findings: Array<{
+    match: { category?: string | string[]; severity?: string[]; title_contains?: string[] };
+    must_find: boolean;
+  }>;
+  expected_score_range: { overall?: [number, number] };
+  expected_to_NOT_find: Array<{ category?: string; severity?: string }>;
+}
+
+interface BenchResult {
+  fixture: string;
+  passed: boolean;
+  score: number;
+  findings_count: number;
+  cost_usd: number;
+  duration_s: number;
+  failures: string[];
+}
+
+const args = process.argv.slice(2);
+const filter = pickArg(args, '--filter');
+const maxCost = pickArg(args, '--max-cost');
+
+if (!process.env['ANTHROPIC_API_KEY']) {
+  console.error('bench: ANTHROPIC_API_KEY not set. Skipping bench (would cost real money).');
+  process.exit(0);
+}
+if (!existsSync(IRIS_BIN)) {
+  console.error(`bench: ${IRIS_BIN} not found. Run \`pnpm build\` first.`);
+  process.exit(1);
+}
+
+const fixtureDirs = readdirSync(FIXTURES_ROOT)
+  .filter((n) => statSync(join(FIXTURES_ROOT, n)).isDirectory())
+  .filter((n) => !filter || n.includes(filter));
+
+if (fixtureDirs.length === 0) {
+  console.error('bench: no fixtures matched filter');
+  process.exit(1);
+}
+
+const results: BenchResult[] = [];
+let totalCost = 0;
+
+for (const fixtureName of fixtureDirs) {
+  const fixtureDir = join(FIXTURES_ROOT, fixtureName);
+  const metaPath = join(fixtureDir, 'meta.json');
+  if (!existsSync(metaPath)) {
+    console.error(`bench: ${fixtureName} has no meta.json — skipping`);
+    continue;
+  }
+  const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as FixtureMeta;
+
+  console.log(`\n=== ${fixtureName} ===`);
+  console.log(meta.description);
+
+  // Start fixture server
+  const server = await startServer(join(fixtureDir, 'public'));
+  const outDir = mkdtempSync(join(tmpdir(), `iris-bench-${fixtureName}-`));
+  const specPath = join(outDir, 'spec.txt');
+  writeFileSync(specPath, meta.spec);
+
+  const start = Date.now();
+  let exitCode = 0;
+  try {
+    exitCode = await runIris({
+      target: `${server.url}/index.html`,
+      out_dir: outDir,
+      spec: specPath,
+      max_cost: maxCost ?? '1',
+    });
+  } catch (err) {
+    results.push({
+      fixture: fixtureName,
+      passed: false,
+      score: 0,
+      findings_count: 0,
+      cost_usd: 0,
+      duration_s: (Date.now() - start) / 1000,
+      failures: [`run threw: ${err instanceof Error ? err.message : String(err)}`],
+    });
+    await server.close();
+    rmSync(outDir, { recursive: true, force: true });
+    continue;
+  }
+
+  const reportPath = join(outDir, 'report.json');
+  if (!existsSync(reportPath)) {
+    results.push({
+      fixture: fixtureName,
+      passed: false,
+      score: 0,
+      findings_count: 0,
+      cost_usd: 0,
+      duration_s: (Date.now() - start) / 1000,
+      failures: ['no report.json produced'],
+    });
+    await server.close();
+    rmSync(outDir, { recursive: true, force: true });
+    continue;
+  }
+
+  const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+  const score = report.headline.score;
+  const findings = report.findings as Array<{ category: string; severity: string; title: string }>;
+  const cost = report.run.cost_usd;
+  totalCost += cost;
+
+  const failures: string[] = [];
+
+  // Score range check
+  if (meta.expected_score_range.overall) {
+    const [min, max] = meta.expected_score_range.overall;
+    if (score < min || score > max) {
+      failures.push(`score ${score} outside expected [${min}, ${max}]`);
+    }
+  }
+
+  // must_find checks
+  for (const ef of meta.expected_findings) {
+    if (!ef.must_find) continue;
+    const matched = findings.some((f) => matchesFinding(f, ef.match));
+    if (!matched) {
+      failures.push(`missing required finding: ${JSON.stringify(ef.match)}`);
+    }
+  }
+
+  // expected_to_NOT_find checks
+  for (const ntf of meta.expected_to_NOT_find) {
+    const matched = findings.some(
+      (f) => (!ntf.category || f.category === ntf.category) && (!ntf.severity || f.severity === ntf.severity),
+    );
+    if (matched) {
+      failures.push(`unexpected finding present: ${JSON.stringify(ntf)}`);
+    }
+  }
+
+  const passed = failures.length === 0 && exitCode <= 1;
+  results.push({
+    fixture: fixtureName,
+    passed,
+    score,
+    findings_count: findings.length,
+    cost_usd: cost,
+    duration_s: (Date.now() - start) / 1000,
+    failures,
+  });
+
+  console.log(passed ? `  ✓ PASS (score ${score}, ${findings.length} findings, $${cost.toFixed(2)})` : `  ✗ FAIL`);
+  for (const f of failures) console.log(`    - ${f}`);
+
+  await server.close();
+  rmSync(outDir, { recursive: true, force: true });
+}
+
+console.log('\n=== Bench summary ===');
+const passed = results.filter((r) => r.passed).length;
+const failed = results.length - passed;
+console.log(`  ${passed}/${results.length} fixtures passed`);
+console.log(`  Total cost: $${totalCost.toFixed(2)}`);
+for (const r of results) {
+  const status = r.passed ? '✓' : '✗';
+  console.log(`  ${status} ${r.fixture}: score ${r.score}, $${r.cost_usd.toFixed(2)}`);
+}
+
+process.exit(failed > 0 ? 1 : 0);
+
+// --- helpers ---
+
+function pickArg(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  if (i < 0 || i === args.length - 1) return undefined;
+  return args[i + 1];
+}
+
+interface ServerHandle {
+  url: string;
+  close: () => Promise<void>;
+}
+
+function startServer(siteRoot: string): Promise<ServerHandle> {
+  return new Promise((resolveStart) => {
+    const MIME: Record<string, string> = {
+      '.html': 'text/html; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.png': 'image/png',
+      '.svg': 'image/svg+xml',
+    };
+    const server = createServer((req, res) => {
+      const urlPath = (req.url ?? '/').split('?')[0] ?? '/';
+      const safePath = urlPath === '/' ? '/index.html' : urlPath;
+      const filePath = resolve(siteRoot, '.' + safePath);
+      if (!filePath.startsWith(siteRoot) || !existsSync(filePath) || !statSync(filePath).isFile()) {
+        res.statusCode = 404;
+        res.end('not found');
+        return;
+      }
+      const ext = extname(filePath).toLowerCase();
+      res.statusCode = 200;
+      res.setHeader('content-type', MIME[ext] ?? 'application/octet-stream');
+      res.end(readFileSync(filePath));
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as AddressInfo).port;
+      resolveStart({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise((r) => server.close(() => r())),
+      });
+    });
+  });
+}
+
+interface IrisRunArgs {
+  target: string;
+  out_dir: string;
+  spec: string;
+  max_cost: string;
+}
+
+function runIris(args: IrisRunArgs): Promise<number> {
+  return new Promise((resolveRun, reject) => {
+    const proc = spawn(
+      'node',
+      [
+        IRIS_BIN,
+        'eval',
+        args.target,
+        '--spec',
+        args.spec,
+        '--out',
+        args.out_dir,
+        '--no-html',
+        '--no-clips',
+        '--max-steps',
+        '20',
+        '--max-cost-usd',
+        args.max_cost,
+      ],
+      { stdio: 'inherit' },
+    );
+    proc.on('error', reject);
+    proc.on('exit', (code) => resolveRun(code ?? 0));
+  });
+}
+
+function matchesFinding(
+  f: { category: string; severity: string; title: string },
+  m: { category?: string | string[]; severity?: string[]; title_contains?: string[] },
+): boolean {
+  if (m.category) {
+    const cats = Array.isArray(m.category) ? m.category : [m.category];
+    if (!cats.includes(f.category)) return false;
+  }
+  if (m.severity && !m.severity.includes(f.severity)) return false;
+  if (m.title_contains && m.title_contains.length > 0) {
+    const lower = f.title.toLowerCase();
+    if (!m.title_contains.some((kw) => lower.includes(kw.toLowerCase()))) return false;
+  }
+  return true;
+}
