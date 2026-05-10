@@ -7,8 +7,8 @@
     {
       "match": {
         "category": "copy",
-        "severity": ["nit", "minor"],
-        "title_contains": ["typo", "spelling", "whitespace", "capitalization", "inconsistent"]
+        "severity": ["nit", "minor", "major"],
+        "title_contains": ["typo", "spelling", "whitespace", "capitalization", "inconsistent", "copy"]
       },
       "must_find": true
     }

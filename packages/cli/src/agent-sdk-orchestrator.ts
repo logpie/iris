@@ -119,6 +119,13 @@ export async function runIrisViaSdk(
 
 ${initialPlanLines.length > 0 ? `Initial plan:\n${initialPlanLines.map((l, i) => `  ${i + 1}. ${l}`).join('\n')}\n\n` : ''}Start by calling \`mcp__iris__observe\` to see the current page, then act.
 
+ON FIRST OBSERVATION, ALWAYS call these probes (cheap, high-signal):
+- \`mcp__iris__console_errors_since\` — checks for JS console errors / warnings
+- \`mcp__iris__network_failures_since\` — checks for 4xx/5xx HTTP responses
+- \`mcp__iris__axe\` — runs axe-core a11y audit
+
+These probes seed evidence the judge will use. Skipping them means missing whole categories of bugs.
+
 Available tool naming: all tools are prefixed with mcp__iris__ (e.g. mcp__iris__click, mcp__iris__type, mcp__iris__note_finding, mcp__iris__done).
 
 Budget: ~${config.max_steps} steps, $${config.max_cost_usd.toFixed(2)} max cost. Use note_finding LIBERALLY when something looks off; the judge dedupes false positives. Call done when goals are satisfied or you've completed thorough exploration; call give_up if stuck.`;
