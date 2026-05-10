@@ -1,0 +1,18 @@
+name: shared_correctness
+applies_to_targets: [web, cli, api, desktop]
+applies_to_modes: [free, grounded, targeted]
+weight_in_overall: 1.0
+
+dimensions:
+  - id: error_handling
+    weight: 1.0
+    description: Does the product surface errors clearly when something goes wrong?
+    scoring_anchors:
+      0: "Errors silently swallowed; user has no signal something failed."
+      10: "Every failure surfaces a clear, actionable message."
+  - id: error_recovery
+    weight: 1.0
+    description: Can the user recover from errors without losing work?
+    scoring_anchors:
+      0: "Errors block all progress; no retry/undo."
+      10: "Errors are recoverable; state preserved across retries."

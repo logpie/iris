@@ -1,0 +1,31 @@
+name: coverage
+applies_to_targets: [web, cli, api, desktop]
+applies_to_modes: [free, grounded, targeted]
+weight_in_overall: 0.5
+
+dimensions:
+  - id: breadth
+    weight: 1.0
+    description: How many distinct surfaces (pages/sections) were explored?
+    scoring_anchors:
+      0: "Only one surface explored."
+      5: "Most prominent surfaces explored."
+      10: "All advertised surfaces explored."
+  - id: depth
+    weight: 1.0
+    description: Were primary flows exercised end-to-end?
+    scoring_anchors:
+      0: "Only homepage touched."
+      10: "Multi-step flows exercised through completion."
+  - id: weirdness_attempted
+    weight: 0.5
+    description: Were edge cases (empty submit, weird input, keyboard nav, mobile viewport) attempted?
+    scoring_anchors:
+      0: "No edge cases attempted."
+      10: "All applicable weirdness heuristics exercised."
+  - id: persona_balance
+    weight: 0.5
+    description: Was the exploration limited to one persona, or did multiple perspectives apply?
+    scoring_anchors:
+      0: "Single persona; obvious blind spots."
+      10: "Multiple personas applied (note: P4 feature; P3 default 0)."

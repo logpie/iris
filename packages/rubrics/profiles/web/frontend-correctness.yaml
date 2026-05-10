@@ -1,0 +1,30 @@
+name: frontend_correctness
+applies_to_targets: [web]
+applies_to_modes: [free, grounded, targeted]
+weight_in_overall: 1.0
+
+dimensions:
+  - id: console_clean
+    weight: 1.0
+    description: Is the browser console free of errors during normal use?
+    scoring_anchors:
+      0: "Console errors on every page load."
+      10: "Zero console errors during exercised flows."
+  - id: network_clean
+    weight: 1.0
+    description: Are network requests free of 4xx/5xx errors?
+    scoring_anchors:
+      0: "Multiple 5xx responses during normal flow."
+      10: "Zero unexpected 4xx/5xx during exercised flows."
+  - id: layout_stability
+    weight: 0.5
+    description: Does layout stay stable as content loads (no large CLS)?
+    scoring_anchors:
+      0: "Visible layout jumps during page load."
+      10: "Stable layout, content slots reserved appropriately."
+  - id: responsive_behavior
+    weight: 0.5
+    description: Does the layout adapt sensibly across viewport widths?
+    scoring_anchors:
+      0: "Broken layout on narrow viewports; content cut off."
+      10: "Adapts cleanly to mobile/tablet/desktop."

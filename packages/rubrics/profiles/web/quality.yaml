@@ -1,0 +1,30 @@
+name: quality
+applies_to_targets: [web, desktop]
+applies_to_modes: [free, grounded, targeted]
+weight_in_overall: 1.0
+
+dimensions:
+  - id: correctness
+    weight: 1.0
+    description: Does the product behave as expected? Do core flows complete without error?
+    scoring_anchors:
+      0: "Core flows broken — sign-in, primary CTA, etc. fail."
+      5: "Some flows broken or partially working."
+      10: "All exercised flows complete correctly."
+    common_signals:
+      negative:
+        - "form submits silently with no feedback"
+        - "exception in console during normal flow"
+        - "primary CTA does nothing"
+  - id: completeness
+    weight: 0.7
+    description: Are advertised features present and functional?
+    scoring_anchors:
+      0: "Major features advertised but missing/non-functional."
+      10: "Every advertised feature works as described."
+  - id: polish
+    weight: 0.5
+    description: Visual / interaction polish (alignment, consistency, micro-interactions).
+    scoring_anchors:
+      0: "Obviously rough — overlapping elements, broken styles, jank."
+      10: "Polished, consistent, considered."

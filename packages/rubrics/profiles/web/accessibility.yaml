@@ -1,0 +1,41 @@
+name: accessibility
+applies_to_targets: [web, desktop]
+applies_to_modes: [free, grounded, targeted]
+weight_in_overall: 1.0
+
+dimensions:
+  - id: keyboard_nav
+    weight: 1.0
+    description: Can a keyboard-only user navigate and complete primary flows?
+    scoring_anchors:
+      0: "Critical actions unreachable by keyboard."
+      10: "Full keyboard support, visible focus, logical tab order."
+    common_signals:
+      negative:
+        - "click handlers on non-focusable elements"
+        - "no visible focus indicator"
+        - "tab order skips important controls"
+  - id: screen_reader_semantics
+    weight: 1.0
+    description: Are roles, labels, and live regions correct for assistive tech?
+    scoring_anchors:
+      0: "Inputs unlabeled, buttons are divs, dynamic content not announced."
+      10: "All interactive elements named and roled correctly."
+  - id: color_contrast
+    weight: 0.7
+    description: Do text and UI elements meet contrast requirements?
+    scoring_anchors:
+      0: "Critical text fails contrast checks."
+      10: "All text meets WCAG AA contrast."
+  - id: focus_management
+    weight: 0.7
+    description: Modals, popovers, route changes manage focus correctly.
+    scoring_anchors:
+      0: "Focus trapped in modals with no escape; focus lost on route change."
+      10: "Focus moves predictably; Esc closes modals; focus restored to trigger."
+  - id: axe_violations
+    weight: 1.0
+    description: Aggregate axe-core violation count weighted by impact.
+    scoring_anchors:
+      0: "Many serious or critical axe violations."
+      10: "Zero serious axe violations."
