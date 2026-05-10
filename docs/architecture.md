@@ -22,7 +22,7 @@ The trace is the durable artifact. The Judge can be re-run against any stored tr
 
 ## Phase status
 
-- Phase 1 (foundations): ✅ in progress per `plans/2026-05-09-iris-phase-1-foundations.md`
-- Phase 2 (real web adapter): planned
+- Phase 1 (foundations): ✅ merged 2026-05-09 per `plans/2026-05-09-iris-phase-1-foundations.md`
+- Phase 2 (real web adapter): ✅ merged 2026-05-09 per `plans/2026-05-09-iris-phase-2-web-adapter.md`
 - Phase 3 (Explorer + Judge end-to-end): planned
 - Phase 4 (polish + bench): planned
