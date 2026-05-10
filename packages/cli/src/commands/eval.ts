@@ -1,4 +1,12 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { WebTargetAdapter } from '@iris/adapter-web';
+import { ModeSchema, orchestrator } from '@iris/core';
 import { Command } from 'commander';
+import { inferMode } from '../flags.js';
+import { buildLlmClient } from '../llm-factory.js';
+import { loadRubricsByNames } from '../load-rubrics.js';
+import { buildSummaryLine } from '../render/summary.js';
 
 export function evalCommand(): Command {
   return new Command('eval')
@@ -9,11 +17,7 @@ export function evalCommand(): Command {
     .option('--task <text>', 'single targeted task; repeat for multiple', collect, [])
     .option('--tasks <path>', 'newline-separated tasks file')
     .option('--rubrics <list>', 'comma-separated rubric profile names')
-    .option('--focus <list>', 'comma-separated focus directives')
     .option('--engine <engine>', 'dom | vision | hybrid (web-only)', 'hybrid')
-    .option('--auth <path>', 'Playwright storageState.json (web-only)')
-    .option('--viewport <wxh>', 'web viewport e.g. 1280x800', '1280x800')
-    .option('--user-agent <ua>', 'browser user agent (web-only)')
     .option('--max-steps <n>', 'hard cap on Explorer actions', (s) => Number.parseInt(s, 10), 60)
     .option(
       '--max-cost-usd <n>',
@@ -22,12 +26,6 @@ export function evalCommand(): Command {
       5,
     )
     .option('--timeout <s>', 'total wall-clock seconds', (s) => Number.parseInt(s, 10), 600)
-    .option(
-      '--explore-budget <0..1>',
-      'grounded mode: fraction for free exploration',
-      (s) => Number.parseFloat(s),
-      0.3,
-    )
     .option('--explorer-model <id>', 'model for Explorer agent', 'claude-sonnet-4-6')
     .option('--judge-model <id>', 'model for Judge agent', 'claude-opus-4-7')
     .option('--out <dir>', 'run output directory')
@@ -41,12 +39,91 @@ export function evalCommand(): Command {
     .option('--verbose', 'stream trace events to stderr as they happen')
     .option('--json-logs', 'structured logs to stderr (skill consumers)')
     .action(async (target: string, opts: Record<string, unknown>) => {
-      // Phase 1 stub: print resolved args + exit
-      const resolved = { target, ...opts };
-      process.stdout.write(`${JSON.stringify(resolved, null, 2)}\n`);
-      process.stdout.write(
-        '\n[iris] eval not implemented in phase 1 — see plans/2026-05-09-iris-phase-1-foundations.md\n',
-      );
+      const explicitMode = opts.mode as string | undefined;
+      const specPath = opts.spec as string | undefined;
+      const tasks = opts.task as string[];
+      const tasksPath = opts.tasks as string | undefined;
+      const mode = inferMode({
+        ...(explicitMode !== undefined ? { explicit_mode: explicitMode } : {}),
+        ...(specPath !== undefined ? { spec_path: specPath } : {}),
+        ...(tasks.length > 0 ? { tasks } : {}),
+        ...(tasksPath !== undefined ? { tasks_path: tasksPath } : {}),
+      });
+      ModeSchema.parse(mode); // sanity
+
+      const outDir =
+        (opts.out as string | undefined) ??
+        `./iris-runs/${new Date().toISOString().replace(/[:]/g, '-')}`;
+      const rubricsArg = opts.rubrics as string | undefined;
+      const rubricNames = rubricsArg
+        ? rubricsArg
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+      const rubricProfiles = await loadRubricsByNames(rubricNames);
+
+      let specText: string | undefined;
+      if (specPath && existsSync(resolve(specPath))) {
+        specText = readFileSync(resolve(specPath), 'utf8');
+      }
+
+      const initialTasks = (tasks as string[]).slice();
+      if (tasksPath && existsSync(resolve(tasksPath))) {
+        const lines = readFileSync(resolve(tasksPath), 'utf8')
+          .split(/\r?\n/)
+          .filter((s) => s.trim().length > 0);
+        initialTasks.push(...lines);
+      }
+
+      const explorerClient = buildLlmClient();
+      const judgeClient = buildLlmClient();
+      const adapter = new WebTargetAdapter({ headless: true });
+
+      const orch = new orchestrator.Orchestrator({ adapter, explorerClient, judgeClient });
+      const result = await orch.run({
+        target: { kind: 'web', url: target },
+        mode,
+        out_dir: outDir,
+        ...(specText !== undefined ? { spec_text: specText } : {}),
+        ...(specPath !== undefined ? { spec_path: specPath } : {}),
+        ...(initialTasks.length > 0 ? { initial_tasks: initialTasks } : {}),
+        rubric_profiles: rubricProfiles,
+        max_steps: opts.maxSteps as number,
+        max_cost_usd: opts.maxCostUsd as number,
+        timeout_s: opts.timeout as number,
+        ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
+        explorer_model: opts.explorerModel as string,
+        judge_model: opts.judgeModel as string,
+        no_html: opts.html === false,
+      });
+
+      if (opts.printSummary) {
+        const counts = result.report.headline;
+        process.stdout.write(
+          buildSummaryLine({
+            score: counts.score,
+            threshold_passed: counts.threshold_passed,
+            findings: {
+              blocker: counts.blockers,
+              major: counts.majors,
+              minor: counts.minors,
+              nit: counts.nits,
+              suggestion: counts.suggestions,
+            },
+            run_dir: result.out_dir,
+            duration_s: result.duration_s,
+            cost_usd: result.cost_usd,
+            caveats: result.report.meta.confidence_caveats.length,
+          }),
+        );
+      } else {
+        process.stdout.write(
+          `iris: report → ${result.out_dir}/report.json (score ${result.report.headline.score})\n`,
+        );
+      }
+
+      process.exit(result.exit_code);
     });
 }
 
