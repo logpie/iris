@@ -1,0 +1,24 @@
+name: usability
+applies_to_targets: [web, desktop]
+applies_to_modes: [free, grounded, targeted]
+weight_in_overall: 1.0
+
+dimensions:
+  - id: clarity
+    weight: 1.0
+    description: |
+      Can a new user tell what the product does and what to do next on each
+      screen? Are labels, headers, and CTAs unambiguous?
+    scoring_anchors:
+      0: "Confusing — unclear what the product is or what to do next."
+      3: "Mostly clear, with several rough spots."
+      5: "Immediately clear; copy and structure carry the user."
+    evidence_required: at_least_one_observation_id
+    common_signals:
+      positive:
+        - "one obvious primary CTA per screen"
+        - "labels match user vocabulary"
+      negative:
+        - "jargon without explanation"
+        - "two competing CTAs"
+        - "ambiguous icon-only buttons"
