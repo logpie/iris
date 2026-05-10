@@ -65,20 +65,24 @@ export function computeClipWindows(refs: EvidenceRef[], config: FfmpegSliceConfi
   const out: ClipWindow[] = [];
   let i = 0;
   while (i < raw.length) {
-    const group: RawWindow[] = [raw[i]!];
-    let groupEnd = raw[i]!.end_s;
+    const first = raw[i];
+    if (!first) break;
+    const group: RawWindow[] = [first];
+    let groupEnd = first.end_s;
     let j = i + 1;
-    while (j < raw.length && raw[j]!.start_s - groupEnd <= sharedGap) {
-      group.push(raw[j]!);
-      groupEnd = Math.max(groupEnd, raw[j]!.end_s);
+    while (j < raw.length) {
+      const next = raw[j];
+      if (!next || next.start_s - groupEnd > sharedGap) break;
+      group.push(next);
+      groupEnd = Math.max(groupEnd, next.end_s);
       // cap merged duration
-      if (groupEnd - group[0]!.start_s > maxClip) {
-        groupEnd = group[0]!.start_s + maxClip;
+      if (groupEnd - first.start_s > maxClip) {
+        groupEnd = first.start_s + maxClip;
         break;
       }
       j++;
     }
-    const sharedStart = group[0]!.start_s;
+    const sharedStart = first.start_s;
     const sharedEnd = Math.min(groupEnd, sharedStart + maxClip);
     for (const g of group) {
       out.push({

@@ -12,7 +12,15 @@
  * Usage: pnpm bench [--filter <fixture-name>] [--max-cost <usd>]
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { type AddressInfo, createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
@@ -50,7 +58,7 @@ const args = process.argv.slice(2);
 const filter = pickArg(args, '--filter');
 const maxCost = pickArg(args, '--max-cost');
 
-if (!process.env['ANTHROPIC_API_KEY']) {
+if (!process.env.ANTHROPIC_API_KEY) {
   console.error('bench: ANTHROPIC_API_KEY not set. Skipping bench (would cost real money).');
   process.exit(0);
 }
@@ -157,7 +165,9 @@ for (const fixtureName of fixtureDirs) {
   // expected_to_NOT_find checks
   for (const ntf of meta.expected_to_NOT_find) {
     const matched = findings.some(
-      (f) => (!ntf.category || f.category === ntf.category) && (!ntf.severity || f.severity === ntf.severity),
+      (f) =>
+        (!ntf.category || f.category === ntf.category) &&
+        (!ntf.severity || f.severity === ntf.severity),
     );
     if (matched) {
       failures.push(`unexpected finding present: ${JSON.stringify(ntf)}`);
@@ -175,7 +185,11 @@ for (const fixtureName of fixtureDirs) {
     failures,
   });
 
-  console.log(passed ? `  ✓ PASS (score ${score}, ${findings.length} findings, $${cost.toFixed(2)})` : `  ✗ FAIL`);
+  console.log(
+    passed
+      ? `  ✓ PASS (score ${score}, ${findings.length} findings, $${cost.toFixed(2)})`
+      : '  ✗ FAIL',
+  );
   for (const f of failures) console.log(`    - ${f}`);
 
   await server.close();
@@ -220,7 +234,7 @@ function startServer(siteRoot: string): Promise<ServerHandle> {
     const server = createServer((req, res) => {
       const urlPath = (req.url ?? '/').split('?')[0] ?? '/';
       const safePath = urlPath === '/' ? '/index.html' : urlPath;
-      const filePath = resolve(siteRoot, '.' + safePath);
+      const filePath = resolve(siteRoot, `.${safePath}`);
       if (!filePath.startsWith(siteRoot) || !existsSync(filePath) || !statSync(filePath).isFile()) {
         res.statusCode = 404;
         res.end('not found');

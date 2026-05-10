@@ -47,7 +47,9 @@ describe('computeClipWindows', () => {
       recording_started_ts: 0,
       recording_duration_s: 60,
     });
-    expect(out[0]!.start_s + out[0]!.duration_s).toBeLessThanOrEqual(60);
+    const w = out[0];
+    if (!w) throw new Error('expected one window');
+    expect(w.start_s + w.duration_s).toBeLessThanOrEqual(60);
   });
 
   it('caps duration at max_clip_s', () => {
