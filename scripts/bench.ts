@@ -57,6 +57,7 @@ interface BenchResult {
 const args = process.argv.slice(2);
 const filter = pickArg(args, '--filter');
 const maxCost = pickArg(args, '--max-cost');
+const keepDirs = args.includes('--keep');
 
 const HAS_API_KEY = !!process.env.ANTHROPIC_API_KEY;
 const HAS_CLAUDE_CLI = (() => {
@@ -127,7 +128,7 @@ for (const fixtureName of fixtureDirs) {
       failures: [`run threw: ${err instanceof Error ? err.message : String(err)}`],
     });
     await server.close();
-    rmSync(outDir, { recursive: true, force: true });
+    if (!keepDirs) rmSync(outDir, { recursive: true, force: true }); else console.log(`  (keeping ${outDir})`);
     continue;
   }
 
@@ -143,7 +144,7 @@ for (const fixtureName of fixtureDirs) {
       failures: ['no report.json produced'],
     });
     await server.close();
-    rmSync(outDir, { recursive: true, force: true });
+    if (!keepDirs) rmSync(outDir, { recursive: true, force: true }); else console.log(`  (keeping ${outDir})`);
     continue;
   }
 
@@ -198,12 +199,15 @@ for (const fixtureName of fixtureDirs) {
   console.log(
     passed
       ? `  ✓ PASS (score ${score}, ${findings.length} findings, $${cost.toFixed(2)})`
-      : '  ✗ FAIL',
+      : `  ✗ FAIL (score ${score}, ${findings.length} findings, $${cost.toFixed(2)})`,
   );
-  for (const f of failures) console.log(`    - ${f}`);
+  for (const f of findings) {
+    console.log(`    [${f.severity}/${f.category}] ${f.title}`);
+  }
+  for (const f of failures) console.log(`    FAIL: ${f}`);
 
   await server.close();
-  rmSync(outDir, { recursive: true, force: true });
+  if (!keepDirs) rmSync(outDir, { recursive: true, force: true }); else console.log(`  (keeping ${outDir})`);
 }
 
 console.log('\n=== Bench summary ===');
