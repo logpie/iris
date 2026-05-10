@@ -2,7 +2,7 @@
 
 Autonomous evaluator for built software products. Drives the product like a real user, judges what it observes against a stable rubric, and emits a machine-readable report with video evidence.
 
-**Status:** Phases 1–3 complete. `iris eval https://app.example.com --spec spec.md` produces a real report.json with findings + rubric scores. Phase 4 adds personas, ffmpeg clips, and known-bug bench.
+**Status:** v1 feature-complete (Phases 1–4 done). `iris eval https://app.example.com --spec spec.md --persona power_user` drives a real Chromium with Playwright, runs axe + console + network probes, lets a Claude Sonnet Explorer act through tool-use, then a Claude Opus Judge produces findings + rubric scores. Outputs JSON / Markdown / HTML reports plus per-finding video clips (via ffmpeg). Ready for Otto integration; rubric tuning against the known-bug bench is the next iteration loop.
 
 ## Install (development)
 
