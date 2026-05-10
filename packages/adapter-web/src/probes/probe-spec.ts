@@ -26,4 +26,10 @@ export const WEB_PROBE_SPECS: ProbeSpec[] = [
     description: 'All network responses since the last call.',
     input_schema: { type: 'object', properties: {} },
   },
+  {
+    name: 'lighthouse',
+    description:
+      'Run Lighthouse against the current URL. HEAVY — uses ~10-30s and spawns its own headless Chromium. Returns Performance/Accessibility/Best-Practices/SEO scores. Cached per URL for 10 minutes.',
+    input_schema: { type: 'object', properties: {} },
+  },
 ];

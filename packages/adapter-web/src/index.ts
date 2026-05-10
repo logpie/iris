@@ -17,6 +17,7 @@ import { domOutline } from './dom/snapshot.js';
 import { WebLifecycle } from './lifecycle.js';
 import { runAxe } from './probes/axe.js';
 import { ConsoleProbe } from './probes/console.js';
+import { runLighthouse } from './probes/lighthouse.js';
 import { NetworkProbe } from './probes/network.js';
 import { WEB_PROBE_SPECS } from './probes/probe-spec.js';
 import {
@@ -182,6 +183,7 @@ export class WebTargetAdapter implements TargetAdapter {
     if (!this.lifecycle) return { ok: false, probe: name, error: 'adapter not started' };
     const page = this.lifecycle.getPage();
     if (name === 'axe') return runAxe(page);
+    if (name === 'lighthouse') return runLighthouse(page);
     if (name.startsWith('console_') && this.consoleProbe) {
       return this.consoleProbe.runProbe(name, args);
     }

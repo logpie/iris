@@ -17,6 +17,7 @@
     "@iris/adapter-types": "workspace:*",
     "@iris/core": "workspace:*",
     "axe-core": "^4.10.2",
+    "lighthouse": "^12.0.0",
     "playwright": "^1.49.0",
     "ulid": "^2.3.0"
   },
