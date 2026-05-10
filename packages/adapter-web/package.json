@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@iris/adapter-types": "workspace:*"
+    "@iris/adapter-types": "workspace:*",
+    "@iris/core": "workspace:*",
+    "playwright": "^1.49.0"
   },
   "devDependencies": {
     "tsup": "^8.3.5",
