@@ -21,7 +21,9 @@ import { NetworkProbe } from './probes/network.js';
 import { WEB_PROBE_SPECS } from './probes/probe-spec.js';
 import {
   type StepScreenshotIndex,
+  computeClipWindows,
   findRunVideo,
+  sliceEvidenceClips,
   sliceEvidenceScreenshots,
 } from './recording/index.js';
 import { click, hover, press, type as typeText } from './tools/action.js';
@@ -46,6 +48,8 @@ export class WebTargetAdapter implements TargetAdapter {
   private screenshotIndex: StepScreenshotIndex = {};
   private consoleProbe: ConsoleProbe | null = null;
   private networkProbe: NetworkProbe | null = null;
+  private eventTimestamps: Record<string, number> = {};
+  private recordingStartedTs = 0;
 
   constructor(private readonly opts: WebTargetAdapterOptions = {}) {}
 
@@ -64,6 +68,7 @@ export class WebTargetAdapter implements TargetAdapter {
       trace_out_path: this.tracePath,
     });
     await this.lifecycle.start();
+    this.recordingStartedTs = Date.now() / 1000;
 
     const page = this.lifecycle.getPage();
     this.consoleProbe = new ConsoleProbe(page);
@@ -152,6 +157,7 @@ export class WebTargetAdapter implements TargetAdapter {
     const screenshotPath = join(this.screenshotsDir, `${stepName}.png`);
     await page.screenshot({ path: screenshotPath });
     this.screenshotIndex[ref] = screenshotPath;
+    this.eventTimestamps[ref] = Date.now() / 1000;
 
     const outline = await domOutline(page);
     const url = page.url();
@@ -186,6 +192,26 @@ export class WebTargetAdapter implements TargetAdapter {
   }
 
   async sliceEvidence(refs: EvidenceRef[]): Promise<EvidenceFile[]> {
+    const video = findRunVideo(this.videoDir);
+    if (video) {
+      const recordingDuration = Date.now() / 1000 - this.recordingStartedTs;
+      const windows = computeClipWindows(refs, {
+        event_ts: this.eventTimestamps,
+        recording_started_ts: this.recordingStartedTs,
+        recording_duration_s: recordingDuration,
+      });
+      if (windows.length > 0) {
+        const clipsDir = join(this.evidenceDir, 'clips');
+        const clips = await sliceEvidenceClips(refs, video, windows, clipsDir);
+        if (clips.length > 0) {
+          // Fill in any refs that didn't get clips with screenshots
+          const matchedIds = new Set(clips.map((c) => c.finding_id));
+          const missing = refs.filter((r) => !matchedIds.has(r.finding_id));
+          const screenshots = sliceEvidenceScreenshots(missing, this.screenshotIndex);
+          return [...clips, ...screenshots];
+        }
+      }
+    }
     return sliceEvidenceScreenshots(refs, this.screenshotIndex);
   }
 }
