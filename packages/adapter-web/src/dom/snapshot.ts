@@ -114,7 +114,10 @@ export async function domOutline(page: Page): Promise<string> {
       if (interesting) {
         const name = accessibleName(el);
         const id = el.id ? `#${el.id}` : '';
-        const cls = el.className && typeof el.className === 'string' ? `.${el.className.split(/\s+/).slice(0, 2).join('.')}` : '';
+        const cls =
+          el.className && typeof el.className === 'string'
+            ? `.${el.className.split(/\s+/).slice(0, 2).join('.')}`
+            : '';
         const extras: string[] = [];
         if (el.tagName === 'INPUT') {
           const inp = el as HTMLInputElement;

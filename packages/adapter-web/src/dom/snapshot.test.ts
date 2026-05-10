@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { startFixtureServer, type FixtureServerHandle } from '../../test-fixtures/server.js';
+import { type FixtureServerHandle, startFixtureServer } from '../../test-fixtures/server.js';
 import { WebLifecycle } from '../lifecycle.js';
 import { domOutline } from './snapshot.js';
 
