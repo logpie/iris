@@ -8,3 +8,4 @@ coverage/
 .iris-cache/
 iris-runs/
 .superpowers/
+*.tsbuildinfo
