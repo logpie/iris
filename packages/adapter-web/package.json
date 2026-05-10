@@ -16,6 +16,7 @@
   "dependencies": {
     "@iris/adapter-types": "workspace:*",
     "@iris/core": "workspace:*",
+    "axe-core": "^4.10.2",
     "playwright": "^1.49.0"
   },
   "devDependencies": {

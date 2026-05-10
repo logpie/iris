@@ -48,6 +48,9 @@ importers:
       '@iris/core':
         specifier: workspace:*
         version: link:../core
+      axe-core:
+        specifier: ^4.10.2
+        version: 4.11.4
       playwright:
         specifier: ^1.49.0
         version: 1.59.1
@@ -713,6 +716,10 @@ packages:
 
   asynckit@0.4.0:
     resolution: {integrity: sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==}
+
+  axe-core@4.11.4:
+    resolution: {integrity: sha512-KunSNx+TVpkAw/6ULfhnx+HWRecjqZGTOyquAoWHYLRSdK1tB5Ihce1ZW+UY3fj33bYAFWPu7W/GRSmmrCGuxA==}
+    engines: {node: '>=4'}
 
   bundle-require@5.1.0:
     resolution: {integrity: sha512-3WrrOuZiyaaZPWiEt4G3+IffISVC9HYlWueJEBWED4ZH4aIAC2PnkdnuRrR94M+w6yGWn4AglWtJtBI8YqvgoA==}
@@ -1560,6 +1567,8 @@ snapshots:
   assertion-error@2.0.1: {}
 
   asynckit@0.4.0: {}
+
+  axe-core@4.11.4: {}
 
   bundle-require@5.1.0(esbuild@0.27.7):
     dependencies:
