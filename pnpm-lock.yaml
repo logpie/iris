@@ -104,6 +104,9 @@ importers:
       '@iris/adapter-types':
         specifier: workspace:*
         version: link:../adapter-types
+      '@iris/rubrics':
+        specifier: workspace:*
+        version: link:../rubrics
       ulid:
         specifier: ^2.3.0
         version: 2.4.0
