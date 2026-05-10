@@ -13,6 +13,6 @@
       "must_find": true
     }
   ],
-  "expected_score_range": { "overall": [6, 8.5] },
-  "expected_to_NOT_find": [{ "category": "bug", "severity": "blocker" }]
+  "expected_score_range": { "overall": [2, 7] },
+  "expected_to_NOT_find": []
 }

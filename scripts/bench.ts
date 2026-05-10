@@ -185,7 +185,10 @@ for (const fixtureName of fixtureDirs) {
     }
   }
 
-  const passed = failures.length === 0 && exitCode <= 1;
+  // exit code 0 = passed, 1 = below threshold, 2 = budget abort (still valid run with findings),
+  // 3 = error (no report). Bench passes if checks succeeded regardless of threshold/budget,
+  // because the bench evaluates the meta.json contract, not the user-supplied threshold.
+  const passed = failures.length === 0 && exitCode <= 2;
   results.push({
     fixture: fixtureName,
     passed,
