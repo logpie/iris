@@ -90,3 +90,5 @@ export interface TargetAdapter {
 
   sliceEvidence(refs: EvidenceRef[]): Promise<EvidenceFile[]>;
 }
+
+export * from './conformance.js';

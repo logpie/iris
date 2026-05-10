@@ -26,6 +26,9 @@ importers:
 
   packages/adapter-types:
     dependencies:
+      vitest:
+        specifier: ^2.1.5
+        version: 2.1.9(@types/node@22.19.18)
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -36,9 +39,6 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
-      vitest:
-        specifier: ^2.1.5
-        version: 2.1.9(@types/node@22.19.18)
 
   packages/adapter-web:
     dependencies:
