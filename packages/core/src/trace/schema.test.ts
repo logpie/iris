@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TraceEventSchema, type TraceEvent } from './schema.js';
+import { type TraceEvent, TraceEventSchema } from './schema.js';
 
 describe('TraceEvent envelope', () => {
   it('validates a minimal action event', () => {

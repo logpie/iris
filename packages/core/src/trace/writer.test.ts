@@ -2,8 +2,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TraceWriter } from './writer.js';
 import type { TraceEvent } from './schema.js';
+import { TraceWriter } from './writer.js';
 
 describe('TraceWriter', () => {
   let dir: string;
@@ -35,10 +35,17 @@ describe('TraceWriter', () => {
 
   it('rejects events that fail schema validation', async () => {
     const w = new TraceWriter(path);
-    await expect(
-      // biome-ignore lint/suspicious/noExplicitAny: testing invalid input
-      w.append({ v: 99, id: '', ts: 0, step: 0, target_kind: 'web', kind: 'action', actor: 'explorer', payload: {} } as any),
-    ).rejects.toThrow();
+    const invalid = {
+      v: 99,
+      id: '',
+      ts: 0,
+      step: 0,
+      target_kind: 'web',
+      kind: 'action',
+      actor: 'explorer',
+      payload: {},
+    } as unknown as TraceEvent;
+    await expect(w.append(invalid)).rejects.toThrow();
     await w.close();
   });
 
@@ -57,7 +64,12 @@ describe('TraceWriter', () => {
   });
 });
 
-function makeEvent(id: string, step: number, kind: TraceEvent['kind'], payload: object): TraceEvent {
+function makeEvent(
+  id: string,
+  step: number,
+  kind: TraceEvent['kind'],
+  payload: object,
+): TraceEvent {
   return {
     v: 1,
     id,

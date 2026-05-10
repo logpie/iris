@@ -1,6 +1,9 @@
-const PRICE_PER_MTOK: Record<string, { input: number; output: number; cache_write: number; cache_read: number }> = {
-  'claude-opus-4-7':    { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
-  'claude-sonnet-4-6':  { input: 3,  output: 15, cache_write: 3.75,  cache_read: 0.3 },
+const PRICE_PER_MTOK: Record<
+  string,
+  { input: number; output: number; cache_write: number; cache_read: number }
+> = {
+  'claude-opus-4-7': { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
+  'claude-sonnet-4-6': { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 },
   'claude-haiku-4-5-20251001': { input: 0.8, output: 4, cache_write: 1, cache_read: 0.08 },
 };
 

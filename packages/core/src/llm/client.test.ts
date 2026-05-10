@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { LlmClient, type LlmCallInput, type LlmRawResponse } from './client.js';
+import { type LlmCallInput, LlmClient, type LlmRawResponse } from './client.js';
 
 describe('LlmClient', () => {
   it('delegates to the injected transport and accumulates usage', async () => {

@@ -15,15 +15,27 @@ export function evalCommand(): Command {
     .option('--viewport <wxh>', 'web viewport e.g. 1280x800', '1280x800')
     .option('--user-agent <ua>', 'browser user agent (web-only)')
     .option('--max-steps <n>', 'hard cap on Explorer actions', (s) => Number.parseInt(s, 10), 60)
-    .option('--max-cost-usd <n>', 'abort when LLM cost exceeds this', (s) => Number.parseFloat(s), 5)
+    .option(
+      '--max-cost-usd <n>',
+      'abort when LLM cost exceeds this',
+      (s) => Number.parseFloat(s),
+      5,
+    )
     .option('--timeout <s>', 'total wall-clock seconds', (s) => Number.parseInt(s, 10), 600)
-    .option('--explore-budget <0..1>', 'grounded mode: fraction for free exploration', (s) => Number.parseFloat(s), 0.3)
+    .option(
+      '--explore-budget <0..1>',
+      'grounded mode: fraction for free exploration',
+      (s) => Number.parseFloat(s),
+      0.3,
+    )
     .option('--explorer-model <id>', 'model for Explorer agent', 'claude-sonnet-4-6')
     .option('--judge-model <id>', 'model for Judge agent', 'claude-opus-4-7')
     .option('--out <dir>', 'run output directory')
     .option('--no-html', 'skip HTML report')
     .option('--no-clips', 'skip per-finding video clips')
-    .option('--threshold <n>', 'exit non-zero if overall score below this', (s) => Number.parseFloat(s))
+    .option('--threshold <n>', 'exit non-zero if overall score below this', (s) =>
+      Number.parseFloat(s),
+    )
     .option('--print-summary', 'print one-line JSON summary to stdout')
     .option('--dry-run', 'run spec interpreter only, print plan, exit')
     .option('--verbose', 'stream trace events to stderr as they happen')
@@ -32,7 +44,9 @@ export function evalCommand(): Command {
       // Phase 1 stub: print resolved args + exit
       const resolved = { target, ...opts };
       process.stdout.write(`${JSON.stringify(resolved, null, 2)}\n`);
-      process.stdout.write('\n[iris] eval not implemented in phase 1 — see plans/2026-05-09-iris-phase-1-foundations.md\n');
+      process.stdout.write(
+        '\n[iris] eval not implemented in phase 1 — see plans/2026-05-09-iris-phase-1-foundations.md\n',
+      );
     });
 }
 

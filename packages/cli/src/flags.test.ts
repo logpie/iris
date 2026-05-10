@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inferMode, type EvalInputs } from './flags.js';
+import { type EvalInputs, inferMode } from './flags.js';
 
 describe('inferMode', () => {
   it('returns targeted when --task is given', () => {

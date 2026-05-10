@@ -1,6 +1,6 @@
 import { open } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
-import { TraceEventSchema, type TraceEvent } from './schema.js';
+import { type TraceEvent, TraceEventSchema } from './schema.js';
 
 export class TraceWriter {
   private handle: FileHandle | null = null;

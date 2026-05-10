@@ -5,13 +5,13 @@ import {
   type EvidenceRef,
   type Observation,
   type ProbeResult,
+  ProbeResultSchema,
   type ProbeSpec,
   type TargetAdapter,
   type TargetKind,
   type ToolResult,
-  type ToolSpec,
   ToolResultSchema,
-  ProbeResultSchema,
+  type ToolSpec,
 } from './index.js';
 
 describe('adapter-types', () => {

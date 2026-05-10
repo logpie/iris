@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSummaryLine, type SummaryInput } from './summary.js';
+import { type SummaryInput, buildSummaryLine } from './summary.js';
 
 describe('buildSummaryLine', () => {
   it('produces a single-line valid JSON terminated by newline', () => {

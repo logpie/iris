@@ -18,7 +18,8 @@ export function buildProgram(): Command {
   const sharedConfig = program.configureOutput() as OutputConfiguration;
   for (const cmd of program.commands) {
     // Assign the same object reference so Object.assign in configureOutput propagates.
-    (cmd as unknown as { _outputConfiguration: OutputConfiguration })._outputConfiguration = sharedConfig;
+    (cmd as unknown as { _outputConfiguration: OutputConfiguration })._outputConfiguration =
+      sharedConfig;
   }
 
   return program;

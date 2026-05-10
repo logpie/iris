@@ -1,4 +1,4 @@
-import { ModeSchema, type Mode } from '@iris/core';
+import { type Mode, ModeSchema } from '@iris/core';
 
 export interface EvalInputs {
   spec_path?: string;

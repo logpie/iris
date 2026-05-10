@@ -10,7 +10,9 @@ describe('WebTargetAdapter (Phase 1 stub)', () => {
 
   it('every method throws "not implemented in phase 1"', async () => {
     const a = new WebTargetAdapter();
-    await expect(a.start({ kind: 'web', target: 'https://x', out_dir: '/tmp' })).rejects.toThrow(/phase 1/);
+    await expect(a.start({ kind: 'web', target: 'https://x', out_dir: '/tmp' })).rejects.toThrow(
+      /phase 1/,
+    );
     await expect(a.stop()).rejects.toThrow(/phase 1/);
     expect(() => a.listTools()).toThrow(/phase 1/);
     await expect(a.callTool('click', {})).rejects.toThrow(/phase 1/);

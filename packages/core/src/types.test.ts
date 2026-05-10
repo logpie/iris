@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ModeSchema, RunConfigSchema, type Mode, type RunConfig } from './types.js';
+import { type Mode, ModeSchema, type RunConfig, RunConfigSchema } from './types.js';
 
 describe('core types', () => {
   it('ModeSchema accepts the three valid modes', () => {

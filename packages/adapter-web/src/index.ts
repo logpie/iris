@@ -12,7 +12,8 @@ import type {
   ToolSpec,
 } from '@iris/adapter-types';
 
-const NOT_IMPL = 'WebTargetAdapter: not implemented in phase 1 — see plans/2026-05-09-iris-phase-1-foundations.md';
+const NOT_IMPL =
+  'WebTargetAdapter: not implemented in phase 1 — see plans/2026-05-09-iris-phase-1-foundations.md';
 
 export class WebTargetAdapter implements TargetAdapter {
   readonly kind: TargetKind = 'web';

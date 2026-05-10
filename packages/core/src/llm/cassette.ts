@@ -25,8 +25,7 @@ export class CassetteTransport {
     if (this.opts.mode === 'replay') {
       if (!existsSync(path)) {
         throw new Error(
-          `cassette not found: ${path}\n` +
-            `If this is a new LLM call, re-record cassettes with IRIS_RERECORD_CASSETTES=1`,
+          `cassette not found: ${path}\nIf this is a new LLM call, re-record cassettes with IRIS_RERECORD_CASSETTES=1`,
         );
       }
       return JSON.parse(readFileSync(path, 'utf8')) as LlmRawResponse;
@@ -53,7 +52,9 @@ function hashInput(input: LlmCallInput): string {
   return createHash('sha256').update(json).digest('hex').slice(0, 16);
 }
 
-function normalizeText(s: string | Array<Record<string, unknown>>): string | Array<Record<string, unknown>> {
+function normalizeText(
+  s: string | Array<Record<string, unknown>>,
+): string | Array<Record<string, unknown>> {
   if (typeof s !== 'string') return s;
   return s.replace(/\s+/g, ' ').trim();
 }

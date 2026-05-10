@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
-import { RubricProfileSchema, type RubricProfile } from './schema.js';
+import { type RubricProfile, RubricProfileSchema } from './schema.js';
 
 const PROFILES_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', 'profiles');
 
