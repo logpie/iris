@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Reports</title></head>
+<body>
+  <h1>Reports</h1>
+  <div id="reports"></div>
+  <script>
+    // BUG: empty state has no content — user has no idea what to do
+    const el = document.getElementById('reports');
+    if (true /* empty */) {
+      el.innerHTML = ''; // intentional: no empty state copy
+    }
+  </script>
+</body></html>

@@ -1,0 +1,11 @@
+{
+  "name": "broken-export",
+  "description": "Export button claims CSV but produces JSON.",
+  "spec": "User can export reports as CSV. The exported file should be a CSV.",
+  "mode": "grounded",
+  "expected_findings": [
+    { "match": { "category": "bug", "severity": ["major", "blocker"], "title_contains": ["csv", "export", "json"] }, "must_find": true }
+  ],
+  "expected_score_range": { "overall": [4, 7] },
+  "expected_to_NOT_find": []
+}

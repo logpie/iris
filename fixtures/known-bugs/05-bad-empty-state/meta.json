@@ -1,0 +1,11 @@
+{
+  "name": "bad-empty-state",
+  "description": "Reports page renders nothing on empty state — no copy, no CTA.",
+  "spec": "Reports page should explain what to do when empty.",
+  "mode": "grounded",
+  "expected_findings": [
+    { "match": { "category": ["ux", "copy"], "severity": ["minor", "major"], "title_contains": ["empty", "blank", "instruction"] }, "must_find": true }
+  ],
+  "expected_score_range": { "overall": [5, 8] },
+  "expected_to_NOT_find": []
+}

@@ -1,0 +1,11 @@
+{
+  "name": "console-noise",
+  "description": "Page works but spews console errors on every load.",
+  "spec": "Page should load without console errors.",
+  "mode": "grounded",
+  "expected_findings": [
+    { "match": { "category": ["bug", "perf"], "severity": ["minor", "major"], "title_contains": ["console", "error"] }, "must_find": true }
+  ],
+  "expected_score_range": { "overall": [5, 8] },
+  "expected_to_NOT_find": []
+}

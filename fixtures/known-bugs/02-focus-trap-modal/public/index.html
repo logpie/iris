@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Modal demo</title>
+<style>.modal{display:none;position:fixed;top:25%;left:25%;width:50%;background:white;border:1px solid black;padding:1rem}.modal.open{display:block}</style></head>
+<body>
+  <button id="open">Open dialog</button>
+  <div id="modal" class="modal" role="dialog" aria-modal="true">
+    <h2>Confirm</h2>
+    <p>Are you sure?</p>
+    <button id="confirm">Confirm</button>
+    <button id="cancel">Cancel</button>
+  </div>
+  <script>
+    const modal = document.getElementById('modal');
+    document.getElementById('open').addEventListener('click', () => {
+      modal.classList.add('open');
+      document.getElementById('confirm').focus();
+    });
+    document.getElementById('cancel').addEventListener('click', () => modal.classList.remove('open'));
+    document.getElementById('confirm').addEventListener('click', () => modal.classList.remove('open'));
+    // BUG: no Esc handler — keyboard users cannot dismiss the modal
+    // BUG: focus is not trapped, but also not restored when closed
+  </script>
+</body></html>

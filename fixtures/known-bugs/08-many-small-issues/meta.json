@@ -1,0 +1,13 @@
+{
+  "name": "many-small-issues",
+  "description": "Many nits (typos, whitespace, inconsistent capitalization) but no major bugs.",
+  "spec": "Marketing page with feature list, signup CTA, support and pricing info.",
+  "mode": "grounded",
+  "expected_findings": [
+    { "match": { "category": "copy", "severity": ["nit", "minor"], "title_contains": ["typo", "spelling", "whitespace", "capitalization", "inconsistent"] }, "must_find": true }
+  ],
+  "expected_score_range": { "overall": [6, 8.5] },
+  "expected_to_NOT_find": [
+    { "category": "bug", "severity": "blocker" }
+  ]
+}

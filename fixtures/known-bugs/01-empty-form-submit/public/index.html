@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
+<body>
+  <h1>Sign in</h1>
+  <form id="signin">
+    <label for="email">Email</label><input id="email" type="email">
+    <label for="password">Password</label><input id="password" type="password">
+    <button id="submit" type="submit">Sign in</button>
+  </form>
+  <div id="result"></div>
+  <script>
+    // BUG: submits with no validation, no feedback, no error
+    document.getElementById('signin').addEventListener('submit', (e) => {
+      e.preventDefault();
+      // intentionally do nothing — silent failure
+    });
+  </script>
+</body></html>

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Noisy</title></head>
+<body>
+  <h1>Welcome</h1>
+  <p>This page does what it should — but the console is full of errors.</p>
+  <script>
+    // BUG: noisy console errors on every load
+    console.error('TypeError: Cannot read property of undefined');
+    console.error('Warning: missing key prop on list item');
+    console.error('Failed to load resource: foo.png');
+    console.warn('Deprecation: function bar() is deprecated');
+  </script>
+</body></html>

@@ -1,0 +1,11 @@
+{
+  "name": "keyboard-inaccessible",
+  "description": "Critical action implemented as clickable div — keyboard-inaccessible.",
+  "spec": "All interactive controls should be keyboard-accessible.",
+  "mode": "grounded",
+  "expected_findings": [
+    { "match": { "category": "a11y", "severity": ["blocker", "major"], "title_contains": ["keyboard", "focus", "button", "div", "tabindex"] }, "must_find": true }
+  ],
+  "expected_score_range": { "overall": [3, 6] },
+  "expected_to_NOT_find": []
+}

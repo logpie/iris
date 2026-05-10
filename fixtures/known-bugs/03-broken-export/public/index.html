@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Export</title></head>
+<body>
+  <h1>Reports</h1>
+  <p>Click below to export your data as CSV.</p>
+  <button id="export">Export as CSV</button>
+  <script>
+    document.getElementById('export').addEventListener('click', () => {
+      // BUG: claims CSV but actually exports JSON
+      const blob = new Blob([JSON.stringify({ a: 1, b: 2 })], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'report.json'; // <-- json, not csv
+      a.click();
+      document.body.insertAdjacentHTML('beforeend', '<p id="exported">Exported as report.json</p>');
+    });
+  </script>
+</body></html>

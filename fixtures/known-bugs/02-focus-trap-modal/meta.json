@@ -1,0 +1,11 @@
+{
+  "name": "focus-trap-modal",
+  "description": "Modal does not respond to Esc; focus management is broken.",
+  "spec": "Modal dialogs should be dismissable with Esc and manage focus correctly.",
+  "mode": "grounded",
+  "expected_findings": [
+    { "match": { "category": "a11y", "severity": ["major", "minor"], "title_contains": ["esc", "focus", "modal", "keyboard"] }, "must_find": true }
+  ],
+  "expected_score_range": { "overall": [4, 7] },
+  "expected_to_NOT_find": []
+}
