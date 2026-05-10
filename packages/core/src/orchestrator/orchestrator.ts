@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { TargetAdapter } from '@iris/adapter-types';
 import type { RubricProfile } from '@iris/rubrics';
 import { Explorer, type ExplorerResult } from '../explorer/explorer.js';
+import type { PersonaName } from '../explorer/personas/index.js';
 import { Judge, type JudgeOutput } from '../judge/judge.js';
 import type { LlmClient } from '../llm/client.js';
 import { buildReportHtml } from '../report/report-html.js';
@@ -27,6 +28,7 @@ export interface OrchestratorRunConfig {
   explorer_model: string;
   judge_model: string;
   no_html: boolean;
+  persona?: PersonaName;
 }
 
 export interface OrchestratorResult {
@@ -136,6 +138,7 @@ export class Orchestrator {
         max_cost_usd: config.max_cost_usd,
         timeout_s: config.timeout_s,
         ...(initialPlanStack.length > 0 ? { initial_plan_stack: initialPlanStack } : {}),
+        ...(config.persona !== undefined ? { persona: config.persona } : {}),
       },
     });
 

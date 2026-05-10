@@ -18,6 +18,7 @@ import type {
   StepDoneArgs,
   TryWeirdnessArgs,
 } from './meta-tools.js';
+import type { PersonaName } from './personas/index.js';
 import { EXPLORER_CORE, buildSystemPrompt, buildUserPrompt } from './prompts.js';
 import { shouldReflect } from './reflection.js';
 import { SiteMap } from './site-map.js';
@@ -25,7 +26,7 @@ import { SiteMap } from './site-map.js';
 export interface ExplorerConfig {
   mode: Mode;
   target_kind: TargetKind;
-  persona?: 'default';
+  persona?: PersonaName;
   model: string;
   max_steps: number;
   max_cost_usd: number;

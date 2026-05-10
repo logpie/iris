@@ -5,3 +5,4 @@ export * as specInterpreter from './spec-interpreter/index.js';
 export * as judge from './judge/index.js';
 export * as report from './report/index.js';
 export * as orchestrator from './orchestrator/index.js';
+export { type PersonaName, PERSONAS, PERSONA_NAMES } from './explorer/personas/index.js';

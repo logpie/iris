@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { WebTargetAdapter } from '@iris/adapter-web';
-import { ModeSchema, orchestrator } from '@iris/core';
+import { ModeSchema, type PersonaName, orchestrator } from '@iris/core';
 import { Command } from 'commander';
 import { inferMode } from '../flags.js';
 import { buildLlmClient } from '../llm-factory.js';
@@ -38,6 +38,11 @@ export function evalCommand(): Command {
     .option('--dry-run', 'run spec interpreter only, print plan, exit')
     .option('--verbose', 'stream trace events to stderr as they happen')
     .option('--json-logs', 'structured logs to stderr (skill consumers)')
+    .option(
+      '--persona <name>',
+      'persona for the Explorer (default | power_user | novice | adversarial | keyboard_only)',
+      'default',
+    )
     .action(async (target: string, opts: Record<string, unknown>) => {
       const explicitMode = opts.mode as string | undefined;
       const specPath = opts.spec as string | undefined;
@@ -96,6 +101,7 @@ export function evalCommand(): Command {
         explorer_model: opts.explorerModel as string,
         judge_model: opts.judgeModel as string,
         no_html: opts.html === false,
+        persona: opts.persona as PersonaName,
       });
 
       if (opts.printSummary) {

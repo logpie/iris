@@ -1,4 +1,5 @@
 import type { Mode, TargetKind } from '../types.js';
+import { PERSONAS, type PersonaName } from './personas/index.js';
 
 // ---------------------------------------------------------------------------
 // [CORE] — target-agnostic Explorer rules. Always present.
@@ -68,14 +69,11 @@ export function modeSuffix(mode: Mode): string {
 }
 
 // ---------------------------------------------------------------------------
-// [PERSONA] — only 'default' in Phase 3
+// [PERSONA] — persona pool (Phase 4+)
 // ---------------------------------------------------------------------------
 
-export function personaSuffix(persona: 'default'): string {
-  switch (persona) {
-    case 'default':
-      return 'Persona: a sensible new user. You are not a power user, not adversarial — just curious and observant.';
-  }
+export function personaSuffix(persona: PersonaName): string {
+  return PERSONAS[persona] ?? PERSONAS.default;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +84,7 @@ export interface BuildSystemPromptArgs {
   core: string;
   target_kind: TargetKind;
   mode: Mode;
-  persona: 'default';
+  persona: PersonaName;
 }
 
 export function buildSystemPrompt({
