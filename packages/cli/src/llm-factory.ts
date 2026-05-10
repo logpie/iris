@@ -1,16 +1,18 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { llm } from '@iris/core';
+import { claudeCliTransport } from './claude-cli-transport.js';
 
 export interface BuildClientOptions {
   api_key?: string;
+  /** When true (or no API key set), use the local `claude` CLI subscription instead of the Anthropic API */
+  use_claude_cli?: boolean;
 }
 
 export function buildLlmClient(opts: BuildClientOptions = {}): llm.LlmClient {
   const apiKey = opts.api_key ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      'No ANTHROPIC_API_KEY in env. Set it to a valid key, or use cassettes for testing.',
-    );
+  const useCli = opts.use_claude_cli ?? (process.env.IRIS_USE_CLAUDE_CLI === '1' || !apiKey);
+  if (useCli || !apiKey) {
+    return new llm.LlmClient({ transport: claudeCliTransport });
   }
   const sdk = new Anthropic({ apiKey });
   const transport: llm.LlmTransport = async (input) => {
