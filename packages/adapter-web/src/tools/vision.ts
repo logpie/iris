@@ -1,6 +1,7 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ToolResult } from '@iris/adapter-types';
+import type { llm } from '@iris/core';
 import type { Page } from 'playwright';
 
 export async function screenshot(
@@ -29,14 +30,69 @@ export async function visionClick(
   }
 }
 
+export interface VisionDescribeOptions {
+  out_dir: string;
+  name: string;
+  llm_client?: llm.LlmClient;
+  model?: string;
+  region?: string;
+}
+
+const VISION_DESCRIBE_PROMPT =
+  'Describe what is on this screen. Focus on: layout (sections, columns), the primary CTA, anything visually broken or confusing (overlapping elements, illegible text, missing focus indicators, weird empty states). Be concise — 3-5 sentences.';
+
+/**
+ * Take a screenshot, send to Claude with an image content block, return the description.
+ * If no llm_client is provided, returns ok=false with a clear message.
+ */
 export async function visionDescribe(
-  _page: Page,
-  _args: Record<string, unknown>,
-): Promise<ToolResult> {
-  return {
-    ok: false,
-    error: 'vision_describe not implemented in phase 2 — wire in phase 3 with an LLM call',
-  };
+  page: Page,
+  args: VisionDescribeOptions,
+): Promise<ToolResult & { description?: string }> {
+  if (!args.llm_client) {
+    return {
+      ok: false,
+      error:
+        'vision_describe requires an LlmClient — pass --persona or configure WebTargetAdapterOptions.vision_llm_client',
+    };
+  }
+  try {
+    mkdirSync(args.out_dir, { recursive: true });
+    const path = join(args.out_dir, `${args.name}.png`);
+    await page.screenshot({ path, fullPage: false });
+    const imageBytes = readFileSync(path);
+    const base64 = imageBytes.toString('base64');
+
+    const r = await args.llm_client.call({
+      model: args.model ?? 'claude-sonnet-4-6',
+      system: VISION_DESCRIBE_PROMPT,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: base64 },
+            },
+            {
+              type: 'text',
+              text: args.region ? `Focus on this region: ${args.region}` : 'Describe this screen.',
+            },
+          ],
+        },
+      ],
+      max_tokens: 500,
+      temperature: 0,
+    });
+
+    return {
+      ok: true,
+      evidence_refs: [path],
+      description: r.text,
+    };
+  } catch (err) {
+    return { ok: false, error: errString(err) };
+  }
 }
 
 function errString(err: unknown): string {

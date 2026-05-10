@@ -83,7 +83,7 @@ export function evalCommand(): Command {
 
       const explorerClient = buildLlmClient();
       const judgeClient = buildLlmClient();
-      const adapter = new WebTargetAdapter({ headless: true });
+      const adapter = new WebTargetAdapter({ headless: true, vision_llm_client: explorerClient });
 
       const orch = new orchestrator.Orchestrator({ adapter, explorerClient, judgeClient });
       const result = await orch.run({

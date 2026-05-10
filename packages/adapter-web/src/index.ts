@@ -13,6 +13,7 @@ import type {
   ToolResult,
   ToolSpec,
 } from '@iris/adapter-types';
+import type { llm } from '@iris/core';
 import { domOutline } from './dom/snapshot.js';
 import { WebLifecycle } from './lifecycle.js';
 import { runAxe } from './probes/axe.js';
@@ -34,6 +35,7 @@ import { screenshot, visionClick, visionDescribe } from './tools/vision.js';
 
 export interface WebTargetAdapterOptions {
   headless?: boolean;
+  vision_llm_client?: llm.LlmClient;
 }
 
 export class WebTargetAdapter implements TargetAdapter {
@@ -142,8 +144,15 @@ export class WebTargetAdapter implements TargetAdapter {
       }
       case 'vision_click':
         return visionClick(page, args as { x: number; y: number; reason?: string });
-      case 'vision_describe':
-        return visionDescribe(page, args);
+      case 'vision_describe': {
+        const stepName = `vision-${String(this.observationCounter).padStart(4, '0')}-${Date.now()}`;
+        return visionDescribe(page, {
+          out_dir: this.screenshotsDir,
+          name: stepName,
+          ...(this.opts.vision_llm_client ? { llm_client: this.opts.vision_llm_client } : {}),
+          ...(args as { region?: string; model?: string }),
+        });
+      }
       default:
         return { ok: false, error: `unknown tool: ${name}` };
     }
