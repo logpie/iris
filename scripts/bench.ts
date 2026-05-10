@@ -11,7 +11,7 @@
  *
  * Usage: pnpm bench [--filter <fixture-name>] [--max-cost <usd>]
  */
-import { spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
@@ -58,10 +58,20 @@ const args = process.argv.slice(2);
 const filter = pickArg(args, '--filter');
 const maxCost = pickArg(args, '--max-cost');
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('bench: ANTHROPIC_API_KEY not set. Skipping bench (would cost real money).');
+const HAS_API_KEY = !!process.env.ANTHROPIC_API_KEY;
+const HAS_CLAUDE_CLI = (() => {
+  try {
+    execSync('command -v claude', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+if (!HAS_API_KEY && !HAS_CLAUDE_CLI) {
+  console.error('bench: neither ANTHROPIC_API_KEY nor `claude` CLI is available. Cannot run.');
   process.exit(0);
 }
+console.log(`bench: transport = ${HAS_API_KEY ? 'Anthropic SDK (API key)' : 'claude -p (subscription)'}`);
 if (!existsSync(IRIS_BIN)) {
   console.error(`bench: ${IRIS_BIN} not found. Run \`pnpm build\` first.`);
   process.exit(1);
