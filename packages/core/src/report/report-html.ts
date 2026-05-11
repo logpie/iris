@@ -58,7 +58,14 @@ export function buildReportHtml(report: ReportJson, opts: BuildReportHtmlOptions
   } else {
     parts.push(renderTLDR(report, eventIndex));
     parts.push(renderWhatHappened(report, eventIndex));
-    parts.push(renderFindingsSection(report.findings, eventIndex, screenshotForEvent));
+    parts.push(
+      renderFindingsSection(
+        report.findings,
+        eventIndex,
+        screenshotForEvent,
+        report.artifacts?.clips ?? {},
+      ),
+    );
     if (runData?.videoRelPath)
       parts.push(renderVideoSection(runData.videoRelPath, report.run.duration_s, actionMarkers));
     parts.push(renderRubricSection(report.scores, eventIndex));
@@ -222,6 +229,9 @@ const STYLES = `
     letter-spacing: 0.05em;
     margin-left: 6px;
   }
+  .unverified-tag.explorer-error {
+    color: var(--sev-suggestion);
+  }
   .tldr .score-inline {
     font-family: var(--mono);
     font-weight: 600;
@@ -350,6 +360,25 @@ const STYLES = `
     color: var(--text-dim);
     margin-right: 6px;
   }
+  .finding-clip {
+    margin: 12px 0 0 34px;
+    max-width: 600px;
+  }
+  .finding-clip video {
+    width: 100%;
+    max-height: 360px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: #000;
+  }
+  .finding-clip .caption {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .finding-clip .caption a { color: var(--link); }
   .finding-screenshot {
     margin-top: 10px;
     border: 1px solid var(--rule);
@@ -906,6 +935,7 @@ function renderFindingsSection(
   findings: JudgeOutput['findings'],
   eventIndex: Map<string, TraceEvent>,
   screenshotForEvent: Map<string, string>,
+  clipsByFindingId: Record<string, string>,
 ): string {
   if (findings.length === 0) return '';
   const order: Record<string, number> = { blocker: 0, major: 1, minor: 2, nit: 3, suggestion: 4 };
@@ -913,7 +943,7 @@ function renderFindingsSection(
     (a, b) => (order[a.severity] ?? 99) - (order[b.severity] ?? 99),
   );
   const items = sorted
-    .map((f, i) => renderFinding(f, i + 1, eventIndex, screenshotForEvent))
+    .map((f, i) => renderFinding(f, i + 1, eventIndex, screenshotForEvent, clipsByFindingId))
     .join('');
   return `<section>
     <h2>Findings (${findings.length})</h2>
@@ -926,29 +956,59 @@ function renderFinding(
   num: number,
   eventIndex: Map<string, TraceEvent>,
   screenshotForEvent: Map<string, string>,
+  clipsByFindingId: Record<string, string>,
 ): string {
-  let inlineScreenshot = '';
-  for (const eid of f.evidence) {
-    const path = screenshotForEvent.get(eid);
-    if (path) {
-      inlineScreenshot = `<div class="finding-screenshot">
-        <a href="${escapeAttr(path)}" target="_blank" rel="noopener">
-          <img src="${escapeAttr(path)}" alt="Screenshot evidence" loading="lazy">
-        </a>
-        <div class="caption">
-          <span>at ${escapeHtml(eid)}</span>
-          <a href="${escapeAttr(path)}" target="_blank" rel="noopener">open full size</a>
-        </div>
-      </div>`;
-      break;
+  // Phase 6 F3: prefer a per-finding video clip when available; fall back to
+  // the first cited-event screenshot. The clip is more useful — it shows the
+  // actual interaction window — but small or thin findings may only get a
+  // still frame.
+  let inlineEvidence = '';
+  const clipPath = clipsByFindingId[f.id];
+  if (clipPath && /\.(webm|mp4)$/i.test(clipPath)) {
+    inlineEvidence = `<div class="finding-clip">
+      <video controls preload="metadata" src="${escapeAttr(clipPath)}"></video>
+      <div class="caption">
+        <span>clip for ${escapeHtml(f.id)}</span>
+        <a href="${escapeAttr(clipPath)}" target="_blank" rel="noopener">open full</a>
+      </div>
+    </div>`;
+  } else if (clipPath) {
+    // sliceEvidence returned a screenshot path (kind='screenshot' fallback).
+    inlineEvidence = `<div class="finding-screenshot">
+      <a href="${escapeAttr(clipPath)}" target="_blank" rel="noopener">
+        <img src="${escapeAttr(clipPath)}" alt="Evidence for ${escapeAttr(f.id)}" loading="lazy">
+      </a>
+      <div class="caption">
+        <span>screenshot for ${escapeHtml(f.id)}</span>
+        <a href="${escapeAttr(clipPath)}" target="_blank" rel="noopener">open full</a>
+      </div>
+    </div>`;
+  } else {
+    // Original Phase 5 behavior: pick the first event-keyed screenshot.
+    for (const eid of f.evidence) {
+      const path = screenshotForEvent.get(eid);
+      if (path) {
+        inlineEvidence = `<div class="finding-screenshot">
+          <a href="${escapeAttr(path)}" target="_blank" rel="noopener">
+            <img src="${escapeAttr(path)}" alt="Screenshot evidence" loading="lazy">
+          </a>
+          <div class="caption">
+            <span>at ${escapeHtml(eid)}</span>
+            <a href="${escapeAttr(path)}" target="_blank" rel="noopener">open full size</a>
+          </div>
+        </div>`;
+        break;
+      }
     }
   }
+  const inlineScreenshot = inlineEvidence;
 
   return `<li>
     <div class="finding-head">
       <span class="finding-num">${num}.</span>
       <span class="sev-tag sev-${escapeHtml(f.severity)}">${escapeHtml(f.severity)}</span>
       ${f.unverified_backing ? '<span class="unverified-tag" title="The validator could not confirm a backing event for this finding; severity was downgraded.">unverified</span>' : ''}
+      ${f.likely_explorer_error ? '<span class="unverified-tag explorer-error" title="The only backing for this finding was a failed action that looks like the Explorer using a bad selector, not an app bug.">likely-explorer-error</span>' : ''}
       <span class="cat-tag">${escapeHtml(f.category)}</span>
       <span class="fid">${escapeHtml(f.id)}</span>
     </div>

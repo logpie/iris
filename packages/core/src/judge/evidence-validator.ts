@@ -7,6 +7,12 @@
 // This is the load-bearing step against Judge hallucination. We did not use
 // an LLM to validate because (a) Otto needs to trust the result deterministically
 // and (b) an LLM validator is just another fallible model in the loop.
+//
+// Phase 6 F1: distinguish Explorer selector-miss from genuine app failures.
+// A failed action_result with "strict mode violation" or "resolved to 0
+// elements" is the Explorer using a bad selector, not the app being broken.
+// And if the same tool succeeded elsewhere in the trace, the original failure
+// was a transient Explorer error and shouldn't count as backing.
 
 import type { JudgeFinding, JudgeOutput } from '../judge/judge.js';
 import type { TraceEvent } from '../trace/schema.js';
@@ -37,9 +43,80 @@ function requiresBacking(severity: JudgeFinding['severity']): boolean {
   return severity !== 'suggestion';
 }
 
+// Phase 6 F1: error patterns that signal Explorer selector-miss, NOT app bug.
+// These come from real Playwright errors captured in Phase 5 dogfood traces.
+const SELECTOR_MISS_PATTERNS: RegExp[] = [
+  /strict mode violation/i,
+  /resolved to \d+ elements/i,
+  /no element found/i,
+  /Element is not attached to the DOM/i,
+  /Target page, context or browser has been closed/i,
+];
+
+// Config / setup errors — neither app bugs nor selector errors. The adapter
+// is in a bad state.
+const ADAPTER_CONFIG_ERROR_PATTERNS: RegExp[] = [
+  /requires an LlmClient/i,
+  /adapter not started/i,
+  /unknown tool:/i,
+];
+
+function isSelectorMissError(error?: string): boolean {
+  if (!error) return false;
+  return SELECTOR_MISS_PATTERNS.some((p) => p.test(error));
+}
+
+function isAdapterConfigError(error?: string): boolean {
+  if (!error) return false;
+  return ADAPTER_CONFIG_ERROR_PATTERNS.some((p) => p.test(error));
+}
+
+interface TraceContext {
+  toolSuccessByTool: Map<string, number[]>; // tool -> indices where it succeeded
+}
+
+function buildTraceContext(trace: TraceEvent[]): TraceContext {
+  const toolSuccessByTool = new Map<string, number[]>();
+  for (let i = 0; i < trace.length; i++) {
+    const e = trace[i];
+    if (!e || e.kind !== 'action_result') continue;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    if (p.ok !== true) continue;
+    const tool = String(p.tool ?? '');
+    if (!tool) continue;
+    const arr = toolSuccessByTool.get(tool) ?? [];
+    arr.push(i);
+    toolSuccessByTool.set(tool, arr);
+  }
+  return { toolSuccessByTool };
+}
+
+// Whether a failed action_result at index `idx` was likely an Explorer error
+// rather than an app bug. True if:
+//  - the error message matches a known selector-miss pattern, OR
+//  - the same tool succeeded within ±5 events around this failure
+//    (Explorer retried with a different selector and succeeded; the failure
+//    was transient Explorer behavior, not an app defect).
+function isLikelyExplorerError(e: TraceEvent, idx: number, ctx: TraceContext): boolean {
+  const p = (e.payload ?? {}) as Record<string, unknown>;
+  const error = p.error as string | undefined;
+  if (isAdapterConfigError(error)) return true;
+  if (isSelectorMissError(error)) return true;
+  // Same tool succeeded within ±5 events of this failure?
+  const tool = String(p.tool ?? '');
+  const successes = ctx.toolSuccessByTool.get(tool);
+  if (successes) {
+    for (const si of successes) {
+      if (Math.abs(si - idx) <= 5) return true;
+    }
+  }
+  return false;
+}
+
 export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]): ValidationOutput {
   const eventById = new Map<string, TraceEvent>();
   for (const e of trace) eventById.set(e.id, e);
+  const ctx = buildTraceContext(trace);
 
   const kept: JudgeFinding[] = [];
   const discarded: DiscardedFinding[] = [];
@@ -60,13 +137,18 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
       verified++;
       continue;
     }
-    const backed = hasBackingEvidence(validIds, trace, f.category);
-    if (backed) {
+    const result = checkBacking(validIds, trace, ctx, f.category);
+    if (result.backed) {
       kept.push({ ...f, unverified_backing: false });
       verified++;
     } else {
       const newSev = DOWNGRADE[f.severity] ?? f.severity;
-      kept.push({ ...f, severity: newSev, unverified_backing: true });
+      kept.push({
+        ...f,
+        severity: newSev,
+        unverified_backing: true,
+        ...(result.likelyExplorerError ? { likely_explorer_error: true } : {}),
+      });
       downgraded++;
     }
   }
@@ -78,80 +160,96 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
   };
 }
 
+interface BackingResult {
+  backed: boolean;
+  // Phase 6 F1: if the only "backing" we found was a failed action_result
+  // that looks like an Explorer selector-miss, flag it so the report can
+  // tell the user this finding is probably about the Explorer, not the app.
+  likelyExplorerError: boolean;
+}
+
 // Whether at least one of the cited events (within a ±2-turn window) provides
 // concrete backing. Real trace kinds are documented in
 // `packages/core/src/trace/schema.ts`. Probe results are payloads with shape
 // `{probe, summary: {violations?|error_count?|failure_count?}, data}`.
-function hasBackingEvidence(citedIds: string[], trace: TraceEvent[], category: string): boolean {
+function checkBacking(
+  citedIds: string[],
+  trace: TraceEvent[],
+  ctx: TraceContext,
+  category: string,
+): BackingResult {
   const indices = citedIds.map((id) => trace.findIndex((e) => e.id === id)).filter((i) => i >= 0);
+  let sawSelectorMissOnly = false;
   for (const idx of indices) {
     const lo = Math.max(0, idx - 2);
     const hi = Math.min(trace.length, idx + 3);
     for (let i = lo; i < hi; i++) {
       const e = trace[i];
       if (!e) continue;
-      if (eventIsBacking(e, category)) return true;
+      const verdict = eventBackingVerdict(e, i, ctx, category);
+      if (verdict === 'backing') return { backed: true, likelyExplorerError: false };
+      if (verdict === 'selector_miss') sawSelectorMissOnly = true;
     }
   }
-  return false;
+  return { backed: false, likelyExplorerError: sawSelectorMissOnly };
 }
 
-function eventIsBacking(e: TraceEvent, category: string): boolean {
+type BackingVerdict = 'backing' | 'selector_miss' | 'not_backing';
+
+function eventBackingVerdict(
+  e: TraceEvent,
+  idx: number,
+  ctx: TraceContext,
+  category: string,
+): BackingVerdict {
   const p = (e.payload ?? {}) as Record<string, unknown>;
 
   switch (e.kind) {
-    // Live tentative findings count — explorer flagged the issue in real time,
-    // not the Judge inventing it from a trace digest.
     case 'tentative_finding':
-      return true;
-    // Hypotheses are explorer-side beliefs with evidence; treat as backing.
     case 'hypothesis':
-      return true;
-    // Observations are DOM dumps — substantive backing when non-empty.
+      return 'backing';
     case 'observation': {
       const summary = (p.summary as string) ?? '';
-      return summary.length > 20;
+      return summary.length > 20 ? 'backing' : 'not_backing';
     }
-    // Evidence events carry screenshot / clip / video refs.
     case 'evidence':
-      return !!(p.screenshot || p.clip || p.video || p.kind);
-    // Action results that produced screenshot refs or that failed.
+      return p.screenshot || p.clip || p.video || p.kind ? 'backing' : 'not_backing';
     case 'action_result': {
-      if (p.ok === false) return true;
-      const refs = p.evidence_refs;
-      return Array.isArray(refs) && refs.length > 0;
+      // Successful action with evidence_refs (screenshot etc) is backing.
+      if (p.ok === true) {
+        const refs = p.evidence_refs;
+        return Array.isArray(refs) && refs.length > 0 ? 'backing' : 'not_backing';
+      }
+      // Failed action. Phase 6 F1: distinguish selector-miss from real bug.
+      if (isLikelyExplorerError(e, idx, ctx)) return 'selector_miss';
+      // Genuine app failure (timeout on an existing element, intercepted, etc).
+      return 'backing';
     }
-    // Probe results: inspect the probe-specific summary shape. The real shapes
-    // (verified against packages/adapter-web/src/probes/) are:
-    //   axe:                    summary.violations: number (count)
-    //   console_errors_since:   summary.error_count: number
-    //   network_failures_since: summary.failure_count: number
     case 'probe_result': {
       const probe = p.probe as string | undefined;
       const summary = (p.summary as Record<string, unknown>) ?? {};
       if (probe === 'axe' && typeof summary.violations === 'number' && summary.violations > 0) {
-        return true;
+        return 'backing';
       }
       if (
         probe === 'console_errors_since' &&
         typeof summary.error_count === 'number' &&
         summary.error_count > 0
       ) {
-        return true;
+        return 'backing';
       }
       if (
         probe === 'network_failures_since' &&
         typeof summary.failure_count === 'number' &&
         summary.failure_count > 0
       ) {
-        return true;
+        return 'backing';
       }
-      // Lighthouse: any execution counts as backing for perf-category findings.
-      if (category === 'perf' && probe === 'lighthouse') return true;
-      return false;
+      if (category === 'perf' && probe === 'lighthouse') return 'backing';
+      return 'not_backing';
     }
     default:
-      return false;
+      return 'not_backing';
   }
 }
 

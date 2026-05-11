@@ -288,6 +288,16 @@ export class WebTargetAdapter implements TargetAdapter {
     return { ok: false, probe: name, error: `unknown probe: ${name}` };
   }
 
+  // Phase 6 F3: orchestrator can inject the {event_id → ts} map built from
+  // trace.jsonl (the trace events use ULID ids; the adapter's internal
+  // eventTimestamps map is keyed by observation_ref). Merging these gives
+  // sliceEvidence enough to clip videos for findings citing trace event ids.
+  injectEventTimestamps(extra: Record<string, number>): void {
+    for (const [id, ts] of Object.entries(extra)) {
+      this.eventTimestamps[id] = ts;
+    }
+  }
+
   async sliceEvidence(refs: EvidenceRef[]): Promise<EvidenceFile[]> {
     const video = findRunVideo(this.videoDir);
     if (video) {

@@ -5,6 +5,7 @@ import type { RubricProfile } from '@iris/rubrics';
 import { ulid } from 'ulid';
 import { Explorer, type ExplorerResult } from '../explorer/explorer.js';
 import type { PersonaName } from '../explorer/personas/index.js';
+import { judgeWithEnsemble } from '../judge/ensemble.js';
 import { validateFindings } from '../judge/evidence-validator.js';
 import { Judge, type JudgeOutput } from '../judge/judge.js';
 import type { LlmClient } from '../llm/client.js';
@@ -38,6 +39,8 @@ export interface OrchestratorRunConfig {
   free_exploration_steps?: number;
   no_preflight?: boolean;
   preflight_timeout_s?: number;
+  // Phase 6 additions
+  judge_ensemble?: boolean;
 }
 
 export interface OrchestratorResult {
@@ -239,18 +242,37 @@ export class Orchestrator {
     let judgeOutput: JudgeOutput;
     let traceEvents: Awaited<ReturnType<typeof readTraceArray>> = [];
     try {
-      judgeOutput = await judge.run({
-        trace_path: tracePath,
-        ...(specText !== undefined ? { spec_text: specText } : {}),
-        ...(interpreted ? { spec_goals: interpreted.goals } : {}),
-        rubric_profiles: config.rubric_profiles,
-        model: config.judge_model,
-      });
+      // Phase 6 F2: optional ensemble — two parallel Judge calls, intersect
+      // critical findings, average scores. Reduces variance on borderline
+      // ship-decisions. Doubles Judge cost when enabled.
+      if (config.judge_ensemble) {
+        traceEvents = await readTraceArray(tracePath);
+        const ensembleResult = await judgeWithEnsemble(
+          judge,
+          {
+            trace_path: tracePath,
+            ...(specText !== undefined ? { spec_text: specText } : {}),
+            ...(interpreted ? { spec_goals: interpreted.goals } : {}),
+            rubric_profiles: config.rubric_profiles,
+            model: config.judge_model,
+          },
+          traceEvents,
+        );
+        judgeOutput = ensembleResult.output;
+      } else {
+        judgeOutput = await judge.run({
+          trace_path: tracePath,
+          ...(specText !== undefined ? { spec_text: specText } : {}),
+          ...(interpreted ? { spec_goals: interpreted.goals } : {}),
+          rubric_profiles: config.rubric_profiles,
+          model: config.judge_model,
+        });
+      }
 
       // Phase 5 G3: validate findings against the trace. Deterministic step;
       // drops findings whose cited event ids don't exist and downgrades severe
       // findings without concrete backing.
-      traceEvents = await readTraceArray(tracePath);
+      if (traceEvents.length === 0) traceEvents = await readTraceArray(tracePath);
       const validation = validateFindings(judgeOutput.findings, traceEvents);
       judgeOutput = {
         ...judgeOutput,
@@ -293,6 +315,37 @@ export class Orchestrator {
       };
     }
 
+    // 7.5. Phase 6 F3: per-finding video clips. After validator, before report.
+    // Build EvidenceRef[] from each kept finding's cited trace event IDs.
+    // Inject the {event_id → ts} map so the adapter can compute clip windows
+    // for events the Judge cites (which are ULIDs from trace.jsonl, not the
+    // observation_refs the adapter tracks internally).
+    const clipPaths: Record<string, string> = {};
+    if (this.deps.adapter.injectEventTimestamps && this.deps.adapter.sliceEvidence) {
+      const tsMap: Record<string, number> = {};
+      for (const e of traceEvents) tsMap[e.id] = e.ts;
+      this.deps.adapter.injectEventTimestamps(tsMap);
+      const refs = judgeOutput.findings
+        .filter((f) => f.evidence.length > 0)
+        .map((f) => ({ finding_id: f.id, event_ids: f.evidence }));
+      if (refs.length > 0) {
+        try {
+          const evidenceFiles = await this.deps.adapter.sliceEvidence(refs);
+          for (const ef of evidenceFiles) {
+            if (ef.kind === 'video' || ef.kind === 'screenshot') {
+              clipPaths[ef.finding_id] = ef.path;
+            }
+          }
+        } catch (err) {
+          // Slicing is best-effort. Don't fail the run if ffmpeg breaks.
+          writeFileSync(
+            join(config.out_dir, 'clips-error.txt'),
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+    }
+
     // 8. Build report.json
     const endedAt = new Date();
     const duration_s = (Date.now() - startMs) / 1000;
@@ -324,6 +377,7 @@ export class Orchestrator {
         ...(artifacts.artifact_files.full_recording
           ? { video: artifacts.artifact_files.full_recording }
           : {}),
+        ...(Object.keys(clipPaths).length > 0 ? { clips: clipPaths } : {}),
       },
     });
 

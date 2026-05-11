@@ -104,6 +104,12 @@ export interface TargetAdapter {
   // Phase 5: optional preflight probe. Adapters that don't implement it
   // skip the preflight phase (treated as pass).
   preflightProbe?(opts: { timeoutS: number }): Promise<PreflightProbe>;
+
+  // Phase 6 F3: optional. Orchestrators that read trace.jsonl directly can
+  // hand the adapter the {event_id → wall-clock ts} map needed to compute
+  // per-finding video clip windows. Adapters that don't support clipping
+  // can omit this.
+  injectEventTimestamps?(extra: Record<string, number>): void;
 }
 
 export * from './conformance.js';

@@ -102,6 +102,87 @@ describe('validateFindings', () => {
     expect(out.summary.downgraded).toBe(2);
   });
 
+  // Phase 6 F1 ----------------------------------------------------
+
+  it('treats strict-mode-violation action_result as Explorer error, not backing', () => {
+    const trace = [
+      ev('E1', 'action', { tool: 'click' }),
+      ev('E2', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error: "locator.click: Error: strict mode violation: locator('h1') resolved to 2 elements",
+      }),
+    ];
+    const out = validateFindings([finding({ severity: 'major', evidence: ['E2'] })], trace);
+    // Major → downgrade to minor + likely_explorer_error
+    expect(out.kept[0]?.severity).toBe('minor');
+    expect(out.kept[0]?.unverified_backing).toBe(true);
+    expect(out.kept[0]?.likely_explorer_error).toBe(true);
+  });
+
+  it('treats "resolved to 0 elements" as Explorer error', () => {
+    const trace = [
+      ev('E1', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error: "locator('button.nope') resolved to 0 elements",
+      }),
+    ];
+    const out = validateFindings([finding({ severity: 'major', evidence: ['E1'] })], trace);
+    expect(out.kept[0]?.likely_explorer_error).toBe(true);
+  });
+
+  it('treats adapter-config errors (vision_describe) as Explorer error', () => {
+    const trace = [
+      ev('E1', 'action_result', {
+        tool: 'vision_describe',
+        ok: false,
+        error: 'vision_describe requires an LlmClient — pass --persona',
+      }),
+    ];
+    const out = validateFindings([finding({ severity: 'major', evidence: ['E1'] })], trace);
+    expect(out.kept[0]?.likely_explorer_error).toBe(true);
+  });
+
+  it('treats timeout failure as real app evidence (not Explorer error)', () => {
+    const trace = [
+      ev('E1', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error: 'locator.click: Timeout 5000ms exceeded.',
+      }),
+    ];
+    const out = validateFindings([finding({ severity: 'major', evidence: ['E1'] })], trace);
+    // Timeout is genuine backing — element was found but couldn't be clicked.
+    expect(out.kept[0]?.severity).toBe('major');
+    expect(out.kept[0]?.unverified_backing).toBe(false);
+  });
+
+  it('cancels backing when same tool succeeded within ±5 events', () => {
+    const trace = [
+      ev('E1', 'action_result', { tool: 'click', ok: false, error: 'something failed' }),
+      ev('E2', 'action_result', { tool: 'click', ok: true, evidence_refs: ['/screenshot.png'] }),
+    ];
+    const out = validateFindings([finding({ severity: 'major', evidence: ['E1'] })], trace);
+    // E1 failure cancelled by E2 success. But E2 itself is in the ±2 window
+    // and has evidence_refs → counts as backing.
+    expect(out.kept[0]?.unverified_backing).toBe(false);
+  });
+
+  it('marks finding as likely_explorer_error when only selector-miss in window', () => {
+    const trace = [
+      ev('E0', 'action', { tool: 'click' }),
+      ev('E1', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error: 'strict mode violation: resolved to 2 elements',
+      }),
+      ev('E2', 'action', { tool: 'click' }),
+    ];
+    const out = validateFindings([finding({ severity: 'major', evidence: ['E1'] })], trace);
+    expect(out.kept[0]?.likely_explorer_error).toBe(true);
+  });
+
   it('backing window extends ±2 events around each cited event', () => {
     const trace = [
       ev('E1', 'action'),

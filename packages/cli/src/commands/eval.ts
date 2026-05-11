@@ -40,6 +40,10 @@ export function evalCommand(): Command {
     )
     .option('--no-preflight', 'skip preflight checks (debugging only) (Phase 5)')
     .option(
+      '--judge-ensemble',
+      'run Judge twice in parallel and intersect critical findings (Phase 6 F2). Reduces score variance on borderline ship decisions. Doubles Judge cost.',
+    )
+    .option(
       '--max-cost-usd <n>',
       'abort when LLM cost exceeds this',
       (s) => Number.parseFloat(s),
@@ -158,6 +162,7 @@ export function evalCommand(): Command {
             no_html: opts.html === false,
             no_preflight: opts.preflight === false,
             preflight_timeout_s: opts.preflightTimeoutS as number,
+            judge_ensemble: !!opts.judgeEnsemble,
             ...(opts.persona !== undefined ? { persona: opts.persona as string } : {}),
           },
           adapter,

@@ -43,6 +43,8 @@ export interface AgentSdkRunConfig {
   /** Phase 5: preflight skip-flag for debugging. */
   no_preflight?: boolean;
   preflight_timeout_s?: number;
+  /** Phase 6 F2: run Judge twice in parallel and intersect critical findings. */
+  judge_ensemble?: boolean;
 }
 
 export interface AgentSdkRunResult {
@@ -290,17 +292,47 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
 
   let judgeOutput: judgeMod.JudgeOutput;
   try {
-    const judgeResp = await runAgentSdkSingleShot({
-      systemPrompt: judgeMod.JUDGE_SYSTEM,
-      userPrompt: judgeUserPrompt,
-      model: config.judge_model,
-      maxTokens: 8000,
-    });
-    totalCost += judgeResp.cost_usd;
-    process.stderr.write(`iris: Judge done — $${judgeResp.cost_usd.toFixed(2)}\n`);
-    const jsonMatch = judgeResp.text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('Judge returned no JSON');
-    judgeOutput = judgeMod.JudgeOutputSchema.parse(JSON.parse(jsonMatch[0]));
+    // Phase 6 F2: if ensemble enabled, run Judge twice in parallel and merge.
+    if (config.judge_ensemble) {
+      process.stderr.write('iris: Judge ensemble (2 parallel passes)...\n');
+      const [r1, r2] = await Promise.all([
+        runAgentSdkSingleShot({
+          systemPrompt: judgeMod.JUDGE_SYSTEM,
+          userPrompt: judgeUserPrompt,
+          model: config.judge_model,
+          maxTokens: 8000,
+        }),
+        runAgentSdkSingleShot({
+          systemPrompt: judgeMod.JUDGE_SYSTEM,
+          userPrompt: judgeUserPrompt,
+          model: config.judge_model,
+          maxTokens: 8000,
+        }),
+      ]);
+      totalCost += r1.cost_usd + r2.cost_usd;
+      const m1 = r1.text.match(/\{[\s\S]*\}/);
+      const m2 = r2.text.match(/\{[\s\S]*\}/);
+      if (!m1 || !m2) throw new Error('Judge ensemble: one or both passes returned no JSON');
+      const p1 = judgeMod.JudgeOutputSchema.parse(JSON.parse(m1[0]));
+      const p2 = judgeMod.JudgeOutputSchema.parse(JSON.parse(m2[0]));
+      const merged = judgeMod.mergeJudgePasses(p1, p2, events);
+      judgeOutput = merged.output;
+      process.stderr.write(
+        `iris: Judge ensemble — ${merged.metadata.agreed_critical} agreed critical, ${merged.metadata.disagreed_critical} disagreed; $${(r1.cost_usd + r2.cost_usd).toFixed(2)}\n`,
+      );
+    } else {
+      const judgeResp = await runAgentSdkSingleShot({
+        systemPrompt: judgeMod.JUDGE_SYSTEM,
+        userPrompt: judgeUserPrompt,
+        model: config.judge_model,
+        maxTokens: 8000,
+      });
+      totalCost += judgeResp.cost_usd;
+      process.stderr.write(`iris: Judge done — $${judgeResp.cost_usd.toFixed(2)}\n`);
+      const jsonMatch = judgeResp.text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('Judge returned no JSON');
+      judgeOutput = judgeMod.JudgeOutputSchema.parse(JSON.parse(jsonMatch[0]));
+    }
 
     // Phase 5 G3: validate findings against the trace.
     const validation = judgeMod.validateFindings(judgeOutput.findings, events);
@@ -345,6 +377,33 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
     };
   }
 
+  // 7.5. Phase 6 F3: per-finding video clips.
+  const clipPaths: Record<string, string> = {};
+  if (adapter.injectEventTimestamps && adapter.sliceEvidence) {
+    const tsMap: Record<string, number> = {};
+    for (const e of events) tsMap[e.id] = e.ts;
+    adapter.injectEventTimestamps(tsMap);
+    const refs = judgeOutput.findings
+      .filter((f) => f.evidence.length > 0)
+      .map((f) => ({ finding_id: f.id, event_ids: f.evidence }));
+    if (refs.length > 0) {
+      try {
+        const evidenceFiles = await adapter.sliceEvidence(refs);
+        for (const ef of evidenceFiles) {
+          if (ef.kind === 'video' || ef.kind === 'screenshot') {
+            clipPaths[ef.finding_id] = ef.path;
+          }
+        }
+        process.stderr.write(`iris: sliced ${evidenceFiles.length} per-finding evidence files\n`);
+      } catch (err) {
+        writeFileSync(
+          join(config.out_dir, 'clips-error.txt'),
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+  }
+
   // 8. Build report
   const endedAt = new Date();
   const duration_s = (Date.now() - startMs) / 1000;
@@ -374,6 +433,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       ...(artifacts.artifact_files.full_recording
         ? { video: artifacts.artifact_files.full_recording }
         : {}),
+      ...(Object.keys(clipPaths).length > 0 ? { clips: clipPaths } : {}),
     },
   });
 

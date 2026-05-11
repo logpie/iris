@@ -16,6 +16,10 @@ export const JudgeFindingSchema = z.object({
   // Phase 5 additions, set by validator/identity stages (not the Judge LLM).
   unverified_backing: z.boolean().optional(),
   finding_hash: z.string().optional(),
+  // Phase 6 F1: set by validator when the only "backing" was a failed
+  // action_result that looks like an Explorer selector-miss rather than a
+  // real app bug. Renders an inline tag in the report.
+  likely_explorer_error: z.boolean().optional(),
 });
 export type JudgeFinding = z.infer<typeof JudgeFindingSchema>;
 
