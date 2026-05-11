@@ -394,9 +394,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
             clipPaths[ef.finding_id] = ef.path;
           }
         }
-        process.stderr.write(
-          `iris: sliced ${evidenceFiles.length} per-finding evidence files\n`,
-        );
+        process.stderr.write(`iris: sliced ${evidenceFiles.length} per-finding evidence files\n`);
       } catch (err) {
         writeFileSync(
           join(config.out_dir, 'clips-error.txt'),
