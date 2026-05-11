@@ -20,7 +20,7 @@ export function reportCommand(): Command {
       const report = JSON.parse(readFileSync(reportPath, 'utf8')) as ReportJson;
       writeFileSync(join(dir, 'report.md'), reportMod.buildReportMd(report));
       if (opts.html !== false) {
-        writeFileSync(join(dir, 'report.html'), reportMod.buildReportHtml(report));
+        writeFileSync(join(dir, 'report.html'), reportMod.buildReportHtml(report, { runDir: dir }));
       }
       process.stdout.write(`iris report: re-rendered ${runDir}/report.{md,html}\n`);
     });

@@ -248,7 +248,7 @@ Budget: ~${config.max_steps} steps, $${config.max_cost_usd.toFixed(2)} max cost.
   writeFileSync(join(config.out_dir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(config.out_dir, 'report.md'), reportMod.buildReportMd(report));
   if (!config.no_html) {
-    writeFileSync(join(config.out_dir, 'report.html'), reportMod.buildReportHtml(report));
+    writeFileSync(join(config.out_dir, 'report.html'), reportMod.buildReportHtml(report, { runDir: config.out_dir }));
   }
 
   let exitCode: 0 | 1 | 2 | 3 = 0;
