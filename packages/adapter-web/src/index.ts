@@ -5,7 +5,9 @@ import type {
   AdapterConfig,
   EvidenceFile,
   EvidenceRef,
+  InteractionKit,
   Observation,
+  OutcomeContract,
   PreflightProbe,
   ProbeResult,
   ProbeSpec,
@@ -15,6 +17,7 @@ import type {
   ToolSpec,
 } from '@iris/adapter-types';
 import type { llm } from '@iris/core';
+import { WEB_INTERACTION_KIT, WEB_OUTCOME_CONTRACT } from './contract.js';
 import { domOutline } from './dom/snapshot.js';
 import { WebLifecycle } from './lifecycle.js';
 import { runAxe } from './probes/axe.js';
@@ -30,8 +33,20 @@ import {
   sliceEvidenceScreenshots,
 } from './recording/index.js';
 import { click, hover, press, type as typeText } from './tools/action.js';
+import {
+  doubleClick,
+  hoverWait,
+  rightClick,
+  visionDoubleClick,
+  visionHoverWait,
+  visionRightClick,
+} from './tools/click-variants.js';
+import { drag, visionDrag } from './tools/drag.js';
+import { keyChord } from './tools/key-chord.js';
 import { back, forward, navigate, reload, scroll, waitFor } from './tools/navigation.js';
+import { paste, visionPaste } from './tools/paste.js';
 import { WEB_TOOL_SPECS } from './tools/tool-spec.js';
+import { upload } from './tools/upload.js';
 import { screenshot, visionClick, visionDescribe } from './tools/vision.js';
 
 // Phase 8: vision_describer is a transport-agnostic callback the adapter uses
@@ -252,6 +267,39 @@ export class WebTargetAdapter implements TargetAdapter {
           ...(args as { region?: string; model?: string }),
         });
       }
+      // Phase 9 — new interaction primitives.
+      case 'drag':
+        return drag(page, args as { selector: string; dx: number; dy: number; hold_ms?: number });
+      case 'vision_drag':
+        return visionDrag(
+          page,
+          args as {
+            from: { x: number; y: number };
+            to: { x: number; y: number };
+            hold_ms?: number;
+            reason?: string;
+          },
+        );
+      case 'key_chord':
+        return keyChord(page, args as { keys: string[] });
+      case 'paste':
+        return paste(page, args as { selector: string; text: string });
+      case 'vision_paste':
+        return visionPaste(page, args as { x: number; y: number; text: string });
+      case 'right_click':
+        return rightClick(page, args as { selector: string });
+      case 'vision_right_click':
+        return visionRightClick(page, args as { x: number; y: number; reason?: string });
+      case 'double_click':
+        return doubleClick(page, args as { selector: string });
+      case 'vision_double_click':
+        return visionDoubleClick(page, args as { x: number; y: number; reason?: string });
+      case 'hover_wait':
+        return hoverWait(page, args as { selector: string; wait_ms?: number });
+      case 'vision_hover_wait':
+        return visionHoverWait(page, args as { x: number; y: number; wait_ms?: number });
+      case 'upload':
+        return upload(page, args as { selector: string; file_path?: string; mime?: string });
       default:
         return { ok: false, error: `unknown tool: ${name}` };
     }
@@ -279,15 +327,17 @@ export class WebTargetAdapter implements TargetAdapter {
       .evaluate(() => {
         const t = document.body?.innerText ?? '';
         // Normalize whitespace, drop runs of blank lines.
-        return t.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
+        return t
+          .replace(/[ \t]+/g, ' ')
+          .replace(/\n{2,}/g, '\n')
+          .trim();
       })
       .catch(() => '');
     const url = page.url();
     const title = await page.title();
     const outlinePart = outline.slice(0, 2500);
     const textPart = bodyText.slice(0, 3000);
-    const summary =
-      `${title}\n\n## VISIBLE TEXT\n${textPart}\n\n## OUTLINE\n${outlinePart}`.trim();
+    const summary = `${title}\n\n## VISIBLE TEXT\n${textPart}\n\n## OUTLINE\n${outlinePart}`.trim();
     return {
       observation_ref: ref,
       summary,
@@ -327,6 +377,18 @@ export class WebTargetAdapter implements TargetAdapter {
     for (const [id, ts] of Object.entries(extra)) {
       this.eventTimestamps[id] = ts;
     }
+  }
+
+  // Phase 9: declared interaction surface. Orchestrator emits this as an
+  // interaction_kit trace event at run start so the Judge sees the kit.
+  interactionKit(): InteractionKit {
+    return WEB_INTERACTION_KIT;
+  }
+
+  // Phase 9: outcome-evidence contract. Goal-claim validator uses this to
+  // verify the Judge's `verified` claims cite real outcome artifacts.
+  outcomeContract(): OutcomeContract {
+    return WEB_OUTCOME_CONTRACT;
   }
 
   async sliceEvidence(refs: EvidenceRef[]): Promise<EvidenceFile[]> {

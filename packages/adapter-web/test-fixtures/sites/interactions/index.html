@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Interactions — Iris fixture</title>
+  <style>
+    body { font-family: sans-serif; padding: 16px; }
+    #canvas { border: 1px solid #888; width: 320px; height: 200px; position: relative; user-select: none; }
+    #shape { display: none; position: absolute; background: steelblue; }
+    #ctx-target { padding: 8px; background: #eee; display: inline-block; }
+    #ctx-menu { display: none; position: absolute; background: white; border: 1px solid #888; padding: 4px; }
+    #dbl-target { padding: 8px; background: #eef; display: inline-block; }
+    #right-click-log, #double-click-log, #key-chord-log, #paste-log, #upload-log, #hover-log { margin-top: 8px; font-family: monospace; }
+    #hover-tip { display: none; background: yellow; padding: 4px; }
+  </style>
+  </head>
+  <body>
+    <h1>Interactions fixture</h1>
+
+    <section>
+      <h2>Drag</h2>
+      <div id="canvas"><div id="shape"></div></div>
+      <div id="drag-log"></div>
+    </section>
+
+    <section>
+      <h2>Right click</h2>
+      <div id="ctx-target">Right-click me</div>
+      <div id="ctx-menu">Menu open</div>
+      <div id="right-click-log"></div>
+    </section>
+
+    <section>
+      <h2>Double click</h2>
+      <div id="dbl-target">Double-click me</div>
+      <div id="double-click-log"></div>
+    </section>
+
+    <section>
+      <h2>Key chord</h2>
+      <input id="chord-input" type="text" placeholder="focus me">
+      <div id="key-chord-log"></div>
+    </section>
+
+    <section>
+      <h2>Paste</h2>
+      <textarea id="paste-target" rows="2" cols="40"></textarea>
+      <div id="paste-log"></div>
+    </section>
+
+    <section>
+      <h2>Upload</h2>
+      <input id="file-input" type="file">
+      <div id="upload-log"></div>
+    </section>
+
+    <section>
+      <h2>Hover-wait</h2>
+      <button id="hover-target">Hover me</button>
+      <div id="hover-tip">tooltip</div>
+      <div id="hover-log"></div>
+    </section>
+
+    <script>
+      // DRAG: mousedown on canvas → mousemove → mouseup creates a rectangle
+      // sized to the drag delta. This is a faithful mini-Excalidraw.
+      (function setupDrag() {
+        const canvas = document.getElementById('canvas');
+        const shape = document.getElementById('shape');
+        const log = document.getElementById('drag-log');
+        let start = null;
+        canvas.addEventListener('mousedown', (e) => {
+          const rect = canvas.getBoundingClientRect();
+          start = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        });
+        canvas.addEventListener('mousemove', (e) => {
+          if (!start) return;
+          const rect = canvas.getBoundingClientRect();
+          const cur = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          shape.style.display = 'block';
+          shape.style.left = Math.min(start.x, cur.x) + 'px';
+          shape.style.top = Math.min(start.y, cur.y) + 'px';
+          shape.style.width = Math.abs(cur.x - start.x) + 'px';
+          shape.style.height = Math.abs(cur.y - start.y) + 'px';
+        });
+        canvas.addEventListener('mouseup', (e) => {
+          if (!start) return;
+          const rect = canvas.getBoundingClientRect();
+          const cur = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          const w = Math.abs(cur.x - start.x);
+          const h = Math.abs(cur.y - start.y);
+          log.textContent = `shape:${w}x${h}`;
+          start = null;
+        });
+      })();
+
+      // RIGHT CLICK: opens a menu
+      (function setupRightClick() {
+        const t = document.getElementById('ctx-target');
+        const m = document.getElementById('ctx-menu');
+        const log = document.getElementById('right-click-log');
+        t.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          m.style.display = 'block';
+          m.style.left = e.clientX + 'px';
+          m.style.top = e.clientY + 'px';
+          log.textContent = 'context-menu-opened';
+        });
+      })();
+
+      // DOUBLE CLICK
+      (function setupDoubleClick() {
+        const t = document.getElementById('dbl-target');
+        const log = document.getElementById('double-click-log');
+        t.addEventListener('dblclick', () => { log.textContent = 'double-clicked'; });
+      })();
+
+      // KEY CHORD: log every keydown with modifier state
+      (function setupKeyChord() {
+        const inp = document.getElementById('chord-input');
+        const log = document.getElementById('key-chord-log');
+        inp.addEventListener('keydown', (e) => {
+          if (e.metaKey || e.ctrlKey) {
+            log.textContent = `chord:${(e.ctrlKey ? 'Ctrl+' : '') + (e.metaKey ? 'Meta+' : '')}${e.key}`;
+          }
+        });
+      })();
+
+      // PASTE: receive the paste event
+      (function setupPaste() {
+        const ta = document.getElementById('paste-target');
+        const log = document.getElementById('paste-log');
+        ta.addEventListener('paste', (e) => {
+          const text = e.clipboardData?.getData('text/plain') ?? '';
+          log.textContent = `pasted:${text}`;
+        });
+      })();
+
+      // UPLOAD
+      (function setupUpload() {
+        const f = document.getElementById('file-input');
+        const log = document.getElementById('upload-log');
+        f.addEventListener('change', () => {
+          const file = f.files?.[0];
+          log.textContent = file ? `uploaded:${file.name}:${file.size}` : 'no-file';
+        });
+      })();
+
+      // HOVER-WAIT: hover for ≥250ms reveals tooltip
+      (function setupHover() {
+        const b = document.getElementById('hover-target');
+        const tip = document.getElementById('hover-tip');
+        const log = document.getElementById('hover-log');
+        let t = null;
+        b.addEventListener('mouseenter', () => {
+          t = setTimeout(() => { tip.style.display = 'inline-block'; log.textContent = 'tooltip-shown'; }, 250);
+        });
+        b.addEventListener('mouseleave', () => {
+          if (t) clearTimeout(t);
+          tip.style.display = 'none';
+        });
+      })();
+    </script>
+  </body>
+</html>

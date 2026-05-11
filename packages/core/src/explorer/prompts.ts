@@ -34,6 +34,8 @@ Meta-tool guidance:
 - Use mark_surface_seen / note_surface_unexplored to maintain coverage.
 - Use step_done when a planned goal is satisfied.
 - Use goal_status when a spec goal is finished (verified/partial/blocked/skipped). Do NOT spend more than the per-goal budget on one goal — call goal_status and move on. If you don't, the system will auto-mark it as partial.
+- OUTCOME-vs-SIDE-EFFECT (Phase 9): before calling goal_status({status:"verified"}), confirm the user-visible OUTCOME exists. Tool-selected highlights, side-panels appearing, dialogs opening — those are side-effects of triggering an action, NOT proof the action succeeded. Right before claiming verified, call vision_describe with a region naming what should be present (e.g., region: "the canvas — describe any shapes visible by color, position, size"; region: "the table body — list each visible row"; region: "the form result area — quote any confirmation message"). If the description names the artifact your goal required, cite that vision_describe in your goal_status rationale. If the description does NOT name the artifact, call status:"partial" and note what was missing — do NOT claim verified.
+- For canvas drawing or any "create a shape/figure/diagram" goal, ALWAYS use drag or vision_drag, not click. A single click does NOT draw a shape.
 - Use give_up when stuck after multiple attempts (entire run; rarely needed if you use goal_status to skip individual goals).
 - Use done when all goals satisfied or you've completed a thorough exploration.`;
 

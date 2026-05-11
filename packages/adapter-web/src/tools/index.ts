@@ -2,3 +2,8 @@ export * from './action.js';
 export * from './navigation.js';
 export * from './vision.js';
 export * from './tool-spec.js';
+export * from './drag.js';
+export * from './key-chord.js';
+export * from './paste.js';
+export * from './click-variants.js';
+export * from './upload.js';

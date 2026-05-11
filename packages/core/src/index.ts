@@ -8,4 +8,5 @@ export * as orchestrator from './orchestrator/index.js';
 export * as explorer from './explorer/index.js';
 export * as preflight from './preflight/index.js';
 export * as diff from './diff/index.js';
+export * as adapter from './adapter/index.js';
 export { type PersonaName, PERSONAS, PERSONA_NAMES } from './explorer/personas/index.js';

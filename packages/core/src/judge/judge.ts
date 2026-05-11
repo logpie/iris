@@ -89,6 +89,15 @@ export const JudgeOutputSchema = z.object({
       )
       .default([]),
     summary: z.string(),
+    // Phase 9: populated by the post-Judge goal-claim validator. Optional so
+    // schema accepts both raw Judge output and post-validation reports.
+    goal_claim_validation: z
+      .object({
+        verified_kept: z.number().int().nonnegative(),
+        downgraded: z.number().int().nonnegative(),
+        downgrade_reasons: z.array(z.string()).default([]),
+      })
+      .optional(),
   }),
   coverage_review: z.object({
     surfaces_explored: z.number(),

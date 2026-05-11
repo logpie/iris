@@ -1,0 +1,169 @@
+// Phase 9: web adapter's InteractionKit declaration and OutcomeContract impl.
+//
+// InteractionKit: enumerate everything the web adapter can do, so the Judge
+// sees the surface area and the goal-claim validator can flag goals that
+// required a missing primitive.
+//
+// OutcomeContract: for `verified` goal claims, the contract returns a list of
+// screenshot artifacts taken AFTER the last successful interaction in the
+// goal window. The Judge is required to cite at least one of these as
+// evidence; if the only "evidence" is a side-effect (panel-appeared
+// vision_describe with no shape visible), the goal-claim validator downgrades.
+
+import type {
+  InteractionKit,
+  OutcomeArtifact,
+  OutcomeContract,
+  OutcomeContractTraceEvent,
+} from '@iris/adapter-types';
+
+export const WEB_INTERACTION_KIT: InteractionKit = {
+  kind: 'web',
+  primitives: [
+    { name: 'click', user_action: 'click' },
+    { name: 'type', user_action: 'type-text' },
+    { name: 'press', user_action: 'press-single-key' },
+    { name: 'key_chord', user_action: 'press-modifier-chord' },
+    { name: 'paste', user_action: 'paste-text' },
+    { name: 'hover', user_action: 'hover' },
+    { name: 'hover_wait', user_action: 'hover-and-wait' },
+    { name: 'right_click', user_action: 'right-click-context-menu' },
+    { name: 'double_click', user_action: 'double-click' },
+    { name: 'drag', user_action: 'click-drag-by-delta' },
+    {
+      name: 'vision_drag',
+      user_action: 'click-drag-coords',
+      coverage_note: 'required for canvas drawing — single click does NOT draw a shape',
+    },
+    { name: 'scroll', user_action: 'scroll' },
+    { name: 'upload', user_action: 'file-upload' },
+    { name: 'navigate', user_action: 'navigate-url' },
+    { name: 'back', user_action: 'browser-back' },
+    { name: 'forward', user_action: 'browser-forward' },
+    { name: 'reload', user_action: 'browser-reload' },
+    { name: 'screenshot', user_action: 'capture-screenshot' },
+    { name: 'vision_describe', user_action: 'describe-screen' },
+    { name: 'vision_click', user_action: 'click-coords' },
+    { name: 'vision_paste', user_action: 'paste-coords' },
+    { name: 'vision_right_click', user_action: 'right-click-coords' },
+    { name: 'vision_double_click', user_action: 'double-click-coords' },
+    { name: 'vision_hover_wait', user_action: 'hover-coords-wait' },
+  ],
+};
+
+// Tools whose successful action_result is an interaction with the product
+// (something a real user would do). screenshot/vision_describe are passive
+// observation tools, not interactions — outcomes are produced by interactions
+// not observations.
+const INTERACTION_TOOLS = new Set([
+  'click',
+  'type',
+  'press',
+  'key_chord',
+  'paste',
+  'hover',
+  'hover_wait',
+  'right_click',
+  'double_click',
+  'drag',
+  'vision_drag',
+  'scroll',
+  'upload',
+  'vision_click',
+  'vision_paste',
+  'vision_right_click',
+  'vision_double_click',
+  'vision_hover_wait',
+]);
+
+// Pure: given the goal window, locate outcome-shaped artifacts. For web,
+// outcomes are screenshots taken AFTER the last successful interaction.
+// A screenshot taken before any interaction is a "before" snapshot and
+// does not prove the goal succeeded.
+export function collectWebOutcomeEvidence(
+  goal_events: OutcomeContractTraceEvent[],
+): OutcomeArtifact[] {
+  // Find the index of the last successful interaction. We look at action_result
+  // events with ok=true whose paired action used an interaction tool.
+  let lastInteractionIdx = -1;
+  for (let i = 0; i < goal_events.length; i++) {
+    const e = goal_events[i];
+    if (!e) continue;
+    if (e.kind !== 'action_result') continue;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    if (p.ok !== true) continue;
+    const tool = String(p.tool ?? '');
+    if (!INTERACTION_TOOLS.has(tool)) continue;
+    lastInteractionIdx = i;
+  }
+  if (lastInteractionIdx === -1) return [];
+
+  const artifacts: OutcomeArtifact[] = [];
+  // Collect outcome evidence in events AT or AFTER the last interaction.
+  // Walk forward and pick:
+  //   - observation events (each carries a screenshot of post-interaction state)
+  //   - explicit screenshot action_results
+  //   - vision_describe action_results — these carry a `description` field
+  //     naming what the vision model saw on the post-interaction page. The
+  //     description IS the outcome evidence the Judge needs to cite.
+  //   - the paired `action` events that produced the above results — the
+  //     Judge often cites the `action` event id (not the action_result),
+  //     so accept both as equivalent.
+  for (let i = lastInteractionIdx; i < goal_events.length; i++) {
+    const e = goal_events[i];
+    if (!e) continue;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    if (e.kind === 'observation') {
+      const ssRef = (p.screenshot_ref as string | undefined) ?? '';
+      if (ssRef) {
+        artifacts.push({
+          kind: 'screenshot',
+          ref: ssRef,
+          note: 'post-interaction observation screenshot',
+        });
+      }
+      // Also accept the observation event_id itself as a citable ref — the
+      // Judge often cites event IDs rather than file paths.
+      artifacts.push({
+        kind: 'screenshot',
+        ref: e.id,
+        note: 'post-interaction observation event',
+      });
+    }
+    if (e.kind === 'action_result' && p.ok === true) {
+      const tool = String(p.tool ?? '');
+      if (tool === 'screenshot') {
+        const refs = (p.evidence_refs as string[] | undefined) ?? [];
+        for (const r of refs) {
+          artifacts.push({ kind: 'screenshot', ref: r, note: 'explicit screenshot action' });
+        }
+        artifacts.push({ kind: 'screenshot', ref: e.id, note: 'screenshot action event' });
+      }
+      if (tool === 'vision_describe') {
+        const description = (p.description as string | undefined) ?? '';
+        artifacts.push({
+          kind: 'screenshot',
+          ref: e.id,
+          note: description
+            ? `vision_describe: ${description.slice(0, 120)}`
+            : 'vision_describe action result',
+        });
+      }
+    }
+    // The Judge often cites the `action` event id rather than the
+    // corresponding action_result. Accept the action id for screenshot /
+    // vision_describe actions taken after the interaction.
+    if (e.kind === 'action') {
+      const tool = String(p.tool ?? '');
+      if (tool === 'screenshot' || tool === 'vision_describe') {
+        artifacts.push({ kind: 'screenshot', ref: e.id, note: `${tool} action event` });
+      }
+    }
+  }
+  return artifacts;
+}
+
+export const WEB_OUTCOME_CONTRACT: OutcomeContract = {
+  kind: 'web',
+  collectOutcomeEvidence: ({ goal_events }) => collectWebOutcomeEvidence(goal_events),
+};

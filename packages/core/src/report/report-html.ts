@@ -899,10 +899,24 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
     integrityLine = `<p class="integrity-line">Findings: ${parts.join(', ')}.</p>`;
   }
 
+  // Phase 9: goal-claim validation line — how many `verified` goal claims
+  // survived the outcome-evidence check. When downgrades > 0, this is the
+  // signal that the agent claimed wins it couldn't visually back up.
+  let goalClaimLine = '';
+  const gcv = report.spec_compliance?.goal_claim_validation;
+  if (gcv && gcv.verified_kept + gcv.downgraded > 0) {
+    const total = gcv.verified_kept + gcv.downgraded;
+    const parts: string[] = [];
+    parts.push(`${gcv.verified_kept}/${total} kept verified`);
+    if (gcv.downgraded > 0) parts.push(`${gcv.downgraded} downgraded to partial`);
+    goalClaimLine = `<p class="integrity-line">Goal claims: ${parts.join(', ')}.</p>`;
+  }
+
   return `<section class="tldr ${toneClass}">
     <p>${sentences.join(' ')}</p>
     ${scoreLine}
     ${integrityLine}
+    ${goalClaimLine}
   </section>`;
 }
 

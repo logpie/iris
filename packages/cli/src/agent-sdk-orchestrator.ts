@@ -195,6 +195,21 @@ export async function runIrisViaSdk(
     process.stderr.write('iris: preflight passed\n');
   }
 
+  // 4.6. Phase 9: emit interaction_kit event for the Judge.
+  if (adapter.interactionKit) {
+    const kit = adapter.interactionKit();
+    await traceWriter.append({
+      v: 1,
+      id: ulid(),
+      ts: Date.now() / 1000,
+      step: 0,
+      target_kind: 'web',
+      kind: 'interaction_kit',
+      actor: 'system',
+      payload: { kind: kit.kind, primitives: kit.primitives },
+    });
+  }
+
   // 5. Explorer via Agent SDK
 
   const personaName = (config.persona ?? 'default') as
@@ -346,6 +361,25 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       process.stderr.write(
         `iris: validator — ${validation.summary.verified} verified, ${validation.summary.downgraded} downgraded, ${validation.summary.discarded} discarded\n`,
       );
+    }
+
+    // Phase 9: goal-claim validator. Downgrades verified→partial when no
+    // outcome artifact is cited in the goal window.
+    if (adapter.outcomeContract) {
+      const goalClaimResult = judgeMod.validateGoalClaims({
+        judge: judgeOutput,
+        trace: events,
+        outcome_contract: adapter.outcomeContract(),
+      });
+      judgeOutput = judgeMod.applyGoalClaimValidationToJudgeOutput(judgeOutput, goalClaimResult);
+      if (goalClaimResult.summary.downgraded > 0) {
+        process.stderr.write(
+          `iris: goal-claim validator — ${goalClaimResult.summary.verified_kept} kept verified, ${goalClaimResult.summary.downgraded} downgraded to partial\n`,
+        );
+        for (const r of goalClaimResult.summary.downgrade_reasons) {
+          process.stderr.write(`iris:   ${r}\n`);
+        }
+      }
     }
 
     writeFileSync(

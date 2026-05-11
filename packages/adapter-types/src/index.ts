@@ -106,6 +106,56 @@ export interface EvidenceFile {
   kind: 'video' | 'screenshot' | 'cast' | 'har' | 'log';
 }
 
+// Phase 9: declared interaction-kit primitive. Adapters publish their full
+// set so the Judge sees what was possible and the goal-claim validator can
+// flag goals that required an unsupported primitive. Mirrors the schema in
+// @iris/core/adapter/interaction-kit.ts but kept here to avoid a package
+// cycle.
+export interface InteractionPrimitive {
+  name: string;
+  user_action: string;
+  coverage_note?: string;
+}
+
+export interface InteractionKit {
+  kind: TargetKind;
+  primitives: InteractionPrimitive[];
+}
+
+// Phase 9: outcome evidence the Judge must cite for `verified` goal claims.
+// Adapters return artifacts within a goal window; the goal-claim validator
+// checks the Judge actually cited at least one.
+export type OutcomeArtifactKind =
+  | 'screenshot'
+  | 'stdout'
+  | 'stderr'
+  | 'exit_code'
+  | 'fs_diff'
+  | 'http_response'
+  | 'follow_up_read';
+
+export interface OutcomeArtifact {
+  kind: OutcomeArtifactKind;
+  ref: string;
+  note?: string;
+}
+
+// Minimal trace event shape used by OutcomeContract. The real TraceEvent is
+// defined in @iris/core; keep this duck-typed to avoid a cycle.
+export interface OutcomeContractTraceEvent {
+  id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+}
+
+export interface OutcomeContract {
+  kind: TargetKind | string;
+  collectOutcomeEvidence(input: {
+    goal: { id: string; description: string };
+    goal_events: OutcomeContractTraceEvent[];
+  }): OutcomeArtifact[];
+}
+
 export interface TargetAdapter {
   readonly kind: TargetKind;
 
@@ -131,6 +181,16 @@ export interface TargetAdapter {
   // per-finding video clip windows. Adapters that don't support clipping
   // can omit this.
   injectEventTimestamps?(extra: Record<string, number>): void;
+
+  // Phase 9: optional. Adapters that declare their interaction surface let
+  // the Judge see what primitives the agent had access to, and let the
+  // goal-claim validator flag goals that needed a missing primitive.
+  interactionKit?(): InteractionKit;
+
+  // Phase 9: optional. Adapters that declare an outcome contract enable
+  // post-Judge goal-claim validation. Adapters without a contract skip
+  // validation (legacy behavior).
+  outcomeContract?(): OutcomeContract;
 }
 
 export * from './conformance.js';

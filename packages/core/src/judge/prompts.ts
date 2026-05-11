@@ -28,6 +28,23 @@ Your job:
    - skipped: explorer called goal_status({status:"skipped"}) — DO NOT count toward score denominator.
    - untested: explorer never reached the goal (system emits goal_status:untested at end) — DO NOT count toward score denominator.
    Compute the spec-compliance score over ATTEMPTED goals only (verified + partial + blocked). Untested/skipped goals appear in the goals list but do not pull the score down.
+7b. OUTCOME-vs-SIDE-EFFECT RULE (Phase 9). A goal is verified ONLY if the user-visible OUTCOME is present in cited evidence. Side-effects of interaction are NOT outcomes. The goal-claim validator will downgrade verified→partial if your evidence is side-effect-only.
+   What counts as an OUTCOME by modality:
+   - web: a screenshot taken AFTER the interaction that visibly contains the user-facing artifact (the drawn shape, the entered text appearing in the right place, the new row in a table, the navigated destination). Cite the post-interaction observation event id or screenshot path.
+   - CLI (future): stdout/stderr content showing the expected output, the expected filesystem change, the expected exit code.
+   - API (future): the response body of the action call AND a follow-up GET/list confirming the write is persistent.
+   What does NOT count as outcome (these are SIDE-EFFECTS, not outcomes):
+   - "panel appeared", "tool selected", "button highlighted", "focus moved"
+   - "properties side-panel rendered when the rectangle tool was chosen" — this is a side-effect of TOOL SELECTION, not of drawing
+   - "the dialog opened" — that proves you triggered it, not that you completed the action it offered
+   - "the request returned 200" — does not prove the resource exists or persisted
+   - vision_describe text that names the tool/panel state but does not name the user-visible artifact required by the goal
+   If the only evidence you can find is side-effect-shaped, set status to "partial" yourself and note "outcome not visually confirmed in trace" — don't claim verified.
+7c. EVIDENCE CITATION (Phase 9). For each verified goal, your evidence array MUST include at least one of these — citing only action or goal_status events is NOT enough, the validator will downgrade:
+   - The trace event id of an OBSERVATION event AFTER your interaction whose summary visibly contains the user-facing outcome (the new todo row appearing, the typed text persisting in a field, etc.).
+   - The trace event id of a vision_describe action_result whose vision quote names the user-visible artifact.
+   - The trace event id of a screenshot action_result taken AFTER the interaction.
+   In the trace digest, OBSERVATION lines start with the kind word "observation" and include a text snippet. action_result lines for vision_describe include a quoted vision="..." snippet. Cite those ids, not the action ids or goal_status ids.
 8. Self-assess confidence (0-1) and list caveats.
 
 Output ONLY a JSON object matching this schema:
@@ -145,8 +162,10 @@ function summarizeEvent(e: TraceEvent): string {
       const argsJson = JSON.stringify(p.args ?? {}).slice(0, 100);
       return `${tool}(${argsJson})`;
     }
-    case 'action_result':
-      return `${String(p.tool ?? '')} ok=${String(p.ok ?? '')} ${p.error ? `err=${String(p.error).slice(0, 80)}` : ''}`;
+    case 'action_result': {
+      const desc = p.description ? ` vision="${String(p.description).slice(0, 200).replace(/\n/g, ' ')}"` : '';
+      return `${String(p.tool ?? '')} ok=${String(p.ok ?? '')} ${p.error ? `err=${String(p.error).slice(0, 80)}` : ''}${desc}`;
+    }
     case 'tentative_finding':
       return `${String(p.severity_hint ?? '')}/${String(p.category ?? '')} "${String(p.title ?? '').slice(0, 100)}" rationale="${String(p.rationale ?? '').slice(0, 120)}"`;
     case 'probe_result': {
@@ -155,6 +174,14 @@ function summarizeEvent(e: TraceEvent): string {
     }
     case 'goal_status':
       return `${String(p.id ?? '')} → ${String(p.status ?? '')} ${p.auto_cutover ? '(auto-cutover)' : ''} "${String(p.rationale ?? '').slice(0, 100)}"`;
+    case 'interaction_kit': {
+      const prims = Array.isArray(p.primitives) ? p.primitives : [];
+      const names = prims
+        .map((x) => (x as { name?: string })?.name)
+        .filter(Boolean)
+        .join(',');
+      return `kind=${String(p.kind ?? '')} primitives=[${names}]`;
+    }
     case 'preflight':
       return `ok=${String(p.ok ?? '')} ${JSON.stringify(p.checks ?? []).slice(0, 200)}`;
     case 'step_plan':

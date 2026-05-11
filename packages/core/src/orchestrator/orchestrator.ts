@@ -7,6 +7,10 @@ import { Explorer, type ExplorerResult } from '../explorer/explorer.js';
 import type { PersonaName } from '../explorer/personas/index.js';
 import { judgeWithEnsemble } from '../judge/ensemble.js';
 import { validateFindings } from '../judge/evidence-validator.js';
+import {
+  applyGoalClaimValidationToJudgeOutput,
+  validateGoalClaims,
+} from '../judge/goal-claim-validator.js';
 import { Judge, type JudgeOutput } from '../judge/judge.js';
 import type { LlmClient } from '../llm/client.js';
 import { runPreflight } from '../preflight/preflight.js';
@@ -184,6 +188,23 @@ export class Orchestrator {
       }
     }
 
+    // 4.6. Phase 9: emit interaction_kit event so the Judge sees the
+    // adapter's interaction surface and the goal-claim validator has the
+    // kit available for diagnostics.
+    if (this.deps.adapter.interactionKit) {
+      const kit = this.deps.adapter.interactionKit();
+      await traceWriter.append({
+        v: 1,
+        id: ulid(),
+        ts: Date.now() / 1000,
+        step: 0,
+        target_kind: config.target.kind,
+        kind: 'interaction_kit',
+        actor: 'system',
+        payload: { kind: kit.kind, primitives: kit.primitives },
+      });
+    }
+
     // 5. Explorer
     const initialPlanStack: string[] = [];
     if (interpreted) {
@@ -280,6 +301,19 @@ export class Orchestrator {
         discarded_findings: [...(judgeOutput.discarded_findings ?? []), ...validation.discarded],
         evidence_validation: validation.summary,
       };
+
+      // Phase 9: validate goal claims. Mirrors the evidence validator but for
+      // goal_status: verified claims. Adapters opt in by implementing
+      // outcomeContract(). Downgrades verified → partial when no outcome
+      // artifact is cited.
+      if (this.deps.adapter.outcomeContract) {
+        const goalClaimResult = validateGoalClaims({
+          judge: judgeOutput,
+          trace: traceEvents,
+          outcome_contract: this.deps.adapter.outcomeContract(),
+        });
+        judgeOutput = applyGoalClaimValidationToJudgeOutput(judgeOutput, goalClaimResult);
+      }
 
       writeFileSync(
         join(config.out_dir, 'findings.json'),

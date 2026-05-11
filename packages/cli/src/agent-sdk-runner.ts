@@ -313,16 +313,44 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
             });
           }
         }
+        // Phase 9: vision_describe returns a `description` text. The previous
+        // emission dropped it on the floor — the Judge then saw only the file
+        // ref and concluded "no outcome evidence." Carry it through so the
+        // Judge can read what the vision model actually saw.
+        const description = (result as { description?: string }).description;
         await emit('action_result', 'adapter', {
           tool: spec.name,
           ok: result.ok,
           ...(result.ok ? { evidence_refs: result.evidence_refs } : { error: result.error }),
+          ...(description ? { description } : {}),
           ...(retryMeta ? { retried: retryMeta.retried, retry_count: retryMeta.retry_count } : {}),
         });
-        // Some tools modify the page — auto-emit observation after navigation/click/type
-        if (
-          ['click', 'type', 'navigate', 'press', 'back', 'forward', 'reload'].includes(spec.name)
-        ) {
+        // Some tools modify the page — auto-emit observation after every
+        // primitive that mutates DOM state. Includes the Phase 9 interaction
+        // primitives so post-drag/key-chord/paste/etc. observations get
+        // recorded as outcome evidence the goal-claim validator needs.
+        const MUTATING_TOOLS = new Set([
+          'click',
+          'type',
+          'navigate',
+          'press',
+          'back',
+          'forward',
+          'reload',
+          'drag',
+          'vision_drag',
+          'key_chord',
+          'paste',
+          'vision_paste',
+          'right_click',
+          'vision_right_click',
+          'double_click',
+          'vision_double_click',
+          'hover_wait',
+          'vision_hover_wait',
+          'upload',
+        ]);
+        if (MUTATING_TOOLS.has(spec.name)) {
           try {
             const obs = await config.adapter.observe();
             observationCounter++;
@@ -339,7 +367,9 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
             {
               type: 'text' as const,
               text: result.ok
-                ? `OK${result.observation_ref ? ` (observation_ref=${result.observation_ref})` : ''}`
+                ? description
+                  ? `OK — vision: ${description}`
+                  : `OK${result.observation_ref ? ` (observation_ref=${result.observation_ref})` : ''}`
                 : `ERROR: ${result.error}`,
             },
           ],
