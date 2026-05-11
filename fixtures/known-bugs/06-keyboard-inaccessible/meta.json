@@ -8,7 +8,7 @@
       "match": {
         "category": "a11y",
         "severity": ["blocker", "major"],
-        "title_contains": ["keyboard", "focus", "button", "div", "tabindex"]
+        "title_contains": ["keyboard", "focus", "button", "div", "tabindex", "violation", "axe"]
       },
       "must_find": true
     }
