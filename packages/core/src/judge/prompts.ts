@@ -14,6 +14,12 @@ Your job:
    - nit: polish (typo, spacing)
    - suggestion: improvement idea, not a defect
 5. EVERY finding must cite at least one trace event id as evidence. Findings whose evidence the validator cannot confirm get downgraded — better to omit a finding than to write one you can't back up from the trace.
+5b. IMPORTANT — bot-detection, captcha, auth walls, login redirects, Cloudflare interstitials, paywalls, and geofences are NOT findings about the product. A real customer with a real browser solves the captcha and proceeds; the page is not broken. Emit those into the access_blocks array instead of findings. Signals that look like an access block:
+   - Page title or body says "Just a moment", "Verify you are human", "Checking your browser", "Please log in", "Sign in to continue"
+   - URL redirects to /login or /signin or /challenge
+   - Visible content is dominated by a CAPTCHA widget
+   - Response status was 403/401/429 with text indicating verification or rate limit
+   Set the appropriate kind (bot_detection / captcha / auth_wall / geofence / rate_limit / paywall / other), name the surface (URL), describe what blocked the explorer, and cite the trace event ids. Goals that were prevented by an access block should be untested (not blocked); access_blocks already explain why.
 6. Score each rubric profile's dimensions on a 0-10 scale. Cite trace event ids as evidence (e.g. "T01ABC...").
 7. Assess spec_compliance per goal using goal_status trace events as the source of truth:
    - verified: explorer called goal_status({status:"verified"}) — count this goal as attempted-and-passed.
@@ -76,7 +82,15 @@ Output ONLY a JSON object matching this schema:
     "confidence_overall": number,
     "confidence_caveats": [string],
     "would_re_explore_with": [string]
-  }
+  },
+  "access_blocks": [
+    {
+      "kind": "bot_detection"|"captcha"|"auth_wall"|"geofence"|"rate_limit"|"paywall"|"other",
+      "surface": string,
+      "description": string,
+      "evidence": [string]
+    }
+  ]
 }`;
 
 export interface JudgeUserPromptInputs {

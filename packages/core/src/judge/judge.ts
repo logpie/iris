@@ -109,6 +109,28 @@ export const JudgeOutputSchema = z.object({
       discarded: z.number().int().nonnegative(),
     })
     .optional(),
+  // Phase 8: things that prevented Iris from testing — bot detection,
+  // captcha walls, auth gates, geofences, etc. NOT scored as findings
+  // because they're not defects in the product a real user would see;
+  // they're "Iris was blocked." Surfaced as a separate banner in the report.
+  access_blocks: z
+    .array(
+      z.object({
+        kind: z.enum([
+          'bot_detection',
+          'captcha',
+          'auth_wall',
+          'geofence',
+          'rate_limit',
+          'paywall',
+          'other',
+        ]),
+        surface: z.string(), // URL or section name where Iris was blocked
+        description: z.string(),
+        evidence: z.array(z.string()).default([]),
+      }),
+    )
+    .optional(),
 });
 export type JudgeOutput = z.infer<typeof JudgeOutputSchema>;
 

@@ -57,6 +57,7 @@ export function buildReportHtml(report: ReportJson, opts: BuildReportHtmlOptions
     parts.push(renderFooter(report));
   } else {
     parts.push(renderTLDR(report, eventIndex));
+    parts.push(renderAccessBlocks(report));
     parts.push(renderWhatHappened(report, eventIndex));
     parts.push(
       renderFindingsSection(
@@ -197,6 +198,51 @@ const STYLES = `
     color: var(--text-dim);
     font-size: 13px;
     margin-top: 8px !important;
+  }
+  .access-blocks-section {
+    background: #fffaf0;
+    border-left: 3px solid #9a6700;
+    padding: 14px 20px;
+    margin: 20px 0;
+  }
+  .access-blocks-section h2 {
+    color: #9a6700;
+    margin: 0 0 4px;
+    font-size: 15px;
+  }
+  .access-blocks-section ul.access-blocks-list {
+    list-style: none;
+    padding-left: 0;
+    margin: 12px 0 0;
+  }
+  .access-blocks-section ul.access-blocks-list li {
+    padding: 8px 0;
+    border-top: 1px solid rgba(154, 103, 0, 0.2);
+  }
+  .access-blocks-section ul.access-blocks-list li:first-child { border-top: none; }
+  .access-block-row {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+  }
+  .access-block-kind {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #9a6700;
+    font-weight: 600;
+  }
+  .access-blocks-section code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: rgba(154,103,0,0.08);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .access-block-desc {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-top: 4px;
   }
   .blocked-banner {
     background: #fff5f5;
@@ -857,6 +903,32 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
     <p>${sentences.join(' ')}</p>
     ${scoreLine}
     ${integrityLine}
+  </section>`;
+}
+
+function renderAccessBlocks(report: ReportJson): string {
+  const blocks = report.access_blocks ?? [];
+  if (blocks.length === 0) return '';
+  const items = blocks
+    .map((b) => {
+      const kindLabel = b.kind.replace(/_/g, ' ');
+      return `<li>
+        <div class="access-block-row">
+          <span class="access-block-kind">${escapeHtml(kindLabel)}</span>
+          <code>${escapeHtml(b.surface)}</code>
+        </div>
+        <div class="access-block-desc">${escapeHtml(b.description)}</div>
+      </li>`;
+    })
+    .join('');
+  return `<section class="access-blocks-section">
+    <h2>Iris was blocked from accessing parts of this app</h2>
+    <p style="color: var(--text-dim); font-size: 13px; margin-top: -4px;">
+      These are not product defects — a real user with a real browser
+      typically gets past them. Listed separately so they don't pollute
+      the score or finding count.
+    </p>
+    <ul class="access-blocks-list">${items}</ul>
   </section>`;
 }
 

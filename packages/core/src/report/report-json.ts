@@ -79,6 +79,10 @@ export interface ReportJson {
   preflight?: PreflightReport;
   evidence_validation?: { verified: number; downgraded: number; discarded: number };
   discarded_findings?: JudgeOutput['discarded_findings'];
+  // Phase 8: things that blocked Iris from testing parts of the app — bot
+  // detection, captchas, auth walls. Surfaced separately from findings
+  // because they're not product defects a real user would see.
+  access_blocks?: JudgeOutput['access_blocks'];
   next_actions: {
     // Phase 7 F7-3: for_builder entries carry the actionable bits Otto needs:
     // a one-line patch_hint and, when available, a code_pointer (selector +
@@ -196,6 +200,9 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
       : {}),
     ...(inp.judge.discarded_findings && inp.judge.discarded_findings.length > 0
       ? { discarded_findings: inp.judge.discarded_findings }
+      : {}),
+    ...(inp.judge.access_blocks && inp.judge.access_blocks.length > 0
+      ? { access_blocks: inp.judge.access_blocks }
       : {}),
     next_actions: {
       for_builder,
