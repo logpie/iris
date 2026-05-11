@@ -256,16 +256,34 @@ export class WebTargetAdapter implements TargetAdapter {
     this.eventTimestamps[ref] = Date.now() / 1000;
 
     const outline = await domOutline(page);
+    // Dogfood discovery 2026-05-11: a11y outline lists structural elements
+    // (header / nav / h1 / button / link) but skips paragraph/span/div text.
+    // On every real marketing page tested (Stripe, Linear, Anthropic) the
+    // Explorer was effectively blind to the actual product copy. Include
+    // body innerText alongside the outline so the Explorer can read what
+    // a user reads.
+    const bodyText = await page
+      .evaluate(() => {
+        const t = document.body?.innerText ?? '';
+        // Normalize whitespace, drop runs of blank lines.
+        return t.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
+      })
+      .catch(() => '');
     const url = page.url();
     const title = await page.title();
+    const outlinePart = outline.slice(0, 2500);
+    const textPart = bodyText.slice(0, 3000);
+    const summary =
+      `${title}\n\n## VISIBLE TEXT\n${textPart}\n\n## OUTLINE\n${outlinePart}`.trim();
     return {
       observation_ref: ref,
-      summary: `${title}\n${outline.slice(0, 4000)}`,
+      summary,
       payload: {
         url,
         title,
         screenshot_ref: screenshotPath,
         outline,
+        body_text: bodyText,
       },
     };
   }
