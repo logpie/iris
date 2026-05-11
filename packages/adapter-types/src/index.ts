@@ -63,6 +63,17 @@ export interface Observation {
   payload?: Record<string, unknown>;
 }
 
+// Phase 5: preflight probe. Adapters return raw measurements; the
+// preflight/checks module turns these into pass/fail check results.
+export interface PreflightProbe {
+  httpStatus: number;
+  loadFinished: boolean;
+  gotoErrorKind?: 'dns' | 'timeout' | 'connection' | 'other';
+  consoleMessages: Array<{ level: string; text: string }>;
+  bodyStats: { textChars: number; interactiveCount: number };
+  screenshot?: string;
+}
+
 export interface EvidenceRef {
   finding_id: string;
   event_ids: string[];
@@ -89,6 +100,10 @@ export interface TargetAdapter {
   runProbe(name: string, args: Record<string, unknown>): Promise<ProbeResult>;
 
   sliceEvidence(refs: EvidenceRef[]): Promise<EvidenceFile[]>;
+
+  // Phase 5: optional preflight probe. Adapters that don't implement it
+  // skip the preflight phase (treated as pass).
+  preflightProbe?(opts: { timeoutS: number }): Promise<PreflightProbe>;
 }
 
 export * from './conformance.js';

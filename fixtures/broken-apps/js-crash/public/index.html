@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>JS Crash</title>
+</head>
+<body>
+<div id="root">App is initializing...</div>
+<script>
+  // Realistic crash pattern: the app throws shortly after load, before any
+  // meaningful UI is rendered. Mimics a missing-prop / undefined-deref bug.
+  setTimeout(() => {
+    throw new TypeError('Uncaught TypeError: Cannot read properties of undefined (reading "foo")');
+  }, 50);
+</script>
+</body>
+</html>

@@ -176,7 +176,14 @@ describe('Orchestrator', () => {
     const reportText = readFileSync(join(dir, 'report.json'), 'utf8');
     const report = JSON.parse(reportText);
     expect(report.v).toBe(2);
-    expect(report.findings).toHaveLength(1);
+    // Phase 5: the Judge cited 'T1' as evidence, but T1 doesn't exist in the
+    // real trace (real ULIDs are generated). The evidence validator correctly
+    // discards the finding. discarded_findings carries the audit trail.
+    expect(report.findings).toHaveLength(0);
+    expect(report.discarded_findings).toBeDefined();
+    expect(report.discarded_findings).toHaveLength(1);
+    expect(report.discarded_findings[0]?.reason).toBe('all_evidence_ids_invalid');
+    expect(report.evidence_validation).toEqual({ verified: 0, downgraded: 0, discarded: 1 });
   });
 
   it('exit code 1 when score below threshold', async () => {

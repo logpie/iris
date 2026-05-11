@@ -6,10 +6,12 @@ import {
   explorer as explorerMod,
   trace as iristrace,
   judge as judgeMod,
+  preflight as preflightMod,
   report as reportMod,
   specInterpreter,
 } from '@iris/core';
 import type { RubricProfile } from '@iris/rubrics';
+import { ulid } from 'ulid';
 import { runAgentSdkExplorer, runAgentSdkSingleShot } from './agent-sdk-runner.js';
 
 /**
@@ -105,9 +107,93 @@ export async function runIrisViaSdk(
   // 4. Adapter.start
   await adapter.start({ kind: 'web', target: config.target.url, out_dir: config.out_dir });
 
-  // 5. Explorer via Agent SDK
+  // 4.5. Phase 5 preflight (skip if --no-preflight or adapter doesn't support).
   const tracePath = join(config.out_dir, 'trace.jsonl');
   const traceWriter = new iristrace.TraceWriter(tracePath);
+
+  if (!config.no_preflight && adapter.preflightProbe) {
+    process.stderr.write('iris: running preflight...\n');
+    const preflight = await preflightMod.runPreflight(adapter, {
+      timeoutS: config.preflight_timeout_s ?? 15,
+    });
+    await traceWriter.append({
+      v: 1,
+      id: ulid(),
+      ts: Date.now() / 1000,
+      step: 0,
+      target_kind: 'web',
+      kind: 'preflight',
+      actor: 'system',
+      payload: {
+        ok: preflight.ok,
+        checks: preflight.checks,
+        ...(preflight.screenshot ? { screenshot: preflight.screenshot } : {}),
+      },
+    });
+    if (!preflight.ok) {
+      await traceWriter.close();
+      const artifacts = await adapter.stop();
+      const failedReasons = preflight.checks.filter((c) => !c.ok).map((c) => c.name);
+      process.stderr.write(`iris: preflight blocked — ${failedReasons.join(', ')}\n`);
+      const blockedReport = reportMod.buildReportJson({
+        judge: {
+          v: 1,
+          findings: [],
+          discarded_findings: [],
+          scores: { overall: { score: 0, weighted_from: [] }, profiles: {} },
+          spec_compliance: { applicable: false, goals: [], summary: 'blocked at preflight' },
+          coverage_review: { surfaces_explored: 0, surfaces_unexplored: 0, judgement: 'blocked' },
+          meta: {
+            confidence_overall: 0,
+            confidence_caveats: [`Run blocked at preflight: ${failedReasons.join(', ')}`],
+            would_re_explore_with: [],
+          },
+        },
+        run: {
+          id: startedAt.toISOString().replace(/[:]/g, '-'),
+          target: { kind: 'web', url: config.target.url },
+          mode: config.mode,
+          started_at: startedAt.toISOString(),
+          ended_at: new Date().toISOString(),
+          duration_s: (Date.now() - startMs) / 1000,
+          cost_usd: totalCost,
+          models: { explorer: config.explorer_model, judge: config.judge_model },
+          termination: 'blocked',
+          step_count: 0,
+        },
+        preflight,
+        blocked: { reasons: failedReasons },
+        artifacts: {
+          trace: './trace.jsonl',
+          ...(artifacts.artifact_files.trace_zip
+            ? { trace_zip: artifacts.artifact_files.trace_zip }
+            : {}),
+        },
+      });
+      writeFileSync(
+        join(config.out_dir, 'report.json'),
+        `${JSON.stringify(blockedReport, null, 2)}\n`,
+      );
+      writeFileSync(join(config.out_dir, 'report.md'), reportMod.buildReportMd(blockedReport));
+      if (!config.no_html) {
+        writeFileSync(
+          join(config.out_dir, 'report.html'),
+          reportMod.buildReportHtml(blockedReport, { runDir: config.out_dir }),
+        );
+      }
+      return {
+        report: blockedReport,
+        out_dir: config.out_dir,
+        duration_s: (Date.now() - startMs) / 1000,
+        cost_usd: totalCost,
+        termination: 'blocked',
+        exit_code: 4,
+      };
+    }
+    process.stderr.write('iris: preflight passed\n');
+  }
+
+  // 5. Explorer via Agent SDK
 
   const personaName = (config.persona ?? 'default') as
     | 'default'
@@ -216,9 +302,24 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
     const jsonMatch = judgeResp.text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Judge returned no JSON');
     judgeOutput = judgeMod.JudgeOutputSchema.parse(JSON.parse(jsonMatch[0]));
+
+    // Phase 5 G3: validate findings against the trace.
+    const validation = judgeMod.validateFindings(judgeOutput.findings, events);
+    judgeOutput = {
+      ...judgeOutput,
+      findings: validation.kept,
+      discarded_findings: [...(judgeOutput.discarded_findings ?? []), ...validation.discarded],
+      evidence_validation: validation.summary,
+    };
+    if (validation.summary.discarded + validation.summary.downgraded > 0) {
+      process.stderr.write(
+        `iris: validator — ${validation.summary.verified} verified, ${validation.summary.downgraded} downgraded, ${validation.summary.discarded} discarded\n`,
+      );
+    }
+
     writeFileSync(
       join(config.out_dir, 'findings.json'),
-      `${JSON.stringify({ findings: judgeOutput.findings, discarded_findings: judgeOutput.discarded_findings, _written_at: new Date().toISOString() }, null, 2)}\n`,
+      `${JSON.stringify({ findings: judgeOutput.findings, discarded_findings: judgeOutput.discarded_findings, evidence_validation: validation.summary, _written_at: new Date().toISOString() }, null, 2)}\n`,
     );
     writeFileSync(
       join(config.out_dir, 'scores.json'),

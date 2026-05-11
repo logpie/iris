@@ -6,6 +6,7 @@ import type {
   EvidenceFile,
   EvidenceRef,
   Observation,
+  PreflightProbe,
   ProbeResult,
   ProbeSpec,
   TargetAdapter,
@@ -53,6 +54,10 @@ export class WebTargetAdapter implements TargetAdapter {
   private networkProbe: NetworkProbe | null = null;
   private eventTimestamps: Record<string, number> = {};
   private recordingStartedTs = 0;
+  private targetUrl = '';
+  private startGotoStatus = 0;
+  private startGotoErrorKind: PreflightProbe['gotoErrorKind'];
+  private pageErrorListener: ((e: Error) => void) | null = null;
 
   constructor(private readonly opts: WebTargetAdapterOptions = {}) {}
 
@@ -79,15 +84,95 @@ export class WebTargetAdapter implements TargetAdapter {
     this.consoleProbe.attach();
     this.networkProbe.attach();
 
+    // Forward pageerror (uncaught exceptions) into the console probe buffer
+    // so preflight's console-clean check can see them.
+    this.pageErrorListener = (err: Error) => {
+      this.consoleProbe?.pushExternal('pageerror', `Uncaught: ${err.message}`);
+    };
+    page.on('pageerror', this.pageErrorListener);
+
+    this.targetUrl = config.target ?? '';
     if (config.target) {
-      await page.goto(config.target);
+      try {
+        const response = await page.goto(config.target, { waitUntil: 'domcontentloaded' });
+        this.startGotoStatus = response?.status() ?? 0;
+      } catch (err) {
+        this.startGotoStatus = 0;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/ERR_NAME_NOT_RESOLVED|getaddrinfo/i.test(msg)) this.startGotoErrorKind = 'dns';
+        else if (/Timeout/i.test(msg)) this.startGotoErrorKind = 'timeout';
+        else if (/ERR_CONNECTION|ERR_SSL/i.test(msg)) this.startGotoErrorKind = 'connection';
+        else this.startGotoErrorKind = 'other';
+      }
     }
+  }
+
+  async preflightProbe(opts: { timeoutS: number }): Promise<PreflightProbe> {
+    if (!this.lifecycle) {
+      return {
+        httpStatus: 0,
+        loadFinished: false,
+        gotoErrorKind: 'other',
+        consoleMessages: [],
+        bodyStats: { textChars: 0, interactiveCount: 0 },
+      };
+    }
+    const page = this.lifecycle.getPage();
+    // Wait for networkidle to ensure SPAs hydrate before we measure content.
+    // start() already did domcontentloaded; this completes the load.
+    let loadFinished = true;
+    try {
+      await page.waitForLoadState('networkidle', { timeout: opts.timeoutS * 1000 });
+    } catch {
+      loadFinished = false;
+    }
+    // If start() failed (DNS/connection), report that explicitly.
+    if (this.startGotoErrorKind) loadFinished = false;
+
+    let bodyStats = { textChars: 0, interactiveCount: 0 };
+    try {
+      bodyStats = await page.evaluate(() => ({
+        textChars: document.body?.innerText?.length ?? 0,
+        interactiveCount: document.querySelectorAll(
+          'a, button, input, select, textarea, [role=button], [role=link]',
+        ).length,
+      }));
+    } catch {
+      // Page never rendered. bodyStats stays zero; body_has_content fails.
+    }
+
+    const screenshotPath = join(this.screenshotsDir, 'preflight.png');
+    try {
+      await page.screenshot({ path: screenshotPath });
+    } catch {
+      // Screenshot failures are non-fatal.
+    }
+
+    const consoleMessages = this.consoleProbe?.snapshot().map((e) => ({ level: e.type, text: e.text })) ?? [];
+
+    const probe: PreflightProbe = {
+      httpStatus: this.startGotoStatus,
+      loadFinished,
+      consoleMessages,
+      bodyStats,
+      screenshot: screenshotPath,
+    };
+    if (this.startGotoErrorKind) probe.gotoErrorKind = this.startGotoErrorKind;
+    return probe;
   }
 
   async stop(): Promise<AdapterArtifacts> {
     if (this.lifecycle) {
       this.consoleProbe?.detach();
       this.networkProbe?.detach();
+      if (this.pageErrorListener) {
+        try {
+          this.lifecycle.getPage().off('pageerror', this.pageErrorListener);
+        } catch {
+          // page may be gone already
+        }
+        this.pageErrorListener = null;
+      }
       await this.lifecycle.stop();
       this.lifecycle = null;
     }

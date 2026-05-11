@@ -1,0 +1,11 @@
+{
+  "name": "slow-load",
+  "kind": "preflight",
+  "description": "Page never finishes loading (no networkidle). Preflight should block on page_ready.",
+  "spec": "An app that loads quickly.",
+  "mode": "grounded",
+  "expected_blocked": true,
+  "expected_failed_checks": ["page_ready"],
+  "expected_exit_code": 4,
+  "preflight_timeout_s": 3
+}

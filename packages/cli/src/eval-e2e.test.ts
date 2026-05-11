@@ -215,7 +215,12 @@ describe('iris eval — end-to-end against fixture site', () => {
     // Verify result
     expect(result.exit_code).toBe(0);
     expect(result.report.headline.score).toBe(7.5);
-    expect(result.report.findings).toHaveLength(1);
+    // Phase 5: the Judge cites OBS-000001 as evidence — that's the adapter's
+    // observation_ref string, NOT a trace event id (which would be a ULID).
+    // The evidence validator correctly discards the finding. discarded_findings
+    // carries the audit trail; the rest of the pipeline still works.
+    expect(result.report.findings).toHaveLength(0);
+    expect(result.report.discarded_findings?.[0]?.reason).toBe('all_evidence_ids_invalid');
 
     // All artifact files exist
     expect(existsSync(join(outDir, 'report.json'))).toBe(true);
@@ -232,7 +237,7 @@ describe('iris eval — end-to-end against fixture site', () => {
     expect(report.tool.name).toBe('iris');
     expect(report.run.target.url).toBe(`${fixture.url}/index.html`);
     expect(report.next_actions.for_builder).toBeDefined();
-    expect(report.next_actions.for_builder[0]?.finding_id).toBe('F-001');
+    // Phase 5: F-001 was discarded by the validator; for_builder is empty.
     expect(report.next_actions.for_re_evaluation).toContain('--persona keyboard_only');
 
     // report.md has the score header

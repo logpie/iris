@@ -2,14 +2,18 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { join } from 'node:path';
 import type { TargetAdapter } from '@iris/adapter-types';
 import type { RubricProfile } from '@iris/rubrics';
+import { ulid } from 'ulid';
 import { Explorer, type ExplorerResult } from '../explorer/explorer.js';
 import type { PersonaName } from '../explorer/personas/index.js';
+import { validateFindings } from '../judge/evidence-validator.js';
 import { Judge, type JudgeOutput } from '../judge/judge.js';
 import type { LlmClient } from '../llm/client.js';
+import { runPreflight } from '../preflight/preflight.js';
 import { buildReportHtml } from '../report/report-html.js';
 import { type ReportJson, buildReportJson } from '../report/report-json.js';
 import { buildReportMd } from '../report/report-md.js';
 import { type InterpretedSpec, interpretSpec } from '../spec-interpreter/interpreter.js';
+import { readTraceArray } from '../trace/reader.js';
 import { TraceWriter } from '../trace/writer.js';
 import type { Mode, TargetKind } from '../types.js';
 
@@ -91,7 +95,7 @@ export class Orchestrator {
       target: config.target.url,
       out_dir: config.out_dir,
     };
-    let exitCode: 0 | 1 | 2 | 3 = 0;
+    let exitCode: 0 | 1 | 2 | 3 | 4 = 0;
     try {
       await this.deps.adapter.start(adapterConfig);
     } catch (err) {
@@ -121,9 +125,63 @@ export class Orchestrator {
       };
     }
 
-    // 5. Explorer
+    // 4.5. Phase 5 preflight (web targets only — other adapters return early).
     const tracePath = join(config.out_dir, 'trace.jsonl');
     const traceWriter = new TraceWriter(tracePath);
+
+    if (!config.no_preflight && this.deps.adapter.preflightProbe) {
+      const preflightResult = await runPreflight(this.deps.adapter, {
+        timeoutS: config.preflight_timeout_s ?? 15,
+      });
+      await traceWriter.append({
+        v: 1,
+        id: ulid(),
+        ts: Date.now() / 1000,
+        step: 0,
+        target_kind: config.target.kind,
+        kind: 'preflight',
+        actor: 'system',
+        payload: {
+          ok: preflightResult.ok,
+          checks: preflightResult.checks,
+          ...(preflightResult.screenshot ? { screenshot: preflightResult.screenshot } : {}),
+        },
+      });
+      if (!preflightResult.ok) {
+        // Block — skip Explorer and Judge entirely.
+        await traceWriter.close();
+        const artifacts = await this.deps.adapter.stop();
+        const failedReasons = preflightResult.checks.filter((c) => !c.ok).map((c) => c.name);
+        const blockedReport = this.buildBlockedReport({
+          config,
+          startedAt,
+          startMs,
+          preflight: preflightResult,
+          artifacts: artifacts.artifact_files,
+        });
+        writeFileSync(
+          join(config.out_dir, 'report.json'),
+          `${JSON.stringify(blockedReport, null, 2)}\n`,
+        );
+        writeFileSync(join(config.out_dir, 'report.md'), buildReportMd(blockedReport));
+        if (!config.no_html) {
+          writeFileSync(
+            join(config.out_dir, 'report.html'),
+            buildReportHtml(blockedReport, { runDir: config.out_dir }),
+          );
+        }
+        return {
+          report: blockedReport,
+          out_dir: config.out_dir,
+          duration_s: (Date.now() - startMs) / 1000,
+          cost_usd: 0,
+          termination: 'budget_steps',
+          exit_code: 4,
+        };
+      }
+    }
+
+    // 5. Explorer
     const initialPlanStack: string[] = [];
     if (interpreted) {
       for (const g of interpreted.goals) initialPlanStack.push(`verify: ${g.description}`);
@@ -190,9 +248,22 @@ export class Orchestrator {
         rubric_profiles: config.rubric_profiles,
         model: config.judge_model,
       });
+
+      // Phase 5 G3: validate findings against the trace. Deterministic step;
+      // drops findings whose cited event ids don't exist and downgrades severe
+      // findings without concrete backing.
+      const traceEvents = await readTraceArray(tracePath);
+      const validation = validateFindings(judgeOutput.findings, traceEvents);
+      judgeOutput = {
+        ...judgeOutput,
+        findings: validation.kept,
+        discarded_findings: [...(judgeOutput.discarded_findings ?? []), ...validation.discarded],
+        evidence_validation: validation.summary,
+      };
+
       writeFileSync(
         join(config.out_dir, 'findings.json'),
-        `${JSON.stringify({ findings: judgeOutput.findings, discarded_findings: judgeOutput.discarded_findings, _written_at: new Date().toISOString() }, null, 2)}\n`,
+        `${JSON.stringify({ findings: judgeOutput.findings, discarded_findings: judgeOutput.discarded_findings, evidence_validation: validation.summary, _written_at: new Date().toISOString() }, null, 2)}\n`,
       );
       writeFileSync(
         join(config.out_dir, 'scores.json'),
@@ -321,6 +392,52 @@ export class Orchestrator {
         models: { explorer: config.explorer_model, judge: config.judge_model },
         termination,
         step_count: steps,
+      },
+    });
+  }
+
+  // Phase 5: assemble a report when preflight fails. No score, no rubric —
+  // just a banner explaining what failed and a screenshot.
+  private buildBlockedReport(args: {
+    config: OrchestratorRunConfig;
+    startedAt: Date;
+    startMs: number;
+    preflight: { ok: boolean; checks: Array<{ name: string; ok: boolean; detail?: string }>; screenshot?: string };
+    artifacts: Record<string, string>;
+  }): ReportJson {
+    const { config, startedAt, startMs, preflight, artifacts } = args;
+    const failedReasons = preflight.checks.filter((c) => !c.ok).map((c) => c.name);
+    return buildReportJson({
+      judge: {
+        v: 1,
+        findings: [],
+        discarded_findings: [],
+        scores: { overall: { score: 0, weighted_from: [] }, profiles: {} },
+        spec_compliance: { applicable: false, goals: [], summary: 'blocked at preflight' },
+        coverage_review: { surfaces_explored: 0, surfaces_unexplored: 0, judgement: 'blocked' },
+        meta: {
+          confidence_overall: 0,
+          confidence_caveats: [`Run blocked at preflight: ${failedReasons.join(', ')}`],
+          would_re_explore_with: [],
+        },
+      },
+      run: {
+        id: startedAt.toISOString().replace(/[:]/g, '-'),
+        target: { kind: config.target.kind, url: config.target.url },
+        mode: config.mode,
+        started_at: startedAt.toISOString(),
+        ended_at: new Date().toISOString(),
+        duration_s: (Date.now() - startMs) / 1000,
+        cost_usd: 0,
+        models: { explorer: config.explorer_model, judge: config.judge_model },
+        termination: 'blocked',
+        step_count: 0,
+      },
+      preflight,
+      blocked: { reasons: failedReasons },
+      artifacts: {
+        trace: './trace.jsonl',
+        ...(artifacts.trace_zip ? { trace_zip: artifacts.trace_zip } : {}),
       },
     });
   }

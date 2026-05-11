@@ -34,6 +34,18 @@ export class ConsoleProbe {
     return filterType ? slice.filter((e) => e.type === filterType) : slice;
   }
 
+  // Non-destructive read (does not advance the cursor). Used by preflight,
+  // which inspects console state without consuming it.
+  snapshot(): ConsoleEntry[] {
+    return [...this.buffer];
+  }
+
+  // Manual push — used by preflight to also record `pageerror` events
+  // (uncaught exceptions) which Playwright fires on a different listener.
+  pushExternal(type: string, text: string): void {
+    this.buffer.push({ type, text, ts: Date.now() / 1000 });
+  }
+
   async runProbe(name: string, _args: Record<string, unknown>): Promise<ProbeResult> {
     if (name === 'console_errors_since') {
       const errs = this.consume('error');

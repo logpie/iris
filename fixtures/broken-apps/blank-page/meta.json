@@ -1,0 +1,10 @@
+{
+  "name": "blank-page",
+  "kind": "preflight",
+  "description": "Page loads with a 200 but the body is empty. Preflight should block on body_has_content.",
+  "spec": "An app with actual content.",
+  "mode": "grounded",
+  "expected_blocked": true,
+  "expected_failed_checks": ["body_has_content"],
+  "expected_exit_code": 4
+}
