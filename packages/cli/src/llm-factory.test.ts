@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { buildLlmClient } from './llm-factory.js';
 
 describe('buildLlmClient', () => {
-  it('throws when no API key in env or opts', () => {
+  it('falls back to claude-cli transport when no API key in env or opts', () => {
     const orig = process.env.ANTHROPIC_API_KEY;
     // biome-ignore lint/performance/noDelete: must actually remove the key from env, not set to undefined
     delete process.env.ANTHROPIC_API_KEY;
     try {
-      expect(() => buildLlmClient()).toThrow(/ANTHROPIC_API_KEY/);
+      const client = buildLlmClient();
+      expect(client).toBeDefined();
+      expect(client.totals().calls).toBe(0);
     } finally {
       if (orig !== undefined) process.env.ANTHROPIC_API_KEY = orig;
     }

@@ -1,15 +1,15 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { TargetAdapter } from '@iris/adapter-types';
-import type { RubricProfile } from '@iris/rubrics';
 import {
+  type Mode,
   explorer as explorerMod,
+  trace as iristrace,
   judge as judgeMod,
   report as reportMod,
   specInterpreter,
-  trace as iristrace,
-  type Mode,
 } from '@iris/core';
+import type { RubricProfile } from '@iris/rubrics';
 import { runAgentSdkExplorer, runAgentSdkSingleShot } from './agent-sdk-runner.js';
 
 /**
@@ -102,7 +102,12 @@ export async function runIrisViaSdk(
   const tracePath = join(config.out_dir, 'trace.jsonl');
   const traceWriter = new iristrace.TraceWriter(tracePath);
 
-  const personaName = (config.persona ?? 'default') as 'default' | 'power_user' | 'novice' | 'adversarial' | 'keyboard_only';
+  const personaName = (config.persona ?? 'default') as
+    | 'default'
+    | 'power_user'
+    | 'novice'
+    | 'adversarial'
+    | 'keyboard_only';
   const systemPrompt = explorerMod.buildSystemPrompt({
     core: explorerMod.EXPLORER_CORE,
     target_kind: 'web',
@@ -131,7 +136,7 @@ Available tool naming: all tools are prefixed with mcp__iris__ (e.g. mcp__iris__
 Budget: ~${config.max_steps} steps, $${config.max_cost_usd.toFixed(2)} max cost. Use note_finding LIBERALLY when something looks off; the judge dedupes false positives. Call done when goals are satisfied or you've completed thorough exploration; call give_up if stuck.`;
 
   process.stderr.write('iris: starting Explorer (Agent SDK session)...\n');
-  let explorerResult;
+  let explorerResult: Awaited<ReturnType<typeof runAgentSdkExplorer>>;
   try {
     explorerResult = await runAgentSdkExplorer({
       adapter,
@@ -144,7 +149,9 @@ Budget: ~${config.max_steps} steps, $${config.max_cost_usd.toFixed(2)} max cost.
       model: config.explorer_model,
     });
     totalCost += explorerResult.cost_usd;
-    process.stderr.write(`iris: Explorer done — termination=${explorerResult.termination}, ${explorerResult.steps_taken} steps, $${explorerResult.cost_usd.toFixed(2)}\n`);
+    process.stderr.write(
+      `iris: Explorer done — termination=${explorerResult.termination}, ${explorerResult.steps_taken} steps, $${explorerResult.cost_usd.toFixed(2)}\n`,
+    );
   } finally {
     await traceWriter.close();
   }
@@ -187,9 +194,18 @@ Budget: ~${config.max_steps} steps, $${config.max_cost_usd.toFixed(2)} max cost.
       `${JSON.stringify({ ...judgeOutput.scores, _written_at: new Date().toISOString() }, null, 2)}\n`,
     );
   } catch (err) {
-    writeFileSync(join(config.out_dir, 'judge-error.txt'), err instanceof Error ? err.message : String(err));
+    writeFileSync(
+      join(config.out_dir, 'judge-error.txt'),
+      err instanceof Error ? err.message : String(err),
+    );
     return {
-      report: emptyReport(config, startedAt, totalCost, explorerResult.termination, explorerResult.steps_taken),
+      report: emptyReport(
+        config,
+        startedAt,
+        totalCost,
+        explorerResult.termination,
+        explorerResult.steps_taken,
+      ),
       out_dir: config.out_dir,
       duration_s: (Date.now() - startMs) / 1000,
       cost_usd: totalCost,
@@ -220,8 +236,12 @@ Budget: ~${config.max_steps} steps, $${config.max_cost_usd.toFixed(2)} max cost.
       ...(config.no_html ? {} : { report_html: './report.html' }),
       report_md: './report.md',
       trace: './trace.jsonl',
-      ...(artifacts.artifact_files['trace_zip'] ? { trace_zip: artifacts.artifact_files['trace_zip'] } : {}),
-      ...(artifacts.artifact_files['full_recording'] ? { video: artifacts.artifact_files['full_recording'] } : {}),
+      ...(artifacts.artifact_files.trace_zip
+        ? { trace_zip: artifacts.artifact_files.trace_zip }
+        : {}),
+      ...(artifacts.artifact_files.full_recording
+        ? { video: artifacts.artifact_files.full_recording }
+        : {}),
     },
   });
 
@@ -268,7 +288,11 @@ function emptyReport(
       scores: { overall: { score: 0, weighted_from: [] }, profiles: {} },
       spec_compliance: { applicable: false, goals: [], summary: 'judge failed' },
       coverage_review: { surfaces_explored: 0, surfaces_unexplored: 0, judgement: 'aborted' },
-      meta: { confidence_overall: 0, confidence_caveats: ['judge failed'], would_re_explore_with: [] },
+      meta: {
+        confidence_overall: 0,
+        confidence_caveats: ['judge failed'],
+        would_re_explore_with: [],
+      },
     },
     run: {
       id: startedAt.toISOString().replace(/[:]/g, '-'),

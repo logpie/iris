@@ -37,8 +37,8 @@ interface ParsedEnvelope {
 function renderToolList(tools?: Array<Record<string, unknown>>): string {
   if (!tools || tools.length === 0) return '';
   const lines = tools.map((t) => {
-    const schema = JSON.stringify(t['input_schema'] ?? {});
-    return `- ${t['name']}: ${t['description'] ?? ''}\n  input_schema: ${schema}`;
+    const schema = JSON.stringify(t.input_schema ?? {});
+    return `- ${t.name}: ${t.description ?? ''}\n  input_schema: ${schema}`;
   });
   return `\n\nAvailable tools:\n${lines.join('\n')}\n\n${TOOL_USE_INSTRUCTIONS}`;
 }
@@ -72,7 +72,10 @@ function renderSystem(system: llm.LlmCallInput['system']): string {
     .join('\n');
 }
 
-function spawnClaudeCli(prompt: string, model?: string): Promise<{ result: string; cost_usd: number; usage_in: number; usage_out: number }> {
+function spawnClaudeCli(
+  prompt: string,
+  model?: string,
+): Promise<{ result: string; cost_usd: number; usage_in: number; usage_out: number }> {
   return new Promise((resolve, reject) => {
     const args = ['-p', prompt, '--output-format', 'json'];
     if (model && model !== 'claude-opus-4-7') {
@@ -112,7 +115,11 @@ function spawnClaudeCli(prompt: string, model?: string): Promise<{ result: strin
           usage_out: wrapper.usage?.output_tokens ?? 0,
         });
       } catch (err) {
-        reject(new Error(`failed to parse claude -p output: ${(err as Error).message}\nstdout: ${stdout.slice(0, 300)}`));
+        reject(
+          new Error(
+            `failed to parse claude -p output: ${(err as Error).message}\nstdout: ${stdout.slice(0, 300)}`,
+          ),
+        );
       }
     });
   });
@@ -156,7 +163,12 @@ export const claudeCliTransport: llm.LlmTransport = async (input) => {
   const toolText = renderToolList(input.tools);
   const fullPrompt = `${sysText}${toolText}\n\n--- CONVERSATION ---\n\n${msgText}`;
 
-  const { result, cost_usd: _cost, usage_in, usage_out } = await spawnClaudeCli(fullPrompt, input.model);
+  const {
+    result,
+    cost_usd: _cost,
+    usage_in,
+    usage_out,
+  } = await spawnClaudeCli(fullPrompt, input.model);
 
   // Build content blocks. If we asked for tool use, try to parse the JSON envelope.
   const content: Array<Record<string, unknown>> = [];
@@ -176,8 +188,7 @@ export const claudeCliTransport: llm.LlmTransport = async (input) => {
   return {
     id: `cli_${Date.now()}`,
     model: input.model,
-    stop_reason:
-      content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn',
+    stop_reason: content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn',
     content,
     usage: {
       input_tokens: usage_in,

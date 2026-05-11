@@ -2,7 +2,7 @@ import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk'
 import type { TargetAdapter } from '@iris/adapter-types';
 import type { trace as iristrace } from '@iris/core';
 import { ulid } from 'ulid';
-import { z, type ZodRawShape } from 'zod';
+import { type ZodRawShape, z } from 'zod';
 
 /**
  * Agent SDK-based runner. Uses the local Claude Code subscription via
@@ -70,12 +70,16 @@ export async function runAgentSdkSingleShot(opts: SingleShotInput): Promise<Sing
 
   for await (const msg of q) {
     if (msg.type === 'assistant') {
-      const content = (msg.message as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
+      const content =
+        (msg.message as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
       for (const b of content) {
         if (b.type === 'text' && b.text) text += b.text;
       }
     } else if (msg.type === 'result') {
-      const r = msg as { total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number } };
+      const r = msg as {
+        total_cost_usd?: number;
+        usage?: { input_tokens?: number; output_tokens?: number };
+      };
       cost_usd = r.total_cost_usd ?? 0;
       input_tokens = r.usage?.input_tokens ?? 0;
       output_tokens = r.usage?.output_tokens ?? 0;
@@ -179,7 +183,11 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     give_up_reason: null,
   };
 
-  const emit = async (kind: TraceEventKind, actor: 'system' | 'explorer' | 'adapter' | 'probe', payload: Record<string, unknown>): Promise<string> => {
+  const emit = async (
+    kind: TraceEventKind,
+    actor: 'system' | 'explorer' | 'adapter' | 'probe',
+    payload: Record<string, unknown>,
+  ): Promise<string> => {
     const id = ulid();
     await config.traceWriter.append({
       v: 1,
@@ -213,7 +221,9 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           ...(result.ok ? { evidence_refs: result.evidence_refs } : { error: result.error }),
         });
         // Some tools modify the page — auto-emit observation after navigation/click/type
-        if (['click', 'type', 'navigate', 'press', 'back', 'forward', 'reload'].includes(spec.name)) {
+        if (
+          ['click', 'type', 'navigate', 'press', 'back', 'forward', 'reload'].includes(spec.name)
+        ) {
           try {
             const obs = await config.adapter.observe();
             observationCounter++;
@@ -249,14 +259,20 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       async (args: Record<string, unknown>) => {
         await emit('probe_call', 'explorer', { probe: spec.name, args });
         const result = await config.adapter.runProbe(spec.name, args);
-        await emit('probe_result', 'probe', result.ok
-          ? { probe: spec.name, summary: result.summary, data: result.data }
-          : { probe: spec.name, error: result.error });
+        await emit(
+          'probe_result',
+          'probe',
+          result.ok
+            ? { probe: spec.name, summary: result.summary, data: result.data }
+            : { probe: spec.name, error: result.error },
+        );
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify(result.ok ? { summary: result.summary } : { error: result.error }),
+              text: JSON.stringify(
+                result.ok ? { summary: result.summary } : { error: result.error },
+              ),
             },
           ],
         };
@@ -268,7 +284,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
   const metaTools = [
     tool(
       'observe',
-      "Take a fresh observation of the current page (DOM outline + screenshot). Use when you need to re-check the page state.",
+      'Take a fresh observation of the current page (DOM outline + screenshot). Use when you need to re-check the page state.',
       {},
       async () => {
         const obs = await config.adapter.observe();
@@ -277,12 +293,19 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           ref: obs.observation_ref,
           summary: obs.summary.slice(0, 4000),
         });
-        return { content: [{ type: 'text' as const, text: `${obs.summary.slice(0, 1500)}\n\n(observation_ref=${obs.observation_ref})` }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `${obs.summary.slice(0, 1500)}\n\n(observation_ref=${obs.observation_ref})`,
+            },
+          ],
+        };
       },
     ),
     tool(
       'note_finding',
-      "Flag something noteworthy — a bug, a11y issue, ux issue, etc. The judge will dedupe and assign final severity. Cite at least one observation_ref or trace event id as evidence.",
+      'Flag something noteworthy — a bug, a11y issue, ux issue, etc. The judge will dedupe and assign final severity. Cite at least one observation_ref or trace event id as evidence.',
       {
         title: z.string(),
         category: z.enum(['bug', 'a11y', 'ux', 'perf', 'copy', 'suggestion']),
@@ -315,8 +338,10 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       'Record a surface you noticed but have not yet explored.',
       { surface_id: z.string(), where_seen: z.string(), reason_skipped: z.string().optional() },
       async (args) => {
-        if (!state.surfaces_seen.some((s) => s.id === args.surface_id) &&
-            !state.surfaces_unexplored.some((s) => s.id === args.surface_id)) {
+        if (
+          !state.surfaces_seen.some((s) => s.id === args.surface_id) &&
+          !state.surfaces_unexplored.some((s) => s.id === args.surface_id)
+        ) {
           const entry: { id: string; where_seen: string; reason_skipped?: string } = {
             id: args.surface_id,
             where_seen: args.where_seen,
@@ -331,7 +356,11 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     tool(
       'note_hypothesis',
       'Record a belief about the product (what it is, who it serves, etc). May be revised as you learn.',
-      { claim: z.string(), confidence: z.number().min(0).max(1), evidence_event_ids: z.array(z.string()) },
+      {
+        claim: z.string(),
+        confidence: z.number().min(0).max(1),
+        evidence_event_ids: z.array(z.string()),
+      },
       async (args) => {
         state.hypotheses.push({ claim: args.claim, confidence: args.confidence });
         await emit('hypothesis', 'explorer', args);
@@ -408,19 +437,28 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       if (totalCost >= config.maxCostUsd) {
         termination = 'budget_cost';
         await emit('budget_abort', 'system', { reason: 'max_cost_usd', cost_usd: totalCost });
-        try { q.interrupt?.(); } catch { /* ignore */ }
+        try {
+          q.interrupt?.();
+        } catch {
+          /* ignore */
+        }
         break;
       }
       const elapsedS = (Date.now() - start) / 1000;
       if (elapsedS >= config.timeoutS) {
         termination = 'budget_time';
         await emit('budget_abort', 'system', { reason: 'timeout_s', elapsed_s: elapsedS });
-        try { q.interrupt?.(); } catch { /* ignore */ }
+        try {
+          q.interrupt?.();
+        } catch {
+          /* ignore */
+        }
         break;
       }
 
       if (msg.type === 'assistant') {
-        const content = (msg.message as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
+        const content =
+          (msg.message as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
         const textBlock = content.find((b) => b.type === 'text');
         if (textBlock?.text) {
           await emit('step_plan', 'explorer', { reasoning: textBlock.text.slice(0, 1000) });
@@ -453,7 +491,12 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
   }
 
   const duration_s = (Date.now() - start) / 1000;
-  await emit('run_end', 'system', { termination, cost_usd: totalCost, duration_s, steps: stepCount });
+  await emit('run_end', 'system', {
+    termination,
+    cost_usd: totalCost,
+    duration_s,
+    steps: stepCount,
+  });
 
   return {
     state: {

@@ -72,7 +72,9 @@ if (!HAS_API_KEY && !HAS_CLAUDE_CLI) {
   console.error('bench: neither ANTHROPIC_API_KEY nor `claude` CLI is available. Cannot run.');
   process.exit(0);
 }
-console.log(`bench: transport = ${HAS_API_KEY ? 'Anthropic SDK (API key)' : 'claude -p (subscription)'}`);
+console.log(
+  `bench: transport = ${HAS_API_KEY ? 'Anthropic SDK (API key)' : 'claude -p (subscription)'}`,
+);
 if (!existsSync(IRIS_BIN)) {
   console.error(`bench: ${IRIS_BIN} not found. Run \`pnpm build\` first.`);
   process.exit(1);
@@ -128,7 +130,8 @@ for (const fixtureName of fixtureDirs) {
       failures: [`run threw: ${err instanceof Error ? err.message : String(err)}`],
     });
     await server.close();
-    if (!keepDirs) rmSync(outDir, { recursive: true, force: true }); else console.log(`  (keeping ${outDir})`);
+    if (!keepDirs) rmSync(outDir, { recursive: true, force: true });
+    else console.log(`  (keeping ${outDir})`);
     continue;
   }
 
@@ -144,7 +147,8 @@ for (const fixtureName of fixtureDirs) {
       failures: ['no report.json produced'],
     });
     await server.close();
-    if (!keepDirs) rmSync(outDir, { recursive: true, force: true }); else console.log(`  (keeping ${outDir})`);
+    if (!keepDirs) rmSync(outDir, { recursive: true, force: true });
+    else console.log(`  (keeping ${outDir})`);
     continue;
   }
 
@@ -210,7 +214,8 @@ for (const fixtureName of fixtureDirs) {
   for (const f of failures) console.log(`    FAIL: ${f}`);
 
   await server.close();
-  if (!keepDirs) rmSync(outDir, { recursive: true, force: true }); else console.log(`  (keeping ${outDir})`);
+  if (!keepDirs) rmSync(outDir, { recursive: true, force: true });
+  else console.log(`  (keeping ${outDir})`);
 }
 
 console.log('\n=== Bench summary ===');

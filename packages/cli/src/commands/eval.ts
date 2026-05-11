@@ -94,7 +94,24 @@ export function evalCommand(): Command {
 
       const adapter = new WebTargetAdapter({ headless: true });
 
-      let result: { report: { headline: { score: number; threshold_passed: boolean; blockers: number; majors: number; minors: number; nits: number; suggestions: number }; meta: { confidence_caveats: string[] } }; out_dir: string; duration_s: number; cost_usd: number; exit_code: 0 | 1 | 2 | 3 };
+      let result: {
+        report: {
+          headline: {
+            score: number;
+            threshold_passed: boolean;
+            blockers: number;
+            majors: number;
+            minors: number;
+            nits: number;
+            suggestions: number;
+          };
+          meta: { confidence_caveats: string[] };
+        };
+        out_dir: string;
+        duration_s: number;
+        cost_usd: number;
+        exit_code: 0 | 1 | 2 | 3;
+      };
 
       if (transport === 'sdk') {
         result = await runIrisViaSdk(
@@ -120,7 +137,9 @@ export function evalCommand(): Command {
         const explorerClient = buildLlmClient({ use_claude_cli: transport === 'cli' });
         const judgeClient = buildLlmClient({ use_claude_cli: transport === 'cli' });
         // Vision client only makes sense for api/cli; sdk path doesn't currently use vision_describe.
-        (adapter as unknown as { opts: { vision_llm_client?: typeof explorerClient } }).opts.vision_llm_client = explorerClient;
+        (
+          adapter as unknown as { opts: { vision_llm_client?: typeof explorerClient } }
+        ).opts.vision_llm_client = explorerClient;
         const orch = new orchestrator.Orchestrator({ adapter, explorerClient, judgeClient });
         result = await orch.run({
           target: { kind: 'web', url: target },
