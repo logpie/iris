@@ -12,7 +12,25 @@ export const JudgeFindingSchema = z.object({
   evidence: z.array(z.string()),
   where: z.object({ url: z.string().optional(), selector: z.string().optional() }).optional(),
   rationale: z.string(),
-  suggested_fix: z.object({ type: z.string(), summary: z.string() }).optional(),
+  // Phase 7 F7-3: suggested_fix can now carry actionable specifics. The Judge
+  // is prompted to populate code_pointer when the trace evidence includes a
+  // selector (from action/action_result payloads) and the fix is concrete enough.
+  // patch_hint is a short developer-facing sentence ("Set role='dialog' on .modal").
+  suggested_fix: z
+    .object({
+      type: z.string(),
+      summary: z.string(),
+      code_pointer: z
+        .object({
+          selector: z.string(),
+          attribute: z.string().optional(),
+          current_value: z.string().optional(),
+          suggested_value: z.string().optional(),
+        })
+        .optional(),
+      patch_hint: z.string().optional(),
+    })
+    .optional(),
   // Phase 5 additions, set by validator/identity stages (not the Judge LLM).
   unverified_backing: z.boolean().optional(),
   finding_hash: z.string().optional(),

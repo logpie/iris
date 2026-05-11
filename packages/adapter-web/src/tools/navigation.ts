@@ -58,11 +58,25 @@ export async function waitFor(
   page: Page,
   args: { selector?: string; network_idle?: boolean; timeout_ms?: number },
 ): Promise<ToolResult> {
+  const timeout = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+  if (args.selector) {
+    // Phase 7 F7-1: waitFor on an ambiguous selector hits strict-mode-violation
+    // the same way click does. Use the same retry helper.
+    const { actionWithRetry } = await import('./retry.js');
+    const outcome = await actionWithRetry(page, args.selector, (l) => l.waitFor({ timeout }), {
+      timeoutMs: timeout,
+      allowRetry: true,
+    });
+    const retry_meta = {
+      retried: outcome.retried,
+      retry_count: outcome.retry_count,
+      attempts: outcome.attempts,
+    };
+    if (outcome.ok) return { ok: true, evidence_refs: [], retry_meta };
+    return { ok: false, error: outcome.error ?? 'unknown error', retry_meta };
+  }
   try {
-    const timeout = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
-    if (args.selector) {
-      await page.locator(args.selector).waitFor({ timeout });
-    } else if (args.network_idle) {
+    if (args.network_idle) {
       await page.waitForLoadState('networkidle', { timeout });
     } else {
       throw new Error('waitFor requires selector or network_idle=true');

@@ -346,6 +346,31 @@ const STYLES = `
     border-radius: 2px;
     color: var(--text);
   }
+  .finding-patch-hint {
+    margin: 6px 0 0 34px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .finding-patch-hint .patch-label {
+    font-weight: 600;
+    margin-right: 6px;
+    color: var(--text);
+  }
+  .finding-code-pointer {
+    margin: 6px 0 0 34px;
+    padding: 6px 10px;
+    background: var(--bg-soft);
+    border-left: 2px solid var(--rule);
+    font-size: 12px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+  .finding-code-pointer code {
+    color: var(--text);
+    background: rgba(0,0,0,0.04);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
   .finding-fix {
     margin-top: 10px;
     padding: 6px 12px;
@@ -1016,11 +1041,7 @@ function renderFinding(
     <div class="finding-body">
       <div>${escapeHtml(f.rationale)}</div>
       ${f.where ? renderWhere(f.where) : ''}
-      ${
-        f.suggested_fix
-          ? `<div class="finding-fix"><span class="fix-label">Fix:</span>${escapeHtml(f.suggested_fix.summary)}</div>`
-          : ''
-      }
+      ${f.suggested_fix ? renderSuggestedFix(f.suggested_fix) : ''}
       ${inlineScreenshot}
       ${
         f.evidence.length > 0
@@ -1037,6 +1058,29 @@ function renderWhere(where: { url?: string | undefined; selector?: string | unde
   if (where.selector) parts.push(`<code>${escapeHtml(where.selector)}</code>`);
   if (parts.length === 0) return '';
   return `<div class="finding-where">at ${parts.join(' ')}</div>`;
+}
+
+// Phase 7 F7-3: render the actionable parts of suggested_fix when present.
+function renderSuggestedFix(
+  fix: NonNullable<JudgeOutput['findings'][number]['suggested_fix']>,
+): string {
+  const summary = `<div class="finding-fix"><span class="fix-label">Fix:</span>${escapeHtml(fix.summary)}</div>`;
+  const patch = fix.patch_hint
+    ? `<div class="finding-patch-hint"><span class="patch-label">Patch hint:</span>${escapeHtml(fix.patch_hint)}</div>`
+    : '';
+  let cp = '';
+  if (fix.code_pointer) {
+    const parts: string[] = [];
+    parts.push(`selector: <code>${escapeHtml(fix.code_pointer.selector)}</code>`);
+    if (fix.code_pointer.attribute)
+      parts.push(`attribute: <code>${escapeHtml(fix.code_pointer.attribute)}</code>`);
+    if (fix.code_pointer.current_value)
+      parts.push(`current: <code>${escapeHtml(fix.code_pointer.current_value)}</code>`);
+    if (fix.code_pointer.suggested_value)
+      parts.push(`suggested: <code>${escapeHtml(fix.code_pointer.suggested_value)}</code>`);
+    cp = `<div class="finding-code-pointer">${parts.join(' &middot; ')}</div>`;
+  }
+  return `${summary}${patch}${cp}`;
 }
 
 function renderEvidenceChip(eventId: string, eventIndex: Map<string, TraceEvent>): string {

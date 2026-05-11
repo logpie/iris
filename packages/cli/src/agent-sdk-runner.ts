@@ -32,6 +32,7 @@ type TraceEventKind =
   | 'step_done'
   | 'goal_status'
   | 'preflight'
+  | 'retry_attempt'
   | 'give_up'
   | 'done'
   | 'budget_warn'
@@ -226,10 +227,31 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
         stepCount++;
         await emit('action', 'explorer', { tool: spec.name, args });
         const result = await config.adapter.callTool(spec.name, args);
+        // Phase 7 F7-1: retry_attempt events for trace audit.
+        const retryMeta = (
+          result as {
+            retry_meta?: {
+              retried: boolean;
+              retry_count: number;
+              attempts?: Array<{ strategy: string; ok: boolean; error?: string }>;
+            };
+          }
+        ).retry_meta;
+        if (retryMeta?.retried && retryMeta.attempts) {
+          for (const attempt of retryMeta.attempts) {
+            await emit('retry_attempt', 'adapter', {
+              tool: spec.name,
+              strategy: attempt.strategy,
+              ok: attempt.ok,
+              ...(attempt.error ? { error: attempt.error } : {}),
+            });
+          }
+        }
         await emit('action_result', 'adapter', {
           tool: spec.name,
           ok: result.ok,
           ...(result.ok ? { evidence_refs: result.evidence_refs } : { error: result.error }),
+          ...(retryMeta ? { retried: retryMeta.retried, retry_count: retryMeta.retry_count } : {}),
         });
         // Some tools modify the page — auto-emit observation after navigation/click/type
         if (

@@ -80,7 +80,22 @@ export interface ReportJson {
   evidence_validation?: { verified: number; downgraded: number; discarded: number };
   discarded_findings?: JudgeOutput['discarded_findings'];
   next_actions: {
-    for_builder: Array<{ finding_id: string; fix_priority: number; summary: string }>;
+    // Phase 7 F7-3: for_builder entries carry the actionable bits Otto needs:
+    // a one-line patch_hint and, when available, a code_pointer (selector +
+    // attribute + suggested_value). Both optional — process findings have
+    // neither.
+    for_builder: Array<{
+      finding_id: string;
+      fix_priority: number;
+      summary: string;
+      patch_hint?: string;
+      code_pointer?: {
+        selector: string;
+        attribute?: string | undefined;
+        current_value?: string | undefined;
+        suggested_value?: string | undefined;
+      };
+    }>;
     for_re_evaluation: string[];
   };
 }
@@ -141,6 +156,8 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
       finding_id: f.id,
       fix_priority: i + 1,
       summary: f.suggested_fix?.summary ?? f.title,
+      ...(f.suggested_fix?.patch_hint ? { patch_hint: f.suggested_fix.patch_hint } : {}),
+      ...(f.suggested_fix?.code_pointer ? { code_pointer: f.suggested_fix.code_pointer } : {}),
     }));
 
   const headline: ReportJson['headline'] = {

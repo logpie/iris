@@ -29,15 +29,36 @@ export interface ProbeSpec {
   input_schema: Record<string, unknown>;
 }
 
+// Phase 7 F7-1: optional retry metadata. The adapter may retry selector-miss
+// errors with alternate strategies before returning. If `retried: true`, the
+// final success was preceded by at least one failure that the Explorer's
+// chosen selector caused; the orchestrator emits retry_attempt events to
+// preserve audit trail.
+const RetryMetaSchema = z.object({
+  retried: z.boolean(),
+  retry_count: z.number().int().nonnegative(),
+  attempts: z
+    .array(
+      z.object({
+        strategy: z.string(),
+        ok: z.boolean(),
+        error: z.string().optional(),
+      }),
+    )
+    .optional(),
+});
+
 export const ToolResultSchema = z.union([
   z.object({
     ok: z.literal(true),
     observation_ref: z.string().optional(),
     evidence_refs: z.array(z.string()).default([]),
+    retry_meta: RetryMetaSchema.optional(),
   }),
   z.object({
     ok: z.literal(false),
     error: z.string(),
+    retry_meta: RetryMetaSchema.optional(),
   }),
 ]);
 export type ToolResult = z.infer<typeof ToolResultSchema>;

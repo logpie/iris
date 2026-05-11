@@ -73,22 +73,34 @@ function isAdapterConfigError(error?: string): boolean {
 
 interface TraceContext {
   toolSuccessByTool: Map<string, number[]>; // tool -> indices where it succeeded
+  // Phase 7 F7-3: selectors the Explorer actually used. The Judge sometimes
+  // hallucinates code_pointer selectors that never appeared in the trace —
+  // we drop those at validation time.
+  knownSelectors: Set<string>;
 }
 
 function buildTraceContext(trace: TraceEvent[]): TraceContext {
   const toolSuccessByTool = new Map<string, number[]>();
+  const knownSelectors = new Set<string>();
   for (let i = 0; i < trace.length; i++) {
     const e = trace[i];
-    if (!e || e.kind !== 'action_result') continue;
+    if (!e) continue;
     const p = (e.payload ?? {}) as Record<string, unknown>;
-    if (p.ok !== true) continue;
-    const tool = String(p.tool ?? '');
-    if (!tool) continue;
-    const arr = toolSuccessByTool.get(tool) ?? [];
-    arr.push(i);
-    toolSuccessByTool.set(tool, arr);
+    if (e.kind === 'action') {
+      const args = (p.args ?? {}) as Record<string, unknown>;
+      const sel = args.selector;
+      if (typeof sel === 'string' && sel.length > 0) knownSelectors.add(sel);
+    }
+    if (e.kind === 'action_result' && p.ok === true) {
+      const tool = String(p.tool ?? '');
+      if (tool) {
+        const arr = toolSuccessByTool.get(tool) ?? [];
+        arr.push(i);
+        toolSuccessByTool.set(tool, arr);
+      }
+    }
   }
-  return { toolSuccessByTool };
+  return { toolSuccessByTool, knownSelectors };
 }
 
 // Whether a failed action_result at index `idx` was likely an Explorer error
@@ -123,7 +135,11 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
   let verified = 0;
   let downgraded = 0;
 
-  for (const f of findings) {
+  for (const rawFinding of findings) {
+    // Phase 7 F7-3: strip code_pointer if its selector doesn't appear in the
+    // trace (Judge fabricated it). Keep the rest of suggested_fix.
+    const f = stripFabricatedCodePointer(rawFinding, ctx);
+
     const validIds = f.evidence.filter((id) => eventById.has(id));
     if (validIds.length === 0) {
       discarded.push({
@@ -158,6 +174,19 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
     discarded,
     summary: { verified, downgraded, discarded: discarded.length },
   };
+}
+
+// Phase 7 F7-3: if the Judge's suggested_fix.code_pointer cites a selector
+// the Explorer never actually used, drop the code_pointer. Keep summary
+// and patch_hint (those can be valid without a code_pointer).
+function stripFabricatedCodePointer(f: JudgeFinding, ctx: TraceContext): JudgeFinding {
+  const sf = f.suggested_fix;
+  if (!sf?.code_pointer) return f;
+  const sel = sf.code_pointer.selector;
+  if (!sel || ctx.knownSelectors.has(sel)) return f;
+  // Selector not in trace — drop the code_pointer.
+  const { code_pointer: _drop, ...rest } = sf;
+  return { ...f, suggested_fix: rest };
 }
 
 interface BackingResult {
@@ -215,6 +244,11 @@ function eventBackingVerdict(
     case 'evidence':
       return p.screenshot || p.clip || p.video || p.kind ? 'backing' : 'not_backing';
     case 'action_result': {
+      // Phase 7 F7-1: a successful action that needed a retry means the
+      // Explorer's first selector was wrong. Treat as selector-miss for
+      // backing purposes — the original failure shouldn't bolster a finding,
+      // and the eventual success was just retry plumbing.
+      if (p.ok === true && p.retried === true) return 'selector_miss';
       // Successful action with evidence_refs (screenshot etc) is backing.
       if (p.ok === true) {
         const refs = p.evidence_refs;

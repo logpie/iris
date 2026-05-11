@@ -343,6 +343,11 @@ interface IrisRunArgs {
   preflight_timeout_s?: string;
 }
 
+// Phase 7 F7-2: set IRIS_BENCH_ENSEMBLE=1 to run with Judge ensemble. Doubles
+// Judge cost per fixture; used to measure ensemble's effect on variance.
+const ENSEMBLE = process.env.IRIS_BENCH_ENSEMBLE === '1';
+if (ENSEMBLE) console.log('bench: IRIS_BENCH_ENSEMBLE=1 — Judge ensemble enabled');
+
 function runIris(args: IrisRunArgs): Promise<number> {
   return new Promise((resolveRun, reject) => {
     const cmdArgs = [
@@ -361,6 +366,7 @@ function runIris(args: IrisRunArgs): Promise<number> {
       args.max_cost,
       '--transport',
       HAS_API_KEY ? 'api' : 'sdk',
+      ...(ENSEMBLE ? ['--judge-ensemble'] : []),
       ...(args.preflight_timeout_s ? ['--preflight-timeout-s', args.preflight_timeout_s] : []),
     ];
     const proc = spawn('node', cmdArgs, { stdio: 'inherit' });

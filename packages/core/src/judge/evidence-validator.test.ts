@@ -183,6 +183,93 @@ describe('validateFindings', () => {
     expect(out.kept[0]?.likely_explorer_error).toBe(true);
   });
 
+  // Phase 7 F7-1 ----------------------------------------------------
+
+  it('treats retried-success action_result as Explorer error, not backing', () => {
+    const trace = [
+      ev('E1', 'action_result', {
+        tool: 'click',
+        ok: true,
+        retried: true,
+        retry_count: 1,
+      }),
+    ];
+    const out = validateFindings([finding({ severity: 'major', evidence: ['E1'] })], trace);
+    // Major → downgraded to minor + likely_explorer_error.
+    expect(out.kept[0]?.severity).toBe('minor');
+    expect(out.kept[0]?.likely_explorer_error).toBe(true);
+  });
+
+  it('keeps a major finding when action_result succeeded WITHOUT retry', () => {
+    const trace = [
+      ev('E1', 'action_result', {
+        tool: 'click',
+        ok: true,
+        evidence_refs: ['/p/step.png'],
+      }),
+    ];
+    const out = validateFindings([finding({ severity: 'major', evidence: ['E1'] })], trace);
+    expect(out.kept[0]?.severity).toBe('major');
+    expect(out.kept[0]?.unverified_backing).toBe(false);
+  });
+
+  // Phase 7 F7-3 ----------------------------------------------------
+
+  it('strips code_pointer with a selector not present in any action event', () => {
+    const trace = [
+      ev('E1', 'action', { tool: 'click', args: { selector: '.real-button' } }),
+      ev('E2', 'action_result', { tool: 'click', ok: true, evidence_refs: ['/x.png'] }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          severity: 'major',
+          evidence: ['E1', 'E2'],
+          suggested_fix: {
+            type: 'a11y',
+            summary: 'Add aria-label',
+            code_pointer: {
+              selector: '.fabricated-selector',
+              attribute: 'aria-label',
+              suggested_value: 'Submit',
+            },
+            patch_hint: 'Set aria-label on the submit button',
+          },
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept[0]?.suggested_fix?.code_pointer).toBeUndefined();
+    expect(out.kept[0]?.suggested_fix?.patch_hint).toBe('Set aria-label on the submit button');
+    expect(out.kept[0]?.suggested_fix?.summary).toBe('Add aria-label');
+  });
+
+  it('keeps code_pointer when selector matches a real trace action', () => {
+    const trace = [
+      ev('E1', 'action', { tool: 'click', args: { selector: '.real-button' } }),
+      ev('E2', 'action_result', { tool: 'click', ok: true, evidence_refs: ['/x.png'] }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          severity: 'major',
+          evidence: ['E1', 'E2'],
+          suggested_fix: {
+            type: 'a11y',
+            summary: 'Add aria-label',
+            code_pointer: {
+              selector: '.real-button',
+              attribute: 'aria-label',
+              suggested_value: 'Submit',
+            },
+          },
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept[0]?.suggested_fix?.code_pointer?.selector).toBe('.real-button');
+  });
+
   it('backing window extends ±2 events around each cited event', () => {
     const trace = [
       ev('E1', 'action'),

@@ -36,7 +36,18 @@ Output ONLY a JSON object matching this schema:
       "evidence": [string],
       "where": { "url": string, "selector": string },
       "rationale": string,
-      "suggested_fix": { "type": string, "summary": string }
+      "suggested_fix": {
+        "type": string,
+        "summary": string,
+        // Phase 7 F7-3: populate code_pointer when the cited evidence contains
+        // a selector (from action/action_result payloads) AND the fix is
+        // concrete (e.g., adding an aria-label, changing a role attribute).
+        // OMIT if the selector would have to be guessed.
+        "code_pointer"?: { "selector": string, "attribute"?: string, "current_value"?: string, "suggested_value"?: string },
+        // patch_hint: one developer-facing sentence. Optional but encouraged
+        // for bug/a11y/copy categories; omit for vague suggestions.
+        "patch_hint"?: string
+      }
     }
   ],
   "discarded_findings": [{ "tentative_event_id": string, "reason": string }],

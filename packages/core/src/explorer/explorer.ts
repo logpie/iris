@@ -483,10 +483,32 @@ export class Explorer {
     );
 
     const result = await this.deps.adapter.callTool(name, args);
+    // Phase 7 F7-1: if the adapter retried selectors internally, emit a
+    // retry_attempt event per attempt so the trace audit shows what happened.
+    const retryMeta = (
+      result as {
+        retry_meta?: {
+          retried: boolean;
+          retry_count: number;
+          attempts?: Array<{ strategy: string; ok: boolean; error?: string }>;
+        };
+      }
+    ).retry_meta;
+    if (retryMeta?.retried && retryMeta.attempts) {
+      for (const attempt of retryMeta.attempts) {
+        await this.emit('retry_attempt', 'adapter', {
+          tool: name,
+          strategy: attempt.strategy,
+          ok: attempt.ok,
+          ...(attempt.error ? { error: attempt.error } : {}),
+        });
+      }
+    }
     await this.emit('action_result', 'adapter', {
       tool: name,
       ok: result.ok,
       ...(result.ok ? { evidence_refs: result.evidence_refs } : { error: result.error }),
+      ...(retryMeta ? { retried: retryMeta.retried, retry_count: retryMeta.retry_count } : {}),
     });
     this.recentActions.push(
       `${name}(${JSON.stringify(args).slice(0, 80)}) → ${result.ok ? 'ok' : 'err'}`,
