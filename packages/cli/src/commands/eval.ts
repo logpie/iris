@@ -21,6 +21,25 @@ export function evalCommand(): Command {
     .option('--engine <engine>', 'dom | vision | hybrid (web-only)', 'hybrid')
     .option('--max-steps <n>', 'hard cap on Explorer actions', (s) => Number.parseInt(s, 10), 60)
     .option(
+      '--steps-per-goal <n>',
+      'per-goal turn budget (Phase 5). When set with a spec, max_steps is recomputed as goals × steps_per_goal + free_exploration_steps (capped by --max-steps).',
+      (s) => Number.parseInt(s, 10),
+      10,
+    )
+    .option(
+      '--free-exploration-steps <n>',
+      'free-exploration tail budget after all goals are attempted (Phase 5)',
+      (s) => Number.parseInt(s, 10),
+      8,
+    )
+    .option(
+      '--preflight-timeout-s <n>',
+      'preflight per-check timeout in seconds (Phase 5)',
+      (s) => Number.parseInt(s, 10),
+      15,
+    )
+    .option('--no-preflight', 'skip preflight checks (debugging only) (Phase 5)')
+    .option(
       '--max-cost-usd <n>',
       'abort when LLM cost exceeds this',
       (s) => Number.parseFloat(s),
@@ -110,7 +129,7 @@ export function evalCommand(): Command {
         out_dir: string;
         duration_s: number;
         cost_usd: number;
-        exit_code: 0 | 1 | 2 | 3;
+        exit_code: 0 | 1 | 2 | 3 | 4;
       };
 
       if (transport === 'sdk') {
@@ -123,12 +142,16 @@ export function evalCommand(): Command {
             ...(specPath !== undefined ? { spec_path: specPath } : {}),
             rubric_profiles: rubricProfiles,
             max_steps: opts.maxSteps as number,
+            steps_per_goal: opts.stepsPerGoal as number,
+            free_exploration_steps: opts.freeExplorationSteps as number,
             max_cost_usd: opts.maxCostUsd as number,
             timeout_s: opts.timeout as number,
             ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
             explorer_model: opts.explorerModel as string,
             judge_model: opts.judgeModel as string,
             no_html: opts.html === false,
+            no_preflight: opts.preflight === false,
+            preflight_timeout_s: opts.preflightTimeoutS as number,
             ...(opts.persona !== undefined ? { persona: opts.persona as string } : {}),
           },
           adapter,
@@ -150,12 +173,16 @@ export function evalCommand(): Command {
           ...(initialTasks.length > 0 ? { initial_tasks: initialTasks } : {}),
           rubric_profiles: rubricProfiles,
           max_steps: opts.maxSteps as number,
+          steps_per_goal: opts.stepsPerGoal as number,
+          free_exploration_steps: opts.freeExplorationSteps as number,
           max_cost_usd: opts.maxCostUsd as number,
           timeout_s: opts.timeout as number,
           ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
           explorer_model: opts.explorerModel as string,
           judge_model: opts.judgeModel as string,
           no_html: opts.html === false,
+          no_preflight: opts.preflight === false,
+          preflight_timeout_s: opts.preflightTimeoutS as number,
           persona: opts.persona as PersonaName,
         });
       }

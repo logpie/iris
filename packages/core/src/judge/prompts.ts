@@ -13,9 +13,16 @@ Your job:
    - minor: visible defect with workaround
    - nit: polish (typo, spacing)
    - suggestion: improvement idea, not a defect
-5. Score each rubric profile's dimensions on a 0-10 scale. Cite trace event ids as evidence (e.g. "T01ABC...").
-6. Assess spec_compliance per goal: satisfied | partial | not_satisfied, with cited evidence.
-7. Self-assess confidence (0-1) and list caveats.
+5. EVERY finding must cite at least one trace event id as evidence. Findings whose evidence the validator cannot confirm get downgraded — better to omit a finding than to write one you can't back up from the trace.
+6. Score each rubric profile's dimensions on a 0-10 scale. Cite trace event ids as evidence (e.g. "T01ABC...").
+7. Assess spec_compliance per goal using goal_status trace events as the source of truth:
+   - verified: explorer called goal_status({status:"verified"}) — count this goal as attempted-and-passed.
+   - partial: explorer called goal_status({status:"partial"}) OR auto-cutover triggered — count as attempted-and-partial.
+   - blocked: explorer called goal_status({status:"blocked"}) — count as attempted-but-something-stopped-them.
+   - skipped: explorer called goal_status({status:"skipped"}) — DO NOT count toward score denominator.
+   - untested: explorer never reached the goal (system emits goal_status:untested at end) — DO NOT count toward score denominator.
+   Compute the spec-compliance score over ATTEMPTED goals only (verified + partial + blocked). Untested/skipped goals appear in the goals list but do not pull the score down.
+8. Self-assess confidence (0-1) and list caveats.
 
 Output ONLY a JSON object matching this schema:
 {
@@ -46,7 +53,7 @@ Output ONLY a JSON object matching this schema:
   },
   "spec_compliance": {
     "applicable": boolean,
-    "goals": [{ "id": string, "description": string, "status": "satisfied"|"partial"|"not_satisfied", "evidence": [string], "notes"?: string }],
+    "goals": [{ "id": string, "description": string, "status": "verified"|"partial"|"blocked"|"skipped"|"untested", "evidence": [string], "notes"?: string }],
     "summary": string
   },
   "coverage_review": {
@@ -121,6 +128,10 @@ function summarizeEvent(e: TraceEvent): string {
       const summaryStr = JSON.stringify(p.summary ?? {}).slice(0, 120);
       return `${String(p.probe ?? '')} ${summaryStr}`;
     }
+    case 'goal_status':
+      return `${String(p.id ?? '')} → ${String(p.status ?? '')} ${p.auto_cutover ? '(auto-cutover)' : ''} "${String(p.rationale ?? '').slice(0, 100)}"`;
+    case 'preflight':
+      return `ok=${String(p.ok ?? '')} ${JSON.stringify(p.checks ?? []).slice(0, 200)}`;
     case 'step_plan':
       return String(p.reasoning ?? '').slice(0, 120);
     case 'give_up':

@@ -13,6 +13,9 @@ export const JudgeFindingSchema = z.object({
   where: z.object({ url: z.string().optional(), selector: z.string().optional() }).optional(),
   rationale: z.string(),
   suggested_fix: z.object({ type: z.string(), summary: z.string() }).optional(),
+  // Phase 5 additions, set by validator/identity stages (not the Judge LLM).
+  unverified_backing: z.boolean().optional(),
+  finding_hash: z.string().optional(),
 });
 export type JudgeFinding = z.infer<typeof JudgeFindingSchema>;
 
@@ -44,7 +47,20 @@ export const JudgeOutputSchema = z.object({
         z.object({
           id: z.string(),
           description: z.string(),
-          status: z.enum(['satisfied', 'partial', 'not_satisfied']),
+          // Phase 5: extended enum. Old values map forward:
+          //   satisfied → verified
+          //   not_satisfied → blocked (when evidence cited) or untested (when only budget_abort)
+          // The Judge prompt is updated to emit the new values directly.
+          status: z.enum([
+            'verified',
+            'partial',
+            'blocked',
+            'skipped',
+            'untested',
+            // Legacy — Judge may still emit during the transition.
+            'satisfied',
+            'not_satisfied',
+          ]),
           evidence: z.array(z.string()),
           notes: z.string().optional(),
         }),
@@ -62,6 +78,15 @@ export const JudgeOutputSchema = z.object({
     confidence_caveats: z.array(z.string()).default([]),
     would_re_explore_with: z.array(z.string()).default([]),
   }),
+  // Phase 5: populated by the post-Judge evidence validator. Optional so the
+  // schema accepts both v1 raw Judge output and v2 post-validation reports.
+  evidence_validation: z
+    .object({
+      verified: z.number().int().nonnegative(),
+      downgraded: z.number().int().nonnegative(),
+      discarded: z.number().int().nonnegative(),
+    })
+    .optional(),
 });
 export type JudgeOutput = z.infer<typeof JudgeOutputSchema>;
 

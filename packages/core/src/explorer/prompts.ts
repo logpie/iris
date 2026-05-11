@@ -33,7 +33,8 @@ Meta-tool guidance:
 - Use note_finding LIBERALLY when something looks off; the judge dedupes false positives.
 - Use mark_surface_seen / note_surface_unexplored to maintain coverage.
 - Use step_done when a planned goal is satisfied.
-- Use give_up when stuck after multiple attempts.
+- Use goal_status when a spec goal is finished (verified/partial/blocked/skipped). Do NOT spend more than the per-goal budget on one goal — call goal_status and move on. If you don't, the system will auto-mark it as partial.
+- Use give_up when stuck after multiple attempts (entire run; rarely needed if you use goal_status to skip individual goals).
 - Use done when all goals satisfied or you've completed a thorough exploration.`;
 
 // ---------------------------------------------------------------------------

@@ -29,6 +29,11 @@ export interface OrchestratorRunConfig {
   judge_model: string;
   no_html: boolean;
   persona?: PersonaName;
+  // Phase 5 additions
+  steps_per_goal?: number;
+  free_exploration_steps?: number;
+  no_preflight?: boolean;
+  preflight_timeout_s?: number;
 }
 
 export interface OrchestratorResult {
@@ -37,7 +42,7 @@ export interface OrchestratorResult {
   duration_s: number;
   cost_usd: number;
   termination: ExplorerResult['termination'];
-  exit_code: 0 | 1 | 2 | 3;
+  exit_code: 0 | 1 | 2 | 3 | 4;
 }
 
 export interface OrchestratorDeps {
@@ -126,6 +131,21 @@ export class Orchestrator {
       initialPlanStack.push(...config.initial_tasks);
     }
 
+    // Phase 5: when a spec is interpreted, normalize goals to {id, description}
+    // and pass to Explorer for per-goal budgeting.
+    const specGoals: Array<{ id: string; description: string }> | undefined = interpreted
+      ? interpreted.goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description }))
+      : undefined;
+    const stepsPerGoal = config.steps_per_goal;
+    const freeExplorationSteps = config.free_exploration_steps ?? 0;
+    const effectiveMaxSteps =
+      specGoals && stepsPerGoal && stepsPerGoal > 0
+        ? Math.min(
+            config.max_steps,
+            specGoals.length * stepsPerGoal + freeExplorationSteps,
+          )
+        : config.max_steps;
+
     const explorer = new Explorer({
       adapter: this.deps.adapter,
       llmClient: this.deps.explorerClient,
@@ -134,11 +154,18 @@ export class Orchestrator {
         mode: config.mode,
         target_kind: config.target.kind,
         model: config.explorer_model,
-        max_steps: config.max_steps,
+        max_steps: effectiveMaxSteps,
         max_cost_usd: config.max_cost_usd,
         timeout_s: config.timeout_s,
         ...(initialPlanStack.length > 0 ? { initial_plan_stack: initialPlanStack } : {}),
         ...(config.persona !== undefined ? { persona: config.persona } : {}),
+        ...(specGoals && stepsPerGoal && stepsPerGoal > 0
+          ? {
+              spec_goals: specGoals,
+              steps_per_goal: stepsPerGoal,
+              free_exploration_steps: freeExplorationSteps,
+            }
+          : {}),
       },
     });
 

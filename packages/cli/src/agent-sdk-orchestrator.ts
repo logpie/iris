@@ -34,6 +34,13 @@ export interface AgentSdkRunConfig {
   judge_model: string;
   no_html: boolean;
   persona?: string;
+  /** Phase 5: per-goal budget. If set, max_steps is recomputed as
+   * goals * steps_per_goal + free_exploration_steps. */
+  steps_per_goal?: number;
+  free_exploration_steps?: number;
+  /** Phase 5: preflight skip-flag for debugging. */
+  no_preflight?: boolean;
+  preflight_timeout_s?: number;
 }
 
 export interface AgentSdkRunResult {
@@ -42,7 +49,7 @@ export interface AgentSdkRunResult {
   duration_s: number;
   cost_usd: number;
   termination: string;
-  exit_code: 0 | 1 | 2 | 3;
+  exit_code: 0 | 1 | 2 | 3 | 4;
 }
 
 export async function runIrisViaSdk(
@@ -115,15 +122,33 @@ export async function runIrisViaSdk(
     persona: personaName,
   });
 
-  const initialPlanLines: string[] = [];
-  if (interpreted) {
-    for (const g of interpreted.goals) initialPlanLines.push(`verify: ${g.description}`);
+  const goals = interpreted?.goals ?? [];
+  const hasGoals = goals.length > 0;
+
+  // Phase 5: per-goal budget. If steps_per_goal is set, compute an effective
+  // max_steps that scales with the goal count.
+  const stepsPerGoal = config.steps_per_goal;
+  const freeExplorationSteps = config.free_exploration_steps ?? 0;
+  const effectiveMaxSteps =
+    hasGoals && stepsPerGoal && stepsPerGoal > 0
+      ? Math.min(config.max_steps, goals.length * stepsPerGoal + freeExplorationSteps)
+      : config.max_steps;
+  if (effectiveMaxSteps !== config.max_steps) {
+    process.stderr.write(
+      `iris: per-goal budget — ${goals.length} goals × ${stepsPerGoal} + ${freeExplorationSteps} free = ${effectiveMaxSteps} turns (max_steps cap: ${config.max_steps})\n`,
+    );
   }
 
-  const hasGoals = initialPlanLines.length > 0;
+  const goalList = hasGoals
+    ? goals.map((g, i) => `  G${i + 1}. ${g.description}`).join('\n')
+    : '';
+  const perGoalLine = stepsPerGoal && stepsPerGoal > 0
+    ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on.`
+    : '';
+
   const initialUserPrompt = `Target: ${config.target.url}
 
-${hasGoals ? `${interpreted ? `What this app is supposed to do (from the spec):\n${interpreted.goals.map((g, i) => `  ${i + 1}. ${g.description}`).join('\n')}\n\n` : ''}Your job: USE THIS APP. Verify each spec goal by performing it as a normal user would.\n\nFor each goal, in order:\n  1. Find the relevant UI element (input, button, link).\n  2. Interact with it normally — type text, click, submit. Don't just look.\n  3. Observe what changed.\n  4. Call \`mcp__iris__step_done\` with the goal id ("G1", "G2", ...) when you've verified it works end-to-end.\n  5. If you confirm it's broken, call \`mcp__iris__note_finding\` with category="bug" and a clear title.\n` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons. Don't just look at the page.\n`}
+${hasGoals ? `What this app is supposed to do (from the spec):\n${goalList}\n\nYour job: USE THIS APP. Verify each spec goal by performing it as a normal user would.\n\nFor each goal, in order:\n  1. Find the relevant UI element (input, button, link).\n  2. Interact with it normally — type text, click, submit. Don't just look.\n  3. Observe what changed.\n  4. Call \`mcp__iris__goal_status\` with the goal id (G1, G2, …), status (verified / partial / blocked / skipped), and a one-line rationale.\n  5. If you find a bug, ALSO call \`mcp__iris__note_finding\` with category="bug".\n\n${perGoalLine}\n` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons. Don't just look at the page.\n`}
 PRIORITY ORDER:
   1. HAPPY PATHS FIRST. Make the primary features work before anything else. If the app is a TODO list, your first action is to add a todo. If it's a sign-in form, your first action is to fill it in and submit.
   2. AFTER happy paths complete, run \`mcp__iris__axe\` and \`mcp__iris__console_errors_since\` once to catch passive issues.
@@ -134,10 +159,9 @@ AVOID:
   - Calling probes before any user interaction. Probes are useful AFTER you've exercised the flows, not before.
   - Defaulting to screenshot when DOM observation already shows what you need.
   - Trying many alternate selectors when the first failed. After one selector miss, try a different approach (different element, different action, or note_finding "I expected X but couldn't find it").
+  - Spending more than the per-goal budget on one goal. Call goal_status and move on — you can come back later if there's time.
 
-If you can't figure out how to drive a spec goal after 2 honest attempts, call \`mcp__iris__note_finding\` with title like "Spec says X but I couldn't find a way to do it" and MOVE ON. Don't get stuck.
-
-Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). Budget: ~${config.max_steps} interaction turns, $${config.max_cost_usd.toFixed(2)} cost cap. Call \`mcp__iris__done\` when you've exercised every spec goal you can.`;
+Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). Total budget: ~${effectiveMaxSteps} interaction turns, $${config.max_cost_usd.toFixed(2)} cost cap.`;
 
   process.stderr.write('iris: starting Explorer (Agent SDK session)...\n');
   let explorerResult: Awaited<ReturnType<typeof runAgentSdkExplorer>>;
@@ -147,10 +171,13 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       traceWriter,
       systemPrompt,
       initialUserPrompt,
-      maxSteps: config.max_steps,
+      maxSteps: effectiveMaxSteps,
       maxCostUsd: config.max_cost_usd - totalCost,
       timeoutS: config.timeout_s,
       model: config.explorer_model,
+      ...(hasGoals
+        ? { goals: goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description })) }
+        : {}),
     });
     totalCost += explorerResult.cost_usd;
     process.stderr.write(

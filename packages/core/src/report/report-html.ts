@@ -47,15 +47,25 @@ export function buildReportHtml(report: ReportJson, opts: BuildReportHtmlOptions
 
   const parts: string[] = [];
   parts.push(renderHeader(report));
-  parts.push(renderTLDR(report, eventIndex));
-  parts.push(renderWhatHappened(report, eventIndex));
-  parts.push(renderFindingsSection(report.findings, eventIndex, screenshotForEvent));
-  if (runData?.videoRelPath)
-    parts.push(renderVideoSection(runData.videoRelPath, report.run.duration_s, actionMarkers));
-  parts.push(renderRubricSection(report.scores, eventIndex));
-  parts.push(renderCaveatsSection(report.meta));
-  if (runData) parts.push(renderTraceSection(runData));
-  parts.push(renderFooter(report));
+  // Phase 5: if the run was blocked at preflight, render a banner and skip
+  // the score-bearing sections. The verdict is "we couldn't evaluate this",
+  // not a number.
+  if (report.headline.blocked) {
+    parts.push(renderBlockedBanner(report));
+    parts.push(renderCaveatsSection(report.meta));
+    if (runData) parts.push(renderTraceSection(runData));
+    parts.push(renderFooter(report));
+  } else {
+    parts.push(renderTLDR(report, eventIndex));
+    parts.push(renderWhatHappened(report, eventIndex));
+    parts.push(renderFindingsSection(report.findings, eventIndex, screenshotForEvent));
+    if (runData?.videoRelPath)
+      parts.push(renderVideoSection(runData.videoRelPath, report.run.duration_s, actionMarkers));
+    parts.push(renderRubricSection(report.scores, eventIndex));
+    parts.push(renderCaveatsSection(report.meta));
+    if (runData) parts.push(renderTraceSection(runData));
+    parts.push(renderFooter(report));
+  }
 
   return `<!doctype html>
 <html lang="en">
@@ -176,6 +186,42 @@ const STYLES = `
   .tldr.partial { border-left-color: var(--status-partial); }
   .tldr p { margin: 0; }
   .tldr p + p { margin-top: 8px; }
+  .integrity-line {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-top: 8px !important;
+  }
+  .blocked-banner {
+    background: #fff5f5;
+    border: 1px solid var(--sev-blocker);
+    border-left-width: 4px;
+    padding: 20px 24px;
+    margin: 16px 0 32px;
+  }
+  .blocked-banner h2 {
+    color: var(--sev-blocker);
+    margin: 0 0 12px;
+  }
+  .blocked-banner p { margin: 0 0 12px; }
+  .blocked-banner ul.blocked-reasons {
+    margin: 0 0 12px;
+    padding-left: 20px;
+  }
+  .blocked-banner code {
+    font-family: var(--mono);
+    font-size: 13px;
+    background: rgba(0,0,0,0.04);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .unverified-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    letter-spacing: 0.05em;
+    margin-left: 6px;
+  }
   .tldr .score-inline {
     font-family: var(--mono);
     font-weight: 600;
@@ -204,9 +250,12 @@ const STYLES = `
     letter-spacing: 0.04em;
     font-weight: 600;
   }
-  .goals-list .gtag.status-satisfied { color: var(--status-pass); }
+  .goals-list .gtag.status-satisfied,
+  .goals-list .gtag.status-verified { color: var(--status-pass); }
   .goals-list .gtag.status-partial { color: var(--status-partial); }
+  .goals-list .gtag.status-blocked,
   .goals-list .gtag.status-not_satisfied { color: var(--status-fail); }
+  .goals-list .gtag.status-skipped { color: var(--text-faint); }
   .goals-list .gtag.status-untested { color: var(--status-untested); }
   .goals-list .gtext { flex: 1; }
   .goals-list .gid { font-family: var(--mono); color: var(--text-faint); font-size: 12px; }
@@ -654,9 +703,10 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
     ? goals.goals.map((g) => effectiveGoalStatus(g, eventIndex))
     : [];
   const counts = {
-    sat: effective.filter((s) => s === 'satisfied').length,
+    sat: effective.filter((s) => s === 'verified' || s === 'satisfied').length,
     par: effective.filter((s) => s === 'partial').length,
-    neg: effective.filter((s) => s === 'not_satisfied').length,
+    neg: effective.filter((s) => s === 'blocked' || s === 'not_satisfied').length,
+    skipped: effective.filter((s) => s === 'skipped').length,
     untested: effective.filter((s) => s === 'untested').length,
     total: effective.length,
   };
@@ -739,9 +789,46 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
   // Score footer
   const scoreLine = `<p><span class="score-inline">${report.headline.score.toFixed(1)} / 10</span> &nbsp;<span style="color: var(--text-faint); font-size: 13px;">across rubric profiles (see below for breakdown)</span></p>`;
 
+  // Phase 5: data integrity line — how many findings survived evidence validation.
+  let integrityLine = '';
+  const ev = report.evidence_validation;
+  if (ev && ev.verified + ev.downgraded + ev.discarded > 0) {
+    const total = ev.verified + ev.downgraded + ev.discarded;
+    const parts: string[] = [];
+    parts.push(`${ev.verified}/${total} verified backing`);
+    if (ev.downgraded > 0) parts.push(`${ev.downgraded} downgraded`);
+    if (ev.discarded > 0) parts.push(`${ev.discarded} discarded`);
+    integrityLine = `<p class="integrity-line">Findings: ${parts.join(', ')}.</p>`;
+  }
+
   return `<section class="tldr ${toneClass}">
     <p>${sentences.join(' ')}</p>
     ${scoreLine}
+    ${integrityLine}
+  </section>`;
+}
+
+function renderBlockedBanner(report: ReportJson): string {
+  const reasons = report.headline.blocked_reasons ?? [];
+  const checks = report.preflight?.checks ?? [];
+  const failedChecks = checks.filter((c) => !c.ok);
+  const screenshotImg = report.preflight?.screenshot
+    ? `<div class="finding-screenshot"><a href="${escapeAttr(report.preflight.screenshot)}" target="_blank" rel="noopener"><img src="${escapeAttr(report.preflight.screenshot)}" alt="Preflight screenshot" loading="lazy"></a></div>`
+    : '';
+  const itemHtml = failedChecks.length > 0
+    ? failedChecks
+        .map(
+          (c) =>
+            `<li><code>${escapeHtml(c.name)}</code>${c.detail ? ` — ${escapeHtml(c.detail)}` : ''}</li>`,
+        )
+        .join('')
+    : reasons.map((r) => `<li><code>${escapeHtml(r)}</code></li>`).join('');
+  return `<section class="blocked-banner">
+    <h2>App blocked from evaluation</h2>
+    <p>Iris could not evaluate this target because preflight checks failed:</p>
+    <ul class="blocked-reasons">${itemHtml}</ul>
+    <p style="color: var(--text-dim); font-size: 14px;">No score is shown because no meaningful evaluation took place. Fix the underlying issues and re-run.</p>
+    ${screenshotImg}
   </section>`;
 }
 
@@ -778,32 +865,42 @@ function renderWhatHappened(report: ReportJson, eventIndex: Map<string, TraceEve
 
 function goalStatusLabel(status: string): string {
   switch (status) {
+    case 'verified':
     case 'satisfied':
       return 'works';
     case 'partial':
       return 'partial';
+    case 'blocked':
     case 'not_satisfied':
       return 'broken';
+    case 'skipped':
+      return 'skipped';
     default:
       return 'untested';
   }
 }
 
-// Distinguishes "tested and failed" from "never tested" — the Judge only emits
-// satisfied/partial/not_satisfied, but a goal that the Explorer never exercised
-// (run hit a budget, or notes explicitly say "not tested") should not be called
-// "broken".
+// Normalizes goal status across the Judge's pre- and post-Phase-5 enums, and
+// downgrades a "broken" verdict to "untested" when the only evidence is a
+// budget_abort event (the Explorer never reached the goal — calling it broken
+// would overstate evidence and mislead the consumer).
 function effectiveGoalStatus(
   g: ReportJson['spec_compliance']['goals'][number],
   eventIndex: Map<string, TraceEvent>,
 ): string {
-  if (g.status !== 'not_satisfied') return g.status;
+  // Phase 5 statuses pass through unchanged. Legacy "satisfied" maps to "verified".
+  if (g.status === 'verified' || g.status === 'satisfied') return 'verified';
+  if (g.status === 'partial') return 'partial';
+  if (g.status === 'skipped') return 'skipped';
+  if (g.status === 'untested') return 'untested';
+  // For "blocked" or "not_satisfied" (legacy), downgrade to untested when the
+  // only evidence is a budget abort or notes explicitly say not tested.
   const onlyBudgetAbort =
     g.evidence.length > 0 &&
     g.evidence.every((id) => eventIndex.get(id)?.kind === 'budget_abort');
   const notesSayUntested = !!g.notes && /\bnot tested\b/i.test(g.notes);
   if (onlyBudgetAbort || notesSayUntested) return 'untested';
-  return g.status;
+  return g.status === 'blocked' ? 'blocked' : 'not_satisfied';
 }
 
 // Findings list
@@ -853,6 +950,7 @@ function renderFinding(
     <div class="finding-head">
       <span class="finding-num">${num}.</span>
       <span class="sev-tag sev-${escapeHtml(f.severity)}">${escapeHtml(f.severity)}</span>
+      ${f.unverified_backing ? '<span class="unverified-tag" title="The validator could not confirm a backing event for this finding; severity was downgraded.">unverified</span>' : ''}
       <span class="cat-tag">${escapeHtml(f.category)}</span>
       <span class="fid">${escapeHtml(f.id)}</span>
     </div>

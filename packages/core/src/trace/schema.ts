@@ -16,6 +16,8 @@ export const TraceEventKindSchema = z.enum([
   'surface_seen',
   'surface_unexplored',
   'step_done',
+  'goal_status',
+  'preflight',
   'give_up',
   'done',
   'budget_warn',
@@ -36,5 +38,6 @@ export const TraceEventSchema = z.object({
   kind: TraceEventKindSchema,
   actor: ActorSchema,
   payload: z.record(z.unknown()),
+  content_hash: z.string().optional(),
 });
 export type TraceEvent = z.infer<typeof TraceEventSchema>;

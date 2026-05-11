@@ -228,7 +228,7 @@ describe('iris eval — end-to-end against fixture site', () => {
 
     // report.json has Otto-feedback shape
     const report = JSON.parse(readFileSync(join(outDir, 'report.json'), 'utf8'));
-    expect(report.v).toBe(1);
+    expect(report.v).toBe(2);
     expect(report.tool.name).toBe('iris');
     expect(report.run.target.url).toBe(`${fixture.url}/index.html`);
     expect(report.next_actions.for_builder).toBeDefined();

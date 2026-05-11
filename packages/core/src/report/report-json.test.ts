@@ -3,9 +3,9 @@ import { fakeJudge, fakeRun } from './_fakes.js';
 import { buildReportJson } from './report-json.js';
 
 describe('buildReportJson', () => {
-  it('produces a v:1 report with headline counts', () => {
+  it('produces a v:2 report with headline counts', () => {
     const r = buildReportJson({ judge: fakeJudge(), run: fakeRun(), threshold: 7.0 });
-    expect(r.v).toBe(1);
+    expect(r.v).toBe(2);
     expect(r.headline.blockers).toBe(1);
     expect(r.headline.nits).toBe(1);
     expect(r.headline.score).toBe(6.5);

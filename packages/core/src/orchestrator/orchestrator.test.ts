@@ -175,7 +175,7 @@ describe('Orchestrator', () => {
 
     const reportText = readFileSync(join(dir, 'report.json'), 'utf8');
     const report = JSON.parse(reportText);
-    expect(report.v).toBe(1);
+    expect(report.v).toBe(2);
     expect(report.findings).toHaveLength(1);
   });
 

@@ -30,6 +30,8 @@ type TraceEventKind =
   | 'surface_seen'
   | 'surface_unexplored'
   | 'step_done'
+  | 'goal_status'
+  | 'preflight'
   | 'give_up'
   | 'done'
   | 'budget_warn'
@@ -100,6 +102,9 @@ export interface ExplorerSdkConfig {
   maxCostUsd: number;
   timeoutS: number;
   model?: string;
+  /** When provided, registers a goal_status MCP tool and emits a final
+   * `goal_status: untested` event for every goal the Explorer never closed. */
+  goals?: Array<{ id: string; description: string }>;
 }
 
 export interface ExplorerSdkResult {
@@ -115,6 +120,12 @@ export interface ExplorerSdkResult {
   cost_usd: number;
   steps_taken: number;
   duration_s: number;
+  goal_ledger?: Array<{
+    id: string;
+    description: string;
+    status: 'verified' | 'partial' | 'blocked' | 'skipped' | 'untested';
+    rationale: string;
+  }>;
 }
 
 interface ExplorerState {
@@ -399,9 +410,38 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     ),
   ];
 
+  // Track goal status across the run (only used when config.goals is provided).
+  const goalLedger = new Map<string, { description: string; status: string; rationale: string }>();
+  for (const g of config.goals ?? []) {
+    goalLedger.set(g.id, { description: g.description, status: 'pending', rationale: '' });
+  }
+
+  const goalStatusTools = config.goals
+    ? [
+        tool(
+          'goal_status',
+          'Mark a spec goal as verified/partial/blocked/skipped. Call this when you have finished (or determined you cannot complete) a goal so the run can move on. verified = goal works end-to-end; partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable.',
+          {
+            id: z.string(),
+            status: z.enum(['verified', 'partial', 'blocked', 'skipped']),
+            rationale: z.string(),
+          },
+          async (args) => {
+            const entry = goalLedger.get(args.id);
+            if (entry) {
+              entry.status = args.status;
+              entry.rationale = args.rationale;
+            }
+            await emit('goal_status', 'explorer', { ...args, auto_cutover: false });
+            return { content: [{ type: 'text' as const, text: `goal ${args.id}: ${args.status}` }] };
+          },
+        ),
+      ]
+    : [];
+
   const irisToolServer = createSdkMcpServer({
     name: 'iris',
-    tools: [...adapterMcpTools, ...probeMcpTools, ...metaTools],
+    tools: [...adapterMcpTools, ...probeMcpTools, ...metaTools, ...goalStatusTools],
   });
 
   const allowedToolNames = [
@@ -415,6 +455,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     'mcp__iris__step_done',
     'mcp__iris__give_up',
     'mcp__iris__done',
+    ...(config.goals ? ['mcp__iris__goal_status'] : []),
   ];
 
   const q = query({
@@ -490,6 +531,20 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     }
   }
 
+  // Emit a final goal_status: untested for every goal the Explorer never closed.
+  if (config.goals) {
+    for (const [id, entry] of goalLedger) {
+      if (entry.status === 'pending') {
+        await emit('goal_status', 'system', {
+          id,
+          status: 'untested',
+          rationale: 'never reached within budget',
+        });
+        entry.status = 'untested';
+      }
+    }
+  }
+
   const duration_s = (Date.now() - start) / 1000;
   await emit('run_end', 'system', {
     termination,
@@ -497,6 +552,15 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     duration_s,
     steps: stepCount,
   });
+
+  const goal_ledger = config.goals
+    ? Array.from(goalLedger.entries()).map(([id, entry]) => ({
+        id,
+        description: entry.description,
+        status: entry.status as 'verified' | 'partial' | 'blocked' | 'skipped' | 'untested',
+        rationale: entry.rationale,
+      }))
+    : undefined;
 
   return {
     state: {
@@ -511,5 +575,6 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     cost_usd: totalCost,
     steps_taken: stepCount,
     duration_s,
+    ...(goal_ledger ? { goal_ledger } : {}),
   };
 }

@@ -4,6 +4,7 @@ import type { LlmCallInput, LlmClient } from '../llm/client.js';
 import type { TraceEvent } from '../trace/schema.js';
 import type { TraceWriter } from '../trace/writer.js';
 import type { Mode, TargetKind } from '../types.js';
+import { type GoalStatus, GoalTracker } from './goal-tracker.js';
 import { LoopDetector } from './loop-detection.js';
 import * as meta from './meta-tools.js';
 import { type ExplorerState, type MetaToolResult, newExplorerState } from './meta-tools.js';
@@ -33,6 +34,10 @@ export interface ExplorerConfig {
   timeout_s: number;
   spec_summary?: string;
   initial_plan_stack?: string[];
+  /** Per-goal budget for the goal-tracker. If unset, goal-tracking is disabled. */
+  spec_goals?: Array<{ id: string; description: string }>;
+  steps_per_goal?: number;
+  free_exploration_steps?: number;
 }
 
 export interface ExplorerResult {
@@ -47,6 +52,14 @@ export interface ExplorerResult {
   steps_taken: number;
   cost_usd: number;
   duration_s: number;
+  /** When goal-tracking is enabled, the per-goal ledger after the run. */
+  goal_ledger?: Array<{
+    id: string;
+    description: string;
+    status: GoalStatus | 'untested';
+    rationale: string;
+    turnsSpent: number;
+  }>;
 }
 
 interface ExplorerDeps {
@@ -78,6 +91,7 @@ const META_TOOL_NAMES = new Set([
   'revisit',
   'try_weirdness',
   'step_done',
+  'goal_status',
   'push_subgoal',
   'give_up',
   'done',
@@ -139,6 +153,25 @@ const META_TOOL_SPECS = [
     },
   },
   {
+    name: 'goal_status',
+    description:
+      'Mark the current spec goal as verified/partial/blocked/skipped, then advance to the next goal. Call this when you have finished (or determined you cannot complete) a goal. If you do not call this, the system will auto-mark the goal as partial after ~1.5x the per-goal budget.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'goal id (e.g. G1)' },
+        status: {
+          type: 'string',
+          enum: ['verified', 'partial', 'blocked', 'skipped'],
+          description:
+            'verified = goal works end-to-end; partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable to this run',
+        },
+        rationale: { type: 'string' },
+      },
+      required: ['id', 'status', 'rationale'],
+    },
+  },
+  {
     name: 'give_up',
     description: 'Stop early because you are stuck or the target is unreachable.',
     input_schema: {
@@ -164,11 +197,24 @@ export class Explorer {
   private specGoalsSatisfied = false;
   private startTime = 0;
   private termination: ExplorerResult['termination'] = 'budget_steps';
+  private goalTracker: GoalTracker | null = null;
 
   constructor(private readonly deps: ExplorerDeps) {
     this.state = newExplorerState();
     if (deps.config.initial_plan_stack) {
       this.state.plan_stack.push(...deps.config.initial_plan_stack);
+    }
+    if (
+      deps.config.spec_goals &&
+      deps.config.spec_goals.length > 0 &&
+      deps.config.steps_per_goal !== undefined &&
+      deps.config.steps_per_goal > 0
+    ) {
+      this.goalTracker = new GoalTracker({
+        goals: deps.config.spec_goals,
+        stepsPerGoal: deps.config.steps_per_goal,
+        freeExplorationSteps: deps.config.free_exploration_steps ?? 0,
+      });
     }
   }
 
@@ -189,6 +235,23 @@ export class Explorer {
     });
 
     while (this.step < this.deps.config.max_steps) {
+      // Per-goal cutover check
+      if (this.goalTracker) {
+        const cutover = this.goalTracker.checkCutover();
+        if (cutover) {
+          await this.emit('goal_status', 'system', {
+            id: cutover.goalId,
+            status: cutover.status,
+            rationale: cutover.rationale,
+            auto_cutover: true,
+          });
+          this.goalTracker.completeCurrent(cutover.status, cutover.rationale);
+        }
+        if (this.goalTracker.exhausted()) {
+          this.termination = 'done';
+          break;
+        }
+      }
       // Budget checks
       if (this.deps.llmClient.totals().cost_usd >= this.deps.config.max_cost_usd) {
         this.termination = 'budget_cost';
@@ -237,7 +300,7 @@ export class Explorer {
       // Build per-turn user message
       const sizes = this.siteMap.size();
       const totalSurfaces = sizes.seen + sizes.unexplored;
-      const userPrompt = buildUserPrompt({
+      const basePrompt = buildUserPrompt({
         observation_summary: observation.summary,
         plan_stack: this.state.plan_stack,
         site_map: {
@@ -252,6 +315,8 @@ export class Explorer {
           seconds: this.deps.config.timeout_s - elapsedS,
         },
       });
+      const goalNudge = this.buildGoalNudge();
+      const userPrompt = goalNudge ? `${goalNudge}\n\n${basePrompt}` : basePrompt;
 
       // Call LLM with tool definitions
       const tools = [...this.deps.adapter.listTools(), ...META_TOOL_SPECS];
@@ -314,6 +379,21 @@ export class Explorer {
 
       if (stopAfterTools) break;
       this.step++;
+      this.goalTracker?.recordTurn();
+    }
+
+    // Emit a final goal_status event for every untested goal so the Judge
+    // and report can render them correctly.
+    if (this.goalTracker) {
+      for (const entry of this.goalTracker.statuses()) {
+        if (entry.status === 'untested') {
+          await this.emit('goal_status', 'system', {
+            id: entry.id,
+            status: 'untested',
+            rationale: 'never reached within budget',
+          });
+        }
+      }
     }
 
     if (this.termination === 'budget_steps') {
@@ -338,7 +418,42 @@ export class Explorer {
       steps_taken: this.step,
       cost_usd: this.deps.llmClient.totals().cost_usd,
       duration_s,
+      ...(this.goalTracker ? { goal_ledger: this.goalTracker.statuses() } : {}),
     };
+  }
+
+  private async handleGoalStatus(args: {
+    id: string;
+    status: GoalStatus;
+    rationale: string;
+  }): Promise<MetaToolResult> {
+    await this.emit('goal_status', 'explorer', {
+      id: args.id,
+      status: args.status,
+      rationale: args.rationale,
+      auto_cutover: false,
+    });
+    if (this.goalTracker) {
+      const ok = this.goalTracker.completeById(args.id, args.status, args.rationale);
+      if (!ok) {
+        // Falls back to advancing the current pointer; explorer may have called
+        // goal_status for a goal that doesn't exist or was already completed.
+        this.goalTracker.completeCurrent(args.status, args.rationale);
+      }
+    }
+    return { ok: true };
+  }
+
+  private buildGoalNudge(): string {
+    if (!this.goalTracker) return '';
+    const cur = this.goalTracker.current();
+    if (cur.phase === 'goal') {
+      return `Current goal — ${cur.id} (${cur.turnsLeft} turns left): "${cur.description}"\nWhen this goal is done (verified, partial, blocked, or skipped), call goal_status({id: "${cur.id}", status: ..., rationale: ...}) and move to the next goal.`;
+    }
+    if (cur.phase === 'free') {
+      return `All spec goals attempted. You have ${cur.turnsLeft} free-exploration turns — use them to find anything the spec missed, or call done().`;
+    }
+    return '';
   }
 
   private async dispatchTool(tu: ToolUseBlock, _obsEventId: string): Promise<void> {
@@ -418,6 +533,8 @@ export class Explorer {
         return meta.try_weirdness(w, s, u as TryWeirdnessArgs, ulid, step, tk);
       case 'step_done':
         return meta.step_done(w, s, u as StepDoneArgs, ulid, step, tk);
+      case 'goal_status':
+        return this.handleGoalStatus(u as { id: string; status: GoalStatus; rationale: string });
       case 'push_subgoal':
         return meta.push_subgoal(w, s, u as PushSubgoalArgs, ulid, step, tk);
       case 'give_up':
