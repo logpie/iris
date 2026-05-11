@@ -34,6 +34,14 @@ export interface VisionDescribeOptions {
   out_dir: string;
   name: string;
   llm_client?: llm.LlmClient;
+  // Phase 8: optional transport-agnostic callback. When set, used in
+  // preference to llm_client. Enables vision in the Agent SDK transport
+  // where no LlmClient exists.
+  describer?: (input: {
+    imagePath: string;
+    prompt: string;
+    model?: string;
+  }) => Promise<{ text: string }>;
   model?: string;
   region?: string;
 }
@@ -49,21 +57,36 @@ export async function visionDescribe(
   page: Page,
   args: VisionDescribeOptions,
 ): Promise<ToolResult & { description?: string }> {
-  if (!args.llm_client) {
+  if (!args.llm_client && !args.describer) {
     return {
       ok: false,
       error:
-        'vision_describe requires an LlmClient — pass --persona or configure WebTargetAdapterOptions.vision_llm_client',
+        'vision_describe requires an LlmClient or describer callback — configure WebTargetAdapterOptions',
     };
   }
   try {
     mkdirSync(args.out_dir, { recursive: true });
     const path = join(args.out_dir, `${args.name}.png`);
     await page.screenshot({ path, fullPage: false });
+
+    const promptText = args.region
+      ? `Focus on this region: ${args.region}`
+      : 'Describe this screen.';
+
+    // Phase 8: prefer the describer callback (works with SDK transport).
+    if (args.describer) {
+      const r = await args.describer({
+        imagePath: path,
+        prompt: `${VISION_DESCRIBE_PROMPT}\n\n${promptText}`,
+        ...(args.model ? { model: args.model } : {}),
+      });
+      return { ok: true, evidence_refs: [path], description: r.text };
+    }
+
+    // Legacy LlmClient path for api/cli transports.
     const imageBytes = readFileSync(path);
     const base64 = imageBytes.toString('base64');
-
-    const r = await args.llm_client.call({
+    const r = await args.llm_client!.call({
       model: args.model ?? 'claude-sonnet-4-6',
       system: VISION_DESCRIBE_PROMPT,
       messages: [
@@ -74,22 +97,14 @@ export async function visionDescribe(
               type: 'image',
               source: { type: 'base64', media_type: 'image/png', data: base64 },
             },
-            {
-              type: 'text',
-              text: args.region ? `Focus on this region: ${args.region}` : 'Describe this screen.',
-            },
+            { type: 'text', text: promptText },
           ],
         },
       ],
       max_tokens: 500,
       temperature: 0,
     });
-
-    return {
-      ok: true,
-      evidence_refs: [path],
-      description: r.text,
-    };
+    return { ok: true, evidence_refs: [path], description: r.text };
   } catch (err) {
     return { ok: false, error: errString(err) };
   }

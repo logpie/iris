@@ -54,6 +54,72 @@ export interface SingleShotResult {
   usage: { input_tokens: number; output_tokens: number };
 }
 
+// Phase 8: vision through the Agent SDK. The SDK's query() accepts either a
+// string prompt or an AsyncIterable<SDKUserMessage> whose `message` field is
+// an Anthropic MessageParam — which supports image content blocks. We use
+// the iterable form to send a screenshot + a text instruction in one user
+// turn.
+export interface VisionViaSdkInput {
+  systemPrompt: string;
+  imagePath: string;
+  textPrompt: string;
+  model?: string;
+}
+
+export async function visionDescribeViaSdk(
+  opts: VisionViaSdkInput,
+): Promise<{ text: string; cost_usd: number }> {
+  const { readFileSync } = await import('node:fs');
+  const buf = readFileSync(opts.imagePath);
+  const base64 = buf.toString('base64');
+
+  const messages: AsyncIterable<{
+    type: 'user';
+    message: { role: 'user'; content: Array<unknown> };
+    parent_tool_use_id: null;
+  }> = (async function* () {
+    yield {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: base64 },
+          },
+          { type: 'text', text: opts.textPrompt },
+        ],
+      },
+      parent_tool_use_id: null,
+    };
+  })();
+
+  let text = '';
+  let cost_usd = 0;
+  const q = query({
+    // biome-ignore lint/suspicious/noExplicitAny: SDK accepts AsyncIterable<SDKUserMessage>; our message shape conforms but cross-package types diverge.
+    prompt: messages as any,
+    options: {
+      systemPrompt: opts.systemPrompt,
+      tools: [],
+      maxTurns: 1,
+      permissionMode: 'bypassPermissions',
+      ...(opts.model ? { model: opts.model } : {}),
+    },
+  });
+  for await (const msg of q) {
+    if (msg.type === 'assistant') {
+      const content =
+        (msg.message as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
+      for (const b of content) if (b.type === 'text' && b.text) text += b.text;
+    } else if (msg.type === 'result') {
+      const r = msg as { total_cost_usd?: number };
+      cost_usd = r.total_cost_usd ?? 0;
+    }
+  }
+  return { text, cost_usd };
+}
+
 export async function runAgentSdkSingleShot(opts: SingleShotInput): Promise<SingleShotResult> {
   let text = '';
   let cost_usd = 0;

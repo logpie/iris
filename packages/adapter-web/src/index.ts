@@ -34,9 +34,21 @@ import { back, forward, navigate, reload, scroll, waitFor } from './tools/naviga
 import { WEB_TOOL_SPECS } from './tools/tool-spec.js';
 import { screenshot, visionClick, visionDescribe } from './tools/vision.js';
 
+// Phase 8: vision_describer is a transport-agnostic callback the adapter uses
+// for vision_describe. The SDK transport passes a function that calls the
+// Agent SDK with an image message; the api transport passes one backed by
+// the existing LlmClient. This avoids forcing the SDK to construct an
+// LlmClient just for vision.
+export type VisionDescriber = (input: {
+  imagePath: string;
+  prompt: string;
+  model?: string;
+}) => Promise<{ text: string }>;
+
 export interface WebTargetAdapterOptions {
   headless?: boolean;
   vision_llm_client?: llm.LlmClient;
+  vision_describer?: VisionDescriber;
 }
 
 export class WebTargetAdapter implements TargetAdapter {
@@ -236,6 +248,7 @@ export class WebTargetAdapter implements TargetAdapter {
           out_dir: this.screenshotsDir,
           name: stepName,
           ...(this.opts.vision_llm_client ? { llm_client: this.opts.vision_llm_client } : {}),
+          ...(this.opts.vision_describer ? { describer: this.opts.vision_describer } : {}),
           ...(args as { region?: string; model?: string }),
         });
       }

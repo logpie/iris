@@ -117,6 +117,30 @@ export function evalCommand(): Command {
 
       const adapter = new WebTargetAdapter({ headless: true });
 
+      // Phase 8: wire vision_describer for the SDK transport so vision_describe
+      // can actually run (was missing since Phase 4 — every real-world dogfood
+      // ran with caveat "vision_describe unavailable").
+      if (transport === 'sdk') {
+        const { visionDescribeViaSdk } = await import('../agent-sdk-runner.js');
+        (
+          adapter as unknown as {
+            opts: {
+              vision_describer?: (i: {
+                imagePath: string;
+                prompt: string;
+                model?: string;
+              }) => Promise<{ text: string }>;
+            };
+          }
+        ).opts.vision_describer = async (i) =>
+          visionDescribeViaSdk({
+            systemPrompt: '',
+            imagePath: i.imagePath,
+            textPrompt: i.prompt,
+            ...(i.model ? { model: i.model } : {}),
+          });
+      }
+
       let result: {
         report: {
           headline: {
