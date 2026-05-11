@@ -120,20 +120,24 @@ export async function runIrisViaSdk(
     for (const g of interpreted.goals) initialPlanLines.push(`verify: ${g.description}`);
   }
 
-  const initialUserPrompt = `You are exploring this target: ${config.target.url}
+  const hasGoals = initialPlanLines.length > 0;
+  const initialUserPrompt = `Target: ${config.target.url}
 
-${initialPlanLines.length > 0 ? `Initial plan:\n${initialPlanLines.map((l, i) => `  ${i + 1}. ${l}`).join('\n')}\n\n` : ''}Start by calling \`mcp__iris__observe\` to see the current page, then act.
+${hasGoals ? `${interpreted ? `What this app is supposed to do (from the spec):\n${interpreted.goals.map((g, i) => `  ${i + 1}. ${g.description}`).join('\n')}\n\n` : ''}Your job: USE THIS APP. Verify each spec goal by performing it as a normal user would.\n\nFor each goal, in order:\n  1. Find the relevant UI element (input, button, link).\n  2. Interact with it normally — type text, click, submit. Don't just look.\n  3. Observe what changed.\n  4. Call \`mcp__iris__step_done\` with the goal id ("G1", "G2", ...) when you've verified it works end-to-end.\n  5. If you confirm it's broken, call \`mcp__iris__note_finding\` with category="bug" and a clear title.\n` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons. Don't just look at the page.\n`}
+PRIORITY ORDER:
+  1. HAPPY PATHS FIRST. Make the primary features work before anything else. If the app is a TODO list, your first action is to add a todo. If it's a sign-in form, your first action is to fill it in and submit.
+  2. AFTER happy paths complete, run \`mcp__iris__axe\` and \`mcp__iris__console_errors_since\` once to catch passive issues.
+  3. THEN try edge cases: empty submits, very long inputs, special characters, the destructive action.
 
-ON FIRST OBSERVATION, ALWAYS call these probes (cheap, high-signal):
-- \`mcp__iris__console_errors_since\` — checks for JS console errors / warnings
-- \`mcp__iris__network_failures_since\` — checks for 4xx/5xx HTTP responses
-- \`mcp__iris__axe\` — runs axe-core a11y audit
+AVOID:
+  - Reading the page for 2+ turns before acting. ONE observe, then act.
+  - Calling probes before any user interaction. Probes are useful AFTER you've exercised the flows, not before.
+  - Defaulting to screenshot when DOM observation already shows what you need.
+  - Trying many alternate selectors when the first failed. After one selector miss, try a different approach (different element, different action, or note_finding "I expected X but couldn't find it").
 
-These probes seed evidence the judge will use. Skipping them means missing whole categories of bugs.
+If you can't figure out how to drive a spec goal after 2 honest attempts, call \`mcp__iris__note_finding\` with title like "Spec says X but I couldn't find a way to do it" and MOVE ON. Don't get stuck.
 
-Available tool naming: all tools are prefixed with mcp__iris__ (e.g. mcp__iris__click, mcp__iris__type, mcp__iris__note_finding, mcp__iris__done).
-
-Budget: ~${config.max_steps} steps, $${config.max_cost_usd.toFixed(2)} max cost. Use note_finding LIBERALLY when something looks off; the judge dedupes false positives. Call done when goals are satisfied or you've completed thorough exploration; call give_up if stuck.`;
+Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). Budget: ~${config.max_steps} interaction turns, $${config.max_cost_usd.toFixed(2)} cost cap. Call \`mcp__iris__done\` when you've exercised every spec goal you can.`;
 
   process.stderr.write('iris: starting Explorer (Agent SDK session)...\n');
   let explorerResult: Awaited<ReturnType<typeof runAgentSdkExplorer>>;
@@ -248,7 +252,10 @@ Budget: ~${config.max_steps} steps, $${config.max_cost_usd.toFixed(2)} max cost.
   writeFileSync(join(config.out_dir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(config.out_dir, 'report.md'), reportMod.buildReportMd(report));
   if (!config.no_html) {
-    writeFileSync(join(config.out_dir, 'report.html'), reportMod.buildReportHtml(report, { runDir: config.out_dir }));
+    writeFileSync(
+      join(config.out_dir, 'report.html'),
+      reportMod.buildReportHtml(report, { runDir: config.out_dir }),
+    );
   }
 
   let exitCode: 0 | 1 | 2 | 3 = 0;

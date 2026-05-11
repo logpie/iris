@@ -233,7 +233,10 @@ export class Orchestrator {
     writeFileSync(join(config.out_dir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
     writeFileSync(join(config.out_dir, 'report.md'), buildReportMd(report));
     if (!config.no_html) {
-      writeFileSync(join(config.out_dir, 'report.html'), buildReportHtml(report, { runDir: config.out_dir }));
+      writeFileSync(
+        join(config.out_dir, 'report.html'),
+        buildReportHtml(report, { runDir: config.out_dir }),
+      );
     }
 
     // 9. Determine exit code

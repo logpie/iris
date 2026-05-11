@@ -1,19 +1,20 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { type basename, join, type relative } from 'node:path';
+import { join } from 'node:path';
 import type { JudgeOutput } from '../judge/judge.js';
 import type { TraceEvent } from '../trace/schema.js';
 import type { ReportJson } from './report-json.js';
 
 /**
- * Renders a self-contained HTML report. Designed to be opened from `file://`
- * with no external assets other than Tailwind via CDN.
+ * Renders a self-contained HTML report.
  *
- * When `opts.runDir` is provided, the report becomes much richer:
- *   - Reads trace.jsonl and renders a Trace section at the bottom
- *   - Evidence chips become anchor links to specific trace events
- *   - Each trace event card shows the matching screenshot if available
- *   - Embeds the full-run video (.webm) if present in evidence/videos
- *   - Inlines screenshot keyframes for observation events
+ * Design intent: this is a memo, not a dashboard. Plain typography, plain headings,
+ * plain prose. The job of the report is to communicate "what works, what doesn't,
+ * what wasn't tested." Decoration is kept minimal. No emoji icons in chrome, no
+ * serif headlines, no smallcaps, no accent colors except for severity prefixes.
+ *
+ * When `opts.runDir` is provided, evidence chips become anchor links into a
+ * collapsed Trace section, screenshots are inlined into findings + trace events,
+ * and the full-run video is embedded with a 2× default rate + seek-to-action.
  */
 
 export interface BuildReportHtmlOptions {
@@ -22,9 +23,7 @@ export interface BuildReportHtmlOptions {
 }
 
 interface ScreenshotIndex {
-  /** observation_ref (e.g. "OBS-000001") → relative path under runDir */
   byObservationRef: Map<string, string>;
-  /** trace event id → relative path (best-effort: matches observation events whose payload.ref maps) */
   byEventId: Map<string, string>;
 }
 
@@ -34,848 +33,991 @@ interface RunData {
   videoRelPath: string | null;
 }
 
+interface ActionMarker {
+  ts_offset_s: number;
+  label: string;
+  eventId: string;
+}
+
 export function buildReportHtml(report: ReportJson, opts: BuildReportHtmlOptions = {}): string {
   const runData = opts.runDir ? loadRunData(opts.runDir) : null;
   const eventIndex = runData ? new Map(runData.events.map((e) => [e.id, e])) : new Map();
   const screenshotForEvent = runData?.screenshots.byEventId ?? new Map<string, string>();
+  const actionMarkers = buildActionMarkers(runData);
 
-  const score = report.headline.score;
-  const arc = scoreArc(score);
-
-  const findingsBySeverity = groupFindings(report.findings);
-  const findingsHtml = renderFindings(findingsBySeverity, eventIndex, screenshotForEvent);
-  const profileScoresHtml = renderProfileScores(report.scores, eventIndex);
-  const specHtml = renderSpecCompliance(report.spec_compliance, eventIndex);
-  const caveatsHtml = renderCaveats(report.meta.confidence_caveats);
-  const reExploreHtml = renderReExplore(report.meta.would_re_explore_with);
-  const coverageHtml = renderCoverage(report.coverage_review);
-  const nextActionsHtml = renderNextActions(report.next_actions);
-  const videoHtml = runData?.videoRelPath
-    ? renderVideo(runData.videoRelPath, report.run.duration_s)
-    : '';
-  const traceSectionHtml = runData ? renderTraceSection(runData, report) : '';
-
-  const thresholdPill = renderThresholdPill(report);
+  const parts: string[] = [];
+  parts.push(renderHeader(report));
+  parts.push(renderTLDR(report, eventIndex));
+  parts.push(renderWhatHappened(report, eventIndex));
+  parts.push(renderFindingsSection(report.findings, eventIndex, screenshotForEvent));
+  if (runData?.videoRelPath)
+    parts.push(renderVideoSection(runData.videoRelPath, report.run.duration_s, actionMarkers));
+  parts.push(renderRubricSection(report.scores, eventIndex));
+  parts.push(renderCaveatsSection(report.meta));
+  if (runData) parts.push(renderTraceSection(runData));
+  parts.push(renderFooter(report));
 
   return `<!doctype html>
-<html lang="en" class="bg-slate-50">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Iris report — ${escapeHtml(report.run.target.url)}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="https://cdn.tailwindcss.com"></script>
-<style>
-  :root { color-scheme: light; }
-  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  .truncate-2 {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  details > summary { list-style: none; cursor: pointer; }
-  details > summary::-webkit-details-marker { display: none; }
-  details[open] .chev { transform: rotate(90deg); }
-  .chev { transition: transform 120ms ease; }
-  /* Smooth-scroll for evidence anchor links */
-  html { scroll-behavior: smooth; scroll-padding-top: 1rem; }
-  /* Highlight the trace event being linked to */
-  :target {
-    background-color: rgb(254 249 195); /* yellow-100 */
-    transition: background-color 800ms ease;
-  }
-  /* Evidence chip: clickable when href is present */
-  a.evidence-chip {
-    text-decoration: none;
-  }
-  a.evidence-chip:hover {
-    background-color: rgb(226 232 240); /* slate-200 */
-  }
-  @media print {
-    .no-print { display: none !important; }
-    body { background: white; }
-    details { open: true; }
-  }
-</style>
+<title>Iris — ${escapeHtml(report.run.target.url)}</title>
+<style>${STYLES}</style>
 </head>
-<body class="min-h-screen text-slate-900">
-<div class="max-w-5xl mx-auto px-4 py-8 sm:py-12">
-
-  <!-- Header -->
-  <header class="flex items-center justify-between mb-6">
-    <div class="flex items-center gap-3">
-      <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white font-bold text-lg">I</div>
-      <div>
-        <div class="font-semibold text-lg leading-none">Iris</div>
-        <div class="text-xs text-slate-500 mt-0.5">Autonomous product evaluator</div>
-      </div>
-    </div>
-    <div class="text-right text-xs text-slate-500">
-      <div class="font-mono">${escapeHtml(report.run.id)}</div>
-      <div>${escapeHtml(new Date(report.run.started_at).toLocaleString())}</div>
-    </div>
-  </header>
-
-  <!-- Hero -->
-  <section class="rounded-2xl border ${heroBandClasses(report)} shadow-sm p-6 sm:p-8 mb-6">
-    <div class="flex flex-col sm:flex-row sm:items-center gap-6">
-      <div class="relative w-32 h-32 flex-shrink-0">
-        <svg viewBox="0 0 120 120" class="w-32 h-32">
-          <circle cx="60" cy="60" r="50" fill="none" stroke="#e2e8f0" stroke-width="10"/>
-          <circle cx="60" cy="60" r="50" fill="none" stroke="${arcStroke(report)}"
-            stroke-width="10" stroke-linecap="round"
-            stroke-dasharray="${arc.dash}" stroke-dashoffset="0"
-            transform="rotate(-90 60 60)"/>
-        </svg>
-        <div class="absolute inset-0 flex flex-col items-center justify-center">
-          <div class="text-4xl font-bold tabular-nums">${score.toFixed(1)}</div>
-          <div class="text-xs text-slate-500">/ 10</div>
-        </div>
-      </div>
-      <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-2 mb-2 flex-wrap">
-          ${thresholdPill}
-          <span class="text-xs text-slate-500">${escapeHtml(report.run.mode)} mode · ${escapeHtml(report.run.target.kind)}</span>
-        </div>
-        <a href="${escapeHtml(report.run.target.url)}" target="_blank" rel="noopener" class="block font-mono text-sm text-slate-700 hover:text-violet-600 truncate-2 break-all leading-snug mb-3">
-          ${escapeHtml(report.run.target.url)}
-        </a>
-        <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 text-sm">
-          ${stat('Duration', formatDuration(report.run.duration_s))}
-          ${stat('Cost', `$${report.run.cost_usd.toFixed(2)}`)}
-          ${stat('Steps', String(report.run.step_count))}
-          ${stat('Findings', String(report.findings.length))}
-          ${stat('Confidence', `${Math.round(report.meta.confidence_overall * 100)}%`)}
-        </div>
-      </div>
-    </div>
-
-    <div class="mt-6 flex flex-wrap gap-2 text-sm">
-      ${sevPill('🚨', 'Blocker', report.headline.blockers, 'rose')}
-      ${sevPill('⚠', 'Major', report.headline.majors, 'amber')}
-      ${sevPill('●', 'Minor', report.headline.minors, 'yellow')}
-      ${sevPill('·', 'Nit', report.headline.nits, 'lime')}
-      ${sevPill('💡', 'Suggestion', report.headline.suggestions, 'sky')}
-    </div>
-  </section>
-
-  ${videoHtml}
-
-  ${specHtml}
-
-  <section class="rounded-2xl border border-slate-200 bg-white shadow-sm p-6 mb-6">
-    <h2 class="text-base font-semibold text-slate-800 mb-4 flex items-center gap-2">
-      <span class="text-slate-400">📊</span> Rubric scores
-    </h2>
-    <div class="space-y-4">
-      ${profileScoresHtml || '<p class="text-sm text-slate-500">No profiles scored.</p>'}
-    </div>
-  </section>
-
-  <section class="mb-6">
-    <div class="flex items-baseline justify-between mb-4">
-      <h2 class="text-base font-semibold text-slate-800 flex items-center gap-2">
-        <span class="text-slate-400">🔍</span> Findings (${report.findings.length})
-      </h2>
-      <div class="text-xs text-slate-500 no-print">Click a finding to expand · evidence chips jump to trace events</div>
-    </div>
-    ${findingsHtml || '<div class="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">No findings recorded.</div>'}
-  </section>
-
-  ${coverageHtml}
-  ${nextActionsHtml}
-
-  ${
-    caveatsHtml || reExploreHtml
-      ? `<section class="rounded-2xl border border-amber-200 bg-amber-50 p-5 mb-6">
-    <h2 class="text-sm font-semibold text-amber-900 flex items-center gap-2 mb-3">⚠ Confidence caveats</h2>
-    ${caveatsHtml}
-    ${reExploreHtml}
-  </section>`
-      : ''
-  }
-
-  ${traceSectionHtml}
-
-  <footer class="text-xs text-slate-500 flex flex-wrap items-center gap-x-4 gap-y-1 pt-6 border-t border-slate-200">
-    <span>Iris v${escapeHtml(report.tool.version)}</span>
-    <span class="opacity-50">·</span>
-    <span>Explorer: ${escapeHtml(report.run.models.explorer)}</span>
-    <span class="opacity-50">·</span>
-    <span>Judge: ${escapeHtml(report.run.models.judge)}</span>
-    <span class="opacity-50">·</span>
-    <span>Termination: ${escapeHtml(report.run.termination)}</span>
-  </footer>
-
-</div>
+<body>
+<main>
+${parts.filter(Boolean).join('\n')}
+</main>
+${runData?.videoRelPath ? VIDEO_SCRIPT : ''}
 </body>
 </html>`;
 }
 
-// --- Run data loading (trace + screenshots + video) ---
+// ===========================================================================
+// Styles — minimal, memo-style. White background, near-black text, one neutral
+// link color. Severity prefixes get a single color each. No section dividers,
+// no card shadows, no smallcaps, no serif. Width capped for legibility.
+// ===========================================================================
 
-function loadRunData(runDir: string): RunData | null {
-  const tracePath = join(runDir, 'trace.jsonl');
-  if (!existsSync(tracePath)) return null;
-  let events: TraceEvent[];
+const STYLES = `
+  :root {
+    --text: #1f2328;
+    --text-dim: #57606a;
+    --text-faint: #8b949e;
+    --rule: #d1d9e0;
+    --rule-light: #eaeef2;
+    --bg-soft: #f6f8fa;
+    --link: #0969da;
+    --link-hover: #0a4a8a;
+    --sev-blocker: #cf222e;
+    --sev-major: #bf3989;
+    --sev-minor: #9a6700;
+    --sev-nit: #57606a;
+    --sev-suggestion: #1f6feb;
+    --status-pass: #1a7f37;
+    --status-partial: #9a6700;
+    --status-fail: #cf222e;
+    --status-untested: #8b949e;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 1rem; }
+  body {
+    margin: 0;
+    background: #ffffff;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 32px 24px 80px;
+  }
+  @media (max-width: 640px) {
+    main { padding: 20px 16px 48px; }
+  }
+
+  /* Headings */
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    line-height: 1.3;
+  }
+  h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 32px 0 12px;
+    line-height: 1.4;
+  }
+  h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 16px 0 6px;
+  }
+
+  /* Top metadata strip */
+  .meta-strip {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+  .meta-strip > * + *::before {
+    content: "·";
+    color: var(--text-faint);
+    margin: 0 8px;
+  }
+  .target {
+    margin: 4px 0 24px;
+    font-family: var(--mono);
+    font-size: 13px;
+    word-break: break-all;
+  }
+  .target a { color: var(--link); text-decoration: none; }
+  .target a:hover { color: var(--link-hover); text-decoration: underline; }
+
+  /* TL;DR block */
+  .tldr {
+    padding: 14px 16px;
+    background: var(--bg-soft);
+    border-left: 3px solid var(--text-dim);
+    margin-bottom: 8px;
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  .tldr.pass { border-left-color: var(--status-pass); }
+  .tldr.fail { border-left-color: var(--status-fail); }
+  .tldr.partial { border-left-color: var(--status-partial); }
+  .tldr p { margin: 0; }
+  .tldr p + p { margin-top: 8px; }
+  .tldr .score-inline {
+    font-family: var(--mono);
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  /* "What happened" list */
+  .goals-list, .findings-list, .caveats-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .goals-list > li {
+    padding: 8px 0;
+    border-top: 1px solid var(--rule-light);
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+  }
+  .goals-list > li:first-child { border-top: none; }
+  .goals-list .gtag {
+    flex: 0 0 96px;
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+  }
+  .goals-list .gtag.status-satisfied { color: var(--status-pass); }
+  .goals-list .gtag.status-partial { color: var(--status-partial); }
+  .goals-list .gtag.status-not_satisfied { color: var(--status-fail); }
+  .goals-list .gtag.status-untested { color: var(--status-untested); }
+  .goals-list .gtext { flex: 1; }
+  .goals-list .gid { font-family: var(--mono); color: var(--text-faint); font-size: 12px; }
+  .goals-list .gnotes {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-top: 4px;
+  }
+  .goals-list .gevidence { margin-top: 6px; }
+
+  /* Findings */
+  .findings-list > li {
+    padding: 16px 0;
+    border-top: 1px solid var(--rule-light);
+  }
+  .findings-list > li:first-child { border-top: none; padding-top: 4px; }
+  .finding-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .finding-num {
+    font-family: var(--mono);
+    color: var(--text-faint);
+    font-size: 12px;
+    width: 24px;
+  }
+  .sev-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .sev-tag.sev-blocker { color: var(--sev-blocker); }
+  .sev-tag.sev-major { color: var(--sev-major); }
+  .sev-tag.sev-minor { color: var(--sev-minor); }
+  .sev-tag.sev-nit { color: var(--sev-nit); }
+  .sev-tag.sev-suggestion { color: var(--sev-suggestion); }
+  .cat-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .fid {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-faint);
+    margin-left: auto;
+  }
+  .finding-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+  .finding-body {
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 6px 0 0 34px;
+    white-space: pre-line;
+  }
+  .finding-body > * + * { margin-top: 8px; }
+  .finding-where {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-top: 8px;
+  }
+  .finding-where code {
+    background: var(--bg-soft);
+    border: 1px solid var(--rule-light);
+    padding: 1px 5px;
+    border-radius: 2px;
+    color: var(--text);
+  }
+  .finding-fix {
+    margin-top: 10px;
+    padding: 6px 12px;
+    border-left: 2px solid var(--text);
+    background: var(--bg-soft);
+    color: var(--text);
+    font-size: 14px;
+  }
+  .finding-fix .fix-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-right: 6px;
+  }
+  .finding-screenshot {
+    margin-top: 10px;
+    border: 1px solid var(--rule);
+    background: var(--bg-soft);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .finding-screenshot img {
+    display: block;
+    width: 100%;
+    max-height: 280px;
+    object-fit: contain;
+    background: white;
+  }
+  .finding-screenshot .caption {
+    padding: 4px 10px;
+    border-top: 1px solid var(--rule-light);
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-faint);
+    display: flex;
+    justify-content: space-between;
+  }
+  .finding-screenshot .caption a { color: var(--link); }
+  .evidence-row {
+    margin-top: 10px;
+    font-size: 12px;
+  }
+  .evidence-row .label {
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-right: 6px;
+  }
+  .ev-chip {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--link);
+    background: var(--bg-soft);
+    border: 1px solid var(--rule-light);
+    padding: 1px 6px;
+    border-radius: 2px;
+    text-decoration: none;
+    margin-right: 4px;
+    display: inline-block;
+  }
+  .ev-chip:hover { background: var(--link); color: white; border-color: var(--link); }
+  .ev-chip .ev-kind {
+    color: var(--text-faint);
+    margin-right: 4px;
+  }
+  .ev-chip:hover .ev-kind { color: rgba(255,255,255,0.7); }
+
+  /* Video */
+  .video-section video {
+    display: block;
+    width: 100%;
+    max-height: 420px;
+    background: #000;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+  }
+  .video-note {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin: 0 0 10px;
+  }
+  .seek-list { margin-top: 10px; }
+  .seek-list .label {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    margin-bottom: 6px;
+    display: block;
+  }
+  .seek-btn {
+    background: none;
+    border: none;
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--link);
+    padding: 3px 0;
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    text-align: left;
+    width: 100%;
+  }
+  .seek-btn:hover { background: var(--bg-soft); }
+  .seek-btn .ts {
+    color: var(--text-faint);
+    width: 48px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Rubric — collapsed by default, minimal */
+  .rubric-section {
+    border: 1px solid var(--rule-light);
+    border-radius: 4px;
+    padding: 0;
+  }
+  .rubric-section > summary {
+    cursor: pointer;
+    padding: 10px 14px;
+    list-style: none;
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .rubric-section > summary::-webkit-details-marker { display: none; }
+  .rubric-section .chev { color: var(--text-faint); font-family: var(--mono); font-size: 10px; transition: transform 120ms; }
+  .rubric-section[open] .chev { transform: rotate(90deg); }
+  .rubric-section > .body { padding: 0 14px 14px; border-top: 1px solid var(--rule-light); }
+  .rubric-profile {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--rule-light);
+  }
+  .rubric-profile:last-child { border-bottom: none; }
+  .rubric-profile-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+  .rubric-profile-head .name { font-weight: 600; text-transform: capitalize; }
+  .rubric-profile-head .score {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+    margin-left: auto;
+  }
+  .rubric-dim {
+    margin: 6px 0 4px 0;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .rubric-dim .dim-name {
+    color: var(--text);
+    font-weight: 500;
+  }
+  .rubric-dim .dim-score {
+    font-family: var(--mono);
+    color: var(--text-faint);
+    margin-left: 6px;
+  }
+
+  /* Caveats */
+  .caveats-section {
+    margin-top: 32px;
+    padding: 12px 16px;
+    background: var(--bg-soft);
+    border-left: 3px solid var(--text-faint);
+    border-radius: 0 4px 4px 0;
+    font-size: 14px;
+  }
+  .caveats-section h3 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+  .caveats-list > li {
+    color: var(--text-dim);
+    padding: 2px 0;
+  }
+  .caveats-list > li::before {
+    content: "—";
+    margin-right: 8px;
+    color: var(--text-faint);
+  }
+  .re-explore {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--rule);
+    font-size: 12px;
+  }
+  .re-explore .label {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    margin-right: 8px;
+  }
+  .re-explore code {
+    background: white;
+    border: 1px solid var(--rule);
+    padding: 1px 6px;
+    border-radius: 2px;
+    margin: 0 4px 4px 0;
+    display: inline-block;
+    font-size: 12px;
+  }
+
+  /* Trace — fully collapsed by default */
+  .trace-section {
+    margin-top: 32px;
+    border: 1px solid var(--rule-light);
+    border-radius: 4px;
+  }
+  .trace-section > summary {
+    cursor: pointer;
+    padding: 10px 14px;
+    list-style: none;
+    font-size: 14px;
+    color: var(--text-dim);
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .trace-section > summary::-webkit-details-marker { display: none; }
+  .trace-section .chev { font-family: var(--mono); font-size: 10px; color: var(--text-faint); transition: transform 120ms; }
+  .trace-section[open] .chev { transform: rotate(90deg); }
+  .trace-section .trace-meta { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-left: 8px; }
+  .trace-events { padding: 0 14px 14px; border-top: 1px solid var(--rule-light); font-family: var(--mono); font-size: 12px; }
+  .trace-event {
+    border-bottom: 1px dotted var(--rule-light);
+  }
+  .trace-event > summary {
+    padding: 6px 0;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+  }
+  .trace-event > summary::-webkit-details-marker { display: none; }
+  .trace-event > summary:hover { background: var(--bg-soft); }
+  .trace-event .step { color: var(--text-faint); width: 36px; text-align: right; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+  .trace-event .kind { width: 96px; flex: 0 0 96px; }
+  .trace-event .kind-action { color: var(--text); font-weight: 500; }
+  .trace-event .kind-observation { color: var(--text-dim); }
+  .trace-event .kind-tentative_finding { color: var(--sev-major); }
+  .trace-event .kind-give_up { color: var(--sev-blocker); }
+  .trace-event .kind-done { color: var(--status-pass); }
+  .trace-event .one-line {
+    flex: 1;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .trace-event .ev-id-tail { color: var(--text-faint); font-size: 10px; }
+  .trace-event > .details {
+    padding: 8px 0 12px 46px;
+    border-top: 1px dotted var(--rule-light);
+    font-size: 11px;
+  }
+  .trace-event > .details img {
+    max-width: 100%;
+    max-height: 220px;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    margin-top: 6px;
+    object-fit: contain;
+  }
+  .trace-event > .details pre {
+    margin: 8px 0 0;
+    padding: 8px;
+    background: var(--bg-soft);
+    border: 1px solid var(--rule-light);
+    border-radius: 3px;
+    font-size: 10px;
+    line-height: 1.5;
+    overflow-x: auto;
+    color: var(--text-dim);
+  }
+  :target {
+    background: #fff8c5;
+    transition: background 800ms ease;
+  }
+
+  /* Footer */
+  footer.colophon {
+    margin-top: 48px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule-light);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  @media print {
+    body { background: white; }
+    details { open: true; }
+    .trace-section > summary, .rubric-section > summary { display: none; }
+    video { display: none; }
+  }
+`;
+
+const VIDEO_SCRIPT = `<script>
+(() => {
+  const v = document.getElementById('iris-video');
+  if (!v) return;
+  v.addEventListener('loadedmetadata', () => { v.playbackRate = 2.0; }, { once: true });
+  document.querySelectorAll('.seek-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const t = parseFloat(btn.getAttribute('data-seek') || '0');
+      v.currentTime = t;
+      v.play().catch(() => {});
+      v.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  });
+})();
+</script>`;
+
+// ===========================================================================
+// Section renderers
+// ===========================================================================
+
+function renderHeader(report: ReportJson): string {
+  return `<header>
+    <h1>${escapeHtml(targetDisplay(report.run.target.url))}</h1>
+    <div class="meta-strip">
+      <span>${escapeHtml(new Date(report.run.started_at).toLocaleString())}</span>
+      <span>${escapeHtml(report.run.mode)}</span>
+      <span>${formatDuration(report.run.duration_s)}</span>
+      <span>$${report.run.cost_usd.toFixed(2)}</span>
+      <span>${report.run.step_count} steps</span>
+      <span>termination: ${escapeHtml(report.run.termination)}</span>
+    </div>
+    <div class="target">→ <a href="${escapeAttr(report.run.target.url)}" target="_blank" rel="noopener">${escapeHtml(report.run.target.url)}</a></div>
+  </header>`;
+}
+
+function targetDisplay(url: string): string {
   try {
-    const text = readFileSync(tracePath, 'utf8');
-    events = text
-      .split('\n')
-      .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as TraceEvent);
+    const u = new URL(url);
+    return u.hostname.replace(/^www\./, '') + (u.pathname === '/' ? '' : u.pathname);
   } catch {
-    return null;
+    return url;
   }
+}
 
-  const screenshotsDir = join(runDir, 'evidence', 'screenshots');
-  const byObservationRef = new Map<string, string>();
-  const byEventId = new Map<string, string>();
-  if (existsSync(screenshotsDir)) {
-    const files = readdirSync(screenshotsDir).filter((f) => f.endsWith('.png'));
-    // Build map from observation_ref ("OBS-000001") → "step-0001.png"
-    for (const f of files) {
-      // Match patterns like step-0001.png or step-0001-NNN.png
-      const m = f.match(/^step-(\d+)/);
-      if (!m || !m[1]) continue;
-      const n = Number.parseInt(m[1], 10);
-      // Observation refs use "OBS-" + 6-digit-padded number
-      const obsRef = `OBS-${String(n).padStart(6, '0')}`;
-      // Only set if not already (prefer the canonical "step-NNNN.png" over the timestamped variants)
-      if (f === `step-${m[1]}.png` || !byObservationRef.has(obsRef)) {
-        byObservationRef.set(obsRef, `evidence/screenshots/${f}`);
-      }
-    }
-    // Now map trace event IDs → screenshot, by matching observation events to their refs
-    for (const e of events) {
-      if (e.kind === 'observation' && typeof e.payload?.ref === 'string') {
-        const path = byObservationRef.get(e.payload.ref as string);
-        if (path) byEventId.set(e.id, path);
-      }
-    }
-  }
-
-  // Find a video file (Playwright auto-names them)
-  const videosDir = join(runDir, 'evidence', 'videos');
-  let videoRelPath: string | null = null;
-  if (existsSync(videosDir)) {
-    const webms = readdirSync(videosDir).filter((f) => f.endsWith('.webm'));
-    if (webms.length > 0) {
-      webms.sort();
-      videoRelPath = `evidence/videos/${webms[webms.length - 1]}`;
-    }
-  }
-
-  return {
-    events,
-    screenshots: { byObservationRef, byEventId },
-    videoRelPath,
+// TL;DR: a one-paragraph plain-English summary of the run.
+function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): string {
+  const goals = report.spec_compliance;
+  const effective = goals.applicable
+    ? goals.goals.map((g) => effectiveGoalStatus(g, eventIndex))
+    : [];
+  const counts = {
+    sat: effective.filter((s) => s === 'satisfied').length,
+    par: effective.filter((s) => s === 'partial').length,
+    neg: effective.filter((s) => s === 'not_satisfied').length,
+    untested: effective.filter((s) => s === 'untested').length,
+    total: effective.length,
   };
-}
+  const findingCounts = report.headline;
+  const totalFindings =
+    findingCounts.blockers +
+    findingCounts.majors +
+    findingCounts.minors +
+    findingCounts.nits +
+    findingCounts.suggestions;
+  const partialOrFailGoals = counts.par + counts.neg;
 
-// --- Hero helpers ---
-
-function heroBandClasses(report: ReportJson): string {
-  // Three states: no threshold (neutral), passed (green), failed (rose)
-  if (!hasThreshold(report)) return 'border-slate-200 bg-gradient-to-br from-slate-50 to-white';
-  return report.headline.threshold_passed
-    ? 'border-emerald-200 bg-gradient-to-br from-emerald-50 to-white'
-    : 'border-rose-200 bg-gradient-to-br from-rose-50 to-white';
-}
-
-function arcStroke(report: ReportJson): string {
-  if (!hasThreshold(report)) {
-    // Neutral arc colored by score
-    if (report.headline.score >= 7.5) return '#10b981';
-    if (report.headline.score >= 5) return '#f59e0b';
-    return '#f43f5e';
+  // Determine overall tone class
+  let toneClass = 'partial';
+  if (
+    counts.total > 0 &&
+    counts.sat === counts.total &&
+    findingCounts.blockers === 0 &&
+    findingCounts.majors === 0
+  ) {
+    toneClass = 'pass';
+  } else if (findingCounts.blockers > 0 || (counts.total > 0 && counts.neg >= counts.total / 2)) {
+    toneClass = 'fail';
   }
-  return report.headline.threshold_passed ? '#10b981' : '#f43f5e';
-}
 
-function renderThresholdPill(report: ReportJson): string {
-  if (!hasThreshold(report)) {
-    return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">No threshold set</span>`;
+  // First sentence: what was verified
+  const sentences: string[] = [];
+  if (goals.applicable && counts.total > 0) {
+    const tail: string[] = [];
+    if (counts.par > 0) tail.push(`partially verified ${counts.par}`);
+    if (counts.neg > 0) tail.push(`found ${counts.neg} broken`);
+    if (counts.untested > 0) tail.push(`did not test ${counts.untested}`);
+    const tailStr = tail.length > 0 ? `; ${tail.join(', ')}` : '';
+    if (counts.sat === counts.total) {
+      sentences.push(
+        `Iris verified all ${counts.total} spec goal${counts.total === 1 ? '' : 's'}.`,
+      );
+    } else if (counts.sat > 0) {
+      sentences.push(
+        `Iris verified ${counts.sat} of ${counts.total} spec goal${counts.total === 1 ? '' : 's'}${tailStr}.`,
+      );
+    } else {
+      sentences.push(
+        `Iris did not verify any spec goals end-to-end${tailStr || ''}.`,
+      );
+    }
   }
-  const passed = report.headline.threshold_passed;
-  return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${passed ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-rose-100 text-rose-800 border border-rose-200'}">
-    ${passed ? '✓ Passed' : '✗ Failed'} threshold
-  </span>`;
-}
 
-function hasThreshold(report: ReportJson): boolean {
-  // The ReportJson schema doesn't record the threshold value separately, but we can
-  // infer: if threshold_passed is true and the failure-state-looking score is high, threshold was set.
-  // The cleaner signal: look at config.json which is sibling to report.json, but we don't have it here.
-  // Heuristic: if score < 7 AND threshold_passed === true, no threshold was applied
-  // (because Orchestrator defaults threshold_passed to true when threshold is undefined).
-  // This is imperfect; a better fix is to store threshold in report.json. For now:
-  return report.headline.threshold_passed === false || report.headline.score >= 7;
-}
+  // Second sentence: findings summary
+  if (totalFindings > 0) {
+    const findingParts: string[] = [];
+    if (findingCounts.blockers > 0)
+      findingParts.push(
+        `${findingCounts.blockers} blocker${findingCounts.blockers === 1 ? '' : 's'}`,
+      );
+    if (findingCounts.majors > 0) findingParts.push(`${findingCounts.majors} major`);
+    if (findingCounts.minors > 0) findingParts.push(`${findingCounts.minors} minor`);
+    if (findingCounts.nits > 0)
+      findingParts.push(`${findingCounts.nits} nit${findingCounts.nits === 1 ? '' : 's'}`);
+    if (findingCounts.suggestions > 0)
+      findingParts.push(
+        `${findingCounts.suggestions} suggestion${findingCounts.suggestions === 1 ? '' : 's'}`,
+      );
+    sentences.push(
+      `${totalFindings} finding${totalFindings === 1 ? '' : 's'} (${findingParts.join(', ')}).`,
+    );
+  } else if (partialOrFailGoals > 0) {
+    sentences.push('No specific defects flagged.');
+  }
 
-function scoreArc(score: number): { dash: string } {
-  const circumference = 2 * Math.PI * 50;
-  const filled = (Math.max(0, Math.min(10, score)) / 10) * circumference;
-  return { dash: `${filled.toFixed(2)} ${(circumference - filled).toFixed(2)}` };
-}
+  // Third sentence: termination context
+  if (report.run.termination === 'max_turns' || report.run.termination === 'budget_steps') {
+    sentences.push('Run hit the turn budget before all goals could be tested.');
+  } else if (report.run.termination === 'give_up') {
+    sentences.push('Iris gave up early — see caveats.');
+  } else if (report.run.termination === 'budget_cost' || report.run.termination === 'budget_time') {
+    sentences.push('Run hit a cost/time budget.');
+  }
 
-function stat(label: string, value: string): string {
-  return `<div>
-    <div class="text-xs uppercase tracking-wide text-slate-500">${escapeHtml(label)}</div>
-    <div class="font-semibold text-slate-900 tabular-nums">${escapeHtml(value)}</div>
-  </div>`;
-}
+  // Score footer
+  const scoreLine = `<p><span class="score-inline">${report.headline.score.toFixed(1)} / 10</span> &nbsp;<span style="color: var(--text-faint); font-size: 13px;">across rubric profiles (see below for breakdown)</span></p>`;
 
-function sevPill(
-  icon: string,
-  label: string,
-  count: number,
-  color: 'rose' | 'amber' | 'yellow' | 'lime' | 'sky',
-): string {
-  const colorMap = {
-    rose:
-      count > 0
-        ? 'bg-rose-100 text-rose-800 border-rose-200'
-        : 'bg-slate-100 text-slate-500 border-slate-200',
-    amber:
-      count > 0
-        ? 'bg-amber-100 text-amber-800 border-amber-200'
-        : 'bg-slate-100 text-slate-500 border-slate-200',
-    yellow:
-      count > 0
-        ? 'bg-yellow-100 text-yellow-800 border-yellow-200'
-        : 'bg-slate-100 text-slate-500 border-slate-200',
-    lime:
-      count > 0
-        ? 'bg-lime-100 text-lime-800 border-lime-200'
-        : 'bg-slate-100 text-slate-500 border-slate-200',
-    sky:
-      count > 0
-        ? 'bg-sky-100 text-sky-800 border-sky-200'
-        : 'bg-slate-100 text-slate-500 border-slate-200',
-  };
-  return `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${colorMap[color]}">
-    <span>${icon}</span>
-    <span class="tabular-nums font-medium">${count}</span>
-    <span class="text-xs">${escapeHtml(label)}</span>
-  </span>`;
-}
-
-function formatDuration(s: number): string {
-  if (s < 60) return `${s.toFixed(0)}s`;
-  const m = Math.floor(s / 60);
-  const sec = Math.round(s % 60);
-  return `${m}m ${sec}s`;
-}
-
-// --- Video ---
-
-function renderVideo(relPath: string, durationS: number): string {
-  return `<section class="rounded-2xl border border-slate-200 bg-white shadow-sm p-6 mb-6">
-    <h2 class="text-base font-semibold text-slate-800 mb-3 flex items-center gap-2">
-      <span class="text-slate-400">🎬</span> Full-run video
-      <span class="ml-auto text-xs font-normal text-slate-500">${formatDuration(durationS)}</span>
-    </h2>
-    <video controls preload="metadata" class="w-full rounded-lg bg-slate-900 max-h-[420px]" src="${escapeAttr(relPath)}">
-      Your browser doesn't support video playback. <a href="${escapeAttr(relPath)}">Download the recording</a>.
-    </video>
+  return `<section class="tldr ${toneClass}">
+    <p>${sentences.join(' ')}</p>
+    ${scoreLine}
   </section>`;
 }
 
-// --- Profile score bars ---
-
-function renderProfileScores(
-  scores: JudgeOutput['scores'],
-  eventIndex: Map<string, TraceEvent>,
-): string {
-  return Object.entries(scores.profiles)
-    .map(([name, p]) => {
-      const dimHtml = Object.entries(p.dimensions)
-        .map(([dimId, d]) => {
-          return `<div class="grid grid-cols-12 items-start gap-3 text-xs py-1">
-            <div class="col-span-3 sm:col-span-2 text-slate-500 truncate" title="${escapeHtml(dimId)}">${escapeHtml(dimId)}</div>
-            <div class="col-span-7 sm:col-span-8">
-              <div class="bg-slate-100 rounded-full h-1.5 overflow-hidden mb-1">
-                <div class="h-full rounded-full ${scoreColor(d.score)}" style="width: ${Math.max(0, Math.min(10, d.score)) * 10}%"></div>
-              </div>
-              <div class="text-slate-600 leading-snug">${escapeHtml(d.rationale)}</div>
-              ${d.evidence.length > 0 ? `<div class="mt-1 flex flex-wrap gap-1">${d.evidence.map((id) => renderEvidenceChip(id, eventIndex)).join('')}</div>` : ''}
-            </div>
-            <div class="col-span-2 text-right tabular-nums font-medium text-slate-700">${d.score.toFixed(1)}</div>
-          </div>`;
-        })
-        .join('');
-      return `<details class="border border-slate-200 rounded-lg overflow-hidden">
-        <summary class="flex items-center justify-between gap-4 px-4 py-3 bg-slate-50/50 hover:bg-slate-50">
-          <div class="flex items-center gap-2 min-w-0 flex-1">
-            <span class="chev text-slate-400 text-xs">▸</span>
-            <span class="font-medium text-slate-800 capitalize">${escapeHtml(name.replace(/_/g, ' '))}</span>
-            <span class="text-xs text-slate-500">(${Object.keys(p.dimensions).length} dimensions)</span>
-          </div>
-          <div class="flex items-center gap-3">
-            <div class="w-24 sm:w-32 bg-slate-200 rounded-full h-2 overflow-hidden">
-              <div class="h-full rounded-full ${scoreColor(p.score)}" style="width: ${Math.max(0, Math.min(10, p.score)) * 10}%"></div>
-            </div>
-            <span class="font-semibold tabular-nums text-slate-900 w-10 text-right">${p.score.toFixed(1)}</span>
-          </div>
-        </summary>
-        <div class="px-4 py-3 space-y-3 bg-white">
-          ${dimHtml}
-        </div>
-      </details>`;
-    })
-    .join('');
-}
-
-function scoreColor(score: number): string {
-  if (score >= 7.5) return 'bg-emerald-500';
-  if (score >= 5) return 'bg-amber-400';
-  if (score >= 3) return 'bg-orange-500';
-  return 'bg-rose-500';
-}
-
-// --- Spec compliance ---
-
-function renderSpecCompliance(
-  spec: JudgeOutput['spec_compliance'],
-  eventIndex: Map<string, TraceEvent>,
-): string {
-  if (!spec.applicable || spec.goals.length === 0) return '';
-  const satisfied = spec.goals.filter((g) => g.status === 'satisfied').length;
-  const partial = spec.goals.filter((g) => g.status === 'partial').length;
-  const notSat = spec.goals.filter((g) => g.status === 'not_satisfied').length;
-  const total = spec.goals.length;
-
-  const goalHtml = spec.goals
+// "What happened" — per-goal status with notes.
+function renderWhatHappened(report: ReportJson, eventIndex: Map<string, TraceEvent>): string {
+  if (!report.spec_compliance.applicable || report.spec_compliance.goals.length === 0) {
+    return '';
+  }
+  const items = report.spec_compliance.goals
     .map((g) => {
-      const icon = g.status === 'satisfied' ? '✓' : g.status === 'partial' ? '◐' : '✗';
-      const borderColor =
-        g.status === 'satisfied'
-          ? 'border-emerald-300'
-          : g.status === 'partial'
-            ? 'border-amber-300'
-            : 'border-rose-300';
-      const badgeColor =
-        g.status === 'satisfied'
-          ? 'bg-emerald-100 text-emerald-800'
-          : g.status === 'partial'
-            ? 'bg-amber-100 text-amber-800'
-            : 'bg-rose-100 text-rose-800';
-      return `<div class="border-l-2 ${borderColor} pl-4 py-2">
-        <div class="flex items-center gap-2">
-          <span class="inline-flex items-center justify-center w-5 h-5 rounded-full text-xs font-bold ${badgeColor}">${icon}</span>
-          <span class="text-xs font-mono text-slate-500">${escapeHtml(g.id)}</span>
-          <span class="text-xs text-slate-500 capitalize">${escapeHtml(g.status.replace('_', ' '))}</span>
+      const effectiveStatus = effectiveGoalStatus(g, eventIndex);
+      const label = goalStatusLabel(effectiveStatus);
+      const evidence =
+        g.evidence.length > 0
+          ? `<div class="gevidence">${g.evidence.map((id) => renderEvidenceChip(id, eventIndex)).join('')}</div>`
+          : '';
+      return `<li>
+        <span class="gtag status-${escapeHtml(effectiveStatus)}">${label}</span>
+        <div class="gtext">
+          <span class="gid">${escapeHtml(g.id)}</span> ${escapeHtml(g.description)}
+          ${g.notes ? `<div class="gnotes">${escapeHtml(g.notes)}</div>` : ''}
+          ${evidence}
         </div>
-        <div class="mt-1 text-sm text-slate-800">${escapeHtml(g.description)}</div>
-        ${g.notes ? `<div class="mt-1 text-xs text-slate-500 italic">${escapeHtml(g.notes)}</div>` : ''}
-        ${g.evidence.length > 0 ? `<div class="mt-1 flex flex-wrap gap-1">${g.evidence.map((e) => renderEvidenceChip(e, eventIndex)).join('')}</div>` : ''}
-      </div>`;
+      </li>`;
     })
     .join('');
 
-  return `<section class="rounded-2xl border border-slate-200 bg-white shadow-sm p-6 mb-6">
-    <div class="flex items-baseline justify-between mb-4">
-      <h2 class="text-base font-semibold text-slate-800 flex items-center gap-2">
-        <span class="text-slate-400">📋</span> Spec compliance
-      </h2>
-      <div class="text-sm font-medium tabular-nums">
-        <span class="text-emerald-700">${satisfied}</span> / <span class="text-slate-500">${total}</span> satisfied
-        ${partial > 0 ? ` · <span class="text-amber-700">${partial} partial</span>` : ''}
-        ${notSat > 0 ? ` · <span class="text-rose-700">${notSat} failing</span>` : ''}
-      </div>
-    </div>
-    <div class="mb-4 h-2 rounded-full bg-slate-100 overflow-hidden flex">
-      <div class="bg-emerald-500 h-full" style="width: ${(satisfied / total) * 100}%"></div>
-      <div class="bg-amber-400 h-full" style="width: ${(partial / total) * 100}%"></div>
-      <div class="bg-rose-500 h-full" style="width: ${(notSat / total) * 100}%"></div>
-    </div>
-    <div class="space-y-1">
-      ${goalHtml}
-    </div>
-    ${spec.summary ? `<p class="mt-4 text-sm text-slate-600 italic">${escapeHtml(spec.summary)}</p>` : ''}
+  return `<section>
+    <h2>What got tested</h2>
+    <ul class="goals-list">${items}</ul>
+    ${report.spec_compliance.summary ? `<p style="margin-top: 12px; color: var(--text-dim); font-size: 14px;">${escapeHtml(report.spec_compliance.summary)}</p>` : ''}
   </section>`;
 }
 
-// --- Findings ---
-
-function groupFindings(findings: JudgeOutput['findings']): Record<string, JudgeOutput['findings']> {
-  const order = ['blocker', 'major', 'minor', 'nit', 'suggestion'];
-  const groups: Record<string, JudgeOutput['findings']> = {};
-  for (const sev of order) groups[sev] = [];
-  for (const f of findings) {
-    if (!groups[f.severity]) groups[f.severity] = [];
-    (groups[f.severity] as JudgeOutput['findings']).push(f);
+function goalStatusLabel(status: string): string {
+  switch (status) {
+    case 'satisfied':
+      return 'works';
+    case 'partial':
+      return 'partial';
+    case 'not_satisfied':
+      return 'broken';
+    default:
+      return 'untested';
   }
-  return groups;
 }
 
-function renderFindings(
-  grouped: Record<string, JudgeOutput['findings']>,
+// Distinguishes "tested and failed" from "never tested" — the Judge only emits
+// satisfied/partial/not_satisfied, but a goal that the Explorer never exercised
+// (run hit a budget, or notes explicitly say "not tested") should not be called
+// "broken".
+function effectiveGoalStatus(
+  g: ReportJson['spec_compliance']['goals'][number],
+  eventIndex: Map<string, TraceEvent>,
+): string {
+  if (g.status !== 'not_satisfied') return g.status;
+  const onlyBudgetAbort =
+    g.evidence.length > 0 &&
+    g.evidence.every((id) => eventIndex.get(id)?.kind === 'budget_abort');
+  const notesSayUntested = !!g.notes && /\bnot tested\b/i.test(g.notes);
+  if (onlyBudgetAbort || notesSayUntested) return 'untested';
+  return g.status;
+}
+
+// Findings list
+function renderFindingsSection(
+  findings: JudgeOutput['findings'],
   eventIndex: Map<string, TraceEvent>,
   screenshotForEvent: Map<string, string>,
 ): string {
-  const order = ['blocker', 'major', 'minor', 'nit', 'suggestion'];
-  return order
-    .map((sev) => {
-      const items = grouped[sev] ?? [];
-      if (items.length === 0) return '';
-      return items.map((f) => renderFindingCard(f, eventIndex, screenshotForEvent)).join('');
-    })
-    .filter(Boolean)
+  if (findings.length === 0) return '';
+  const order: Record<string, number> = { blocker: 0, major: 1, minor: 2, nit: 3, suggestion: 4 };
+  const sorted = [...findings].sort(
+    (a, b) => (order[a.severity] ?? 99) - (order[b.severity] ?? 99),
+  );
+  const items = sorted
+    .map((f, i) => renderFinding(f, i + 1, eventIndex, screenshotForEvent))
     .join('');
+  return `<section>
+    <h2>Findings (${findings.length})</h2>
+    <ul class="findings-list">${items}</ul>
+  </section>`;
 }
 
-function renderFindingCard(
+function renderFinding(
   f: JudgeOutput['findings'][number],
+  num: number,
   eventIndex: Map<string, TraceEvent>,
   screenshotForEvent: Map<string, string>,
 ): string {
-  const sevStyle = severityStyles(f.severity);
-  const catIcon = categoryIcon(f.category);
-
-  // Find a screenshot to show inline: pick the first evidence id that has one
   let inlineScreenshot = '';
   for (const eid of f.evidence) {
     const path = screenshotForEvent.get(eid);
     if (path) {
-      inlineScreenshot = `<div class="mt-3 rounded-lg border border-slate-200 overflow-hidden bg-slate-50">
-        <a href="${escapeAttr(path)}" target="_blank" rel="noopener" title="Open full-size">
-          <img src="${escapeAttr(path)}" alt="Evidence screenshot" class="w-full max-h-96 object-contain bg-white" loading="lazy">
+      inlineScreenshot = `<div class="finding-screenshot">
+        <a href="${escapeAttr(path)}" target="_blank" rel="noopener">
+          <img src="${escapeAttr(path)}" alt="Screenshot evidence" loading="lazy">
         </a>
-        <div class="px-3 py-1.5 text-xs text-slate-500 flex justify-between items-center">
-          <span>Screenshot at <code>${escapeHtml(eid)}</code></span>
-          <a href="${escapeAttr(path)}" target="_blank" rel="noopener" class="text-violet-600 hover:underline">Open full size →</a>
+        <div class="caption">
+          <span>at ${escapeHtml(eid)}</span>
+          <a href="${escapeAttr(path)}" target="_blank" rel="noopener">open full size</a>
         </div>
       </div>`;
       break;
     }
   }
 
-  return `<details class="rounded-xl border ${sevStyle.border} bg-white shadow-sm mb-3 overflow-hidden">
-    <summary class="px-5 py-4 flex items-start gap-3 hover:bg-slate-50/50">
-      <span class="chev text-slate-400 text-xs mt-1.5">▸</span>
-      <div class="flex-1 min-w-0">
-        <div class="flex items-center flex-wrap gap-2 mb-1">
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${sevStyle.pill}">${sevStyle.icon} ${escapeHtml(f.severity)}</span>
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">${catIcon} ${escapeHtml(f.category)}</span>
-          <code class="text-xs text-slate-500">${escapeHtml(f.id)}</code>
-        </div>
-        <div class="font-semibold text-slate-900 leading-snug">${escapeHtml(f.title)}</div>
-      </div>
-    </summary>
-    <div class="px-5 pb-5 pt-1 border-t border-slate-100">
-      <div class="text-sm text-slate-700 mb-3 whitespace-pre-line">${escapeHtml(f.rationale)}</div>
+  return `<li>
+    <div class="finding-head">
+      <span class="finding-num">${num}.</span>
+      <span class="sev-tag sev-${escapeHtml(f.severity)}">${escapeHtml(f.severity)}</span>
+      <span class="cat-tag">${escapeHtml(f.category)}</span>
+      <span class="fid">${escapeHtml(f.id)}</span>
+    </div>
+    <h3 class="finding-title" style="margin-left: 34px;">${escapeHtml(f.title)}</h3>
+    <div class="finding-body">
+      <div>${escapeHtml(f.rationale)}</div>
       ${f.where ? renderWhere(f.where) : ''}
       ${
         f.suggested_fix
-          ? `<div class="mt-3 rounded-lg bg-violet-50 border border-violet-100 px-4 py-3">
-        <div class="text-xs uppercase tracking-wide text-violet-700 font-medium mb-1">Suggested fix · ${escapeHtml(f.suggested_fix.type)}</div>
-        <div class="text-sm text-slate-800">${escapeHtml(f.suggested_fix.summary)}</div>
-      </div>`
+          ? `<div class="finding-fix"><span class="fix-label">Fix:</span>${escapeHtml(f.suggested_fix.summary)}</div>`
           : ''
       }
       ${inlineScreenshot}
       ${
         f.evidence.length > 0
-          ? `<div class="mt-3">
-        <div class="text-xs uppercase tracking-wide text-slate-500 font-medium mb-1.5">Evidence (click to jump to trace event)</div>
-        <div class="flex flex-wrap gap-1.5">
-          ${f.evidence.map((e) => renderEvidenceChip(e, eventIndex)).join('')}
-        </div>
-      </div>`
+          ? `<div class="evidence-row"><span class="label">Evidence</span>${f.evidence.map((e) => renderEvidenceChip(e, eventIndex)).join('')}</div>`
           : ''
       }
     </div>
-  </details>`;
+  </li>`;
+}
+
+function renderWhere(where: { url?: string | undefined; selector?: string | undefined }): string {
+  const parts: string[] = [];
+  if (where.url) parts.push(`<code>${escapeHtml(where.url)}</code>`);
+  if (where.selector) parts.push(`<code>${escapeHtml(where.selector)}</code>`);
+  if (parts.length === 0) return '';
+  return `<div class="finding-where">at ${parts.join(' ')}</div>`;
 }
 
 function renderEvidenceChip(eventId: string, eventIndex: Map<string, TraceEvent>): string {
   const event = eventIndex.get(eventId);
   if (event) {
-    return `<a href="#evt-${escapeAttr(eventId)}" class="evidence-chip px-2 py-1 bg-slate-100 text-slate-700 rounded text-xs font-mono inline-flex items-center gap-1" title="Jump to ${event.kind} event">
-      <span class="opacity-50">${escapeHtml(traceKindLabel(event.kind))}</span>
-      <span>${escapeHtml(eventId.slice(-8))}</span>
+    return `<a href="#evt-${escapeAttr(eventId)}" class="ev-chip" title="${escapeAttr(event.kind)}">
+      <span class="ev-kind">${escapeHtml(event.kind)}</span>${escapeHtml(eventId.slice(-6))}
     </a>`;
   }
-  // Event not in trace (could be a screenshot OBS-ref, etc.) — render as inert
-  return `<code class="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs font-mono">${escapeHtml(eventId)}</code>`;
+  return `<span class="ev-chip">${escapeHtml(eventId.slice(-6))}</span>`;
 }
 
-function traceKindLabel(kind: string): string {
-  switch (kind) {
-    case 'observation':
-      return '👁';
-    case 'action':
-      return '→';
-    case 'action_result':
-      return '←';
-    case 'probe_call':
-      return '?';
-    case 'probe_result':
-      return '!';
-    case 'tentative_finding':
-      return '⚠';
-    default:
-      return '·';
-  }
-}
-
-function renderWhere(where: { url?: string | undefined; selector?: string | undefined }): string {
-  const parts: string[] = [];
-  if (where.url)
-    parts.push(
-      `<code class="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-xs">${escapeHtml(where.url)}</code>`,
-    );
-  if (where.selector)
-    parts.push(
-      `<code class="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-xs">${escapeHtml(where.selector)}</code>`,
-    );
-  if (parts.length === 0) return '';
-  return `<div class="text-xs text-slate-500 mb-2 flex flex-wrap items-center gap-2">
-    <span class="uppercase tracking-wide font-medium">Where:</span>${parts.join('')}
-  </div>`;
-}
-
-function severityStyles(sev: string): { border: string; pill: string; icon: string } {
-  switch (sev) {
-    case 'blocker':
-      return {
-        border: 'border-rose-300',
-        pill: 'bg-rose-100 text-rose-800 border-rose-200',
-        icon: '🚨',
-      };
-    case 'major':
-      return {
-        border: 'border-amber-300',
-        pill: 'bg-amber-100 text-amber-800 border-amber-200',
-        icon: '⚠',
-      };
-    case 'minor':
-      return {
-        border: 'border-yellow-300',
-        pill: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-        icon: '●',
-      };
-    case 'nit':
-      return {
-        border: 'border-lime-300',
-        pill: 'bg-lime-100 text-lime-800 border-lime-200',
-        icon: '·',
-      };
-    case 'suggestion':
-      return {
-        border: 'border-sky-300',
-        pill: 'bg-sky-100 text-sky-800 border-sky-200',
-        icon: '💡',
-      };
-    default:
-      return {
-        border: 'border-slate-200',
-        pill: 'bg-slate-100 text-slate-700 border-slate-200',
-        icon: '•',
-      };
-  }
-}
-
-function categoryIcon(cat: string): string {
-  switch (cat) {
-    case 'bug':
-      return '🐛';
-    case 'a11y':
-      return '♿';
-    case 'ux':
-      return '🧭';
-    case 'perf':
-      return '⚡';
-    case 'copy':
-      return '✍';
-    case 'suggestion':
-      return '💡';
-    default:
-      return '•';
-  }
-}
-
-// --- Coverage ---
-
-function renderCoverage(coverage: JudgeOutput['coverage_review']): string {
-  const total = coverage.surfaces_explored + coverage.surfaces_unexplored;
-  const pct = total === 0 ? 0 : (coverage.surfaces_explored / total) * 100;
-  return `<section class="rounded-2xl border border-slate-200 bg-white shadow-sm p-6 mb-6">
-    <h2 class="text-base font-semibold text-slate-800 flex items-center gap-2 mb-4">
-      <span class="text-slate-400">🗺</span> Coverage
-    </h2>
-    <div class="flex items-center gap-4 mb-3 text-sm">
-      <div><span class="font-semibold tabular-nums">${coverage.surfaces_explored}</span> <span class="text-slate-500">explored</span></div>
-      <div class="text-slate-300">·</div>
-      <div><span class="font-semibold tabular-nums">${coverage.surfaces_unexplored}</span> <span class="text-slate-500">unexplored</span></div>
-      <div class="text-slate-300">·</div>
-      <div class="text-slate-500">${pct.toFixed(0)}% breadth</div>
-    </div>
-    <div class="h-2 rounded-full bg-slate-100 overflow-hidden mb-3">
-      <div class="h-full bg-violet-500 rounded-full" style="width: ${pct}%"></div>
-    </div>
-    <p class="text-sm text-slate-600 italic">${escapeHtml(coverage.judgement)}</p>
-  </section>`;
-}
-
-// --- Next actions ---
-
-function renderNextActions(next: ReportJson['next_actions']): string {
-  if (!next || (next.for_builder.length === 0 && next.for_re_evaluation.length === 0)) return '';
-  const builderHtml =
-    next.for_builder.length > 0
-      ? `<div class="mb-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500 font-medium mb-2">For the builder agent (prioritized fix list)</div>
-    <ol class="space-y-1 list-none">
-      ${next.for_builder
-        .map(
-          (a) => `<li class="flex gap-3 text-sm py-1.5">
-        <span class="flex-shrink-0 w-6 h-6 rounded-full bg-violet-100 text-violet-700 font-semibold text-xs flex items-center justify-center tabular-nums">${a.fix_priority}</span>
-        <span class="flex-1"><code class="text-xs text-slate-500 mr-2">${escapeHtml(a.finding_id)}</code>${escapeHtml(a.summary)}</span>
-      </li>`,
-        )
-        .join('')}
-    </ol>
-  </div>`
+// Video section
+function renderVideoSection(relPath: string, durationS: number, markers: ActionMarker[]): string {
+  const seekItems =
+    markers.length > 0
+      ? `<div class="seek-list">
+          <span class="label">Skip to action</span>
+          ${markers
+            .map(
+              (
+                m,
+              ) => `<button type="button" class="seek-btn" data-seek="${m.ts_offset_s.toFixed(2)}">
+              <span class="ts">${formatTimecode(m.ts_offset_s)}</span>
+              <span>${escapeHtml(m.label)}</span>
+            </button>`,
+            )
+            .join('')}
+        </div>`
       : '';
-  return `<section class="rounded-2xl border border-violet-200 bg-violet-50/50 p-6 mb-6">
-    <h2 class="text-base font-semibold text-slate-800 flex items-center gap-2 mb-4">
-      <span class="text-slate-400">→</span> Next actions
-    </h2>
-    ${builderHtml}
+  return `<section class="video-section">
+    <h2>Recording (${formatDuration(durationS)}, plays at 2×)</h2>
+    <p class="video-note">Note: in this run, the Explorer's actions were short (a few keystrokes + clicks). Most of the recording shows the page sitting idle. Use the skip-to-action chips to jump to the interesting moments.</p>
+    <video id="iris-video" controls preload="metadata" src="${escapeAttr(relPath)}">
+      <a href="${escapeAttr(relPath)}">Download recording</a>
+    </video>
+    ${seekItems}
   </section>`;
 }
 
-// --- Caveats + re-explore ---
-
-function renderCaveats(caveats: string[]): string {
-  if (caveats.length === 0) return '';
-  return `<ul class="space-y-1.5 text-sm text-amber-900">
-    ${caveats.map((c) => `<li class="flex gap-2"><span class="text-amber-500 flex-shrink-0">•</span><span>${escapeHtml(c)}</span></li>`).join('')}
-  </ul>`;
-}
-
-function renderReExplore(suggestions: string[]): string {
-  if (suggestions.length === 0) return '';
-  return `<div class="mt-4 pt-4 border-t border-amber-200">
-    <div class="text-xs uppercase tracking-wide text-amber-700 font-medium mb-2">Try re-running with</div>
-    <div class="flex flex-wrap gap-1.5">
-      ${suggestions.map((s) => `<code class="px-2 py-1 bg-white border border-amber-200 text-amber-900 rounded text-xs font-mono">${escapeHtml(s)}</code>`).join('')}
-    </div>
-  </div>`;
-}
-
-// --- Trace section ---
-
-function renderTraceSection(runData: RunData, _report: ReportJson): string {
-  if (runData.events.length === 0) return '';
-  const eventsHtml = runData.events.map((e) => renderTraceEvent(e, runData)).join('');
-  return `<section class="rounded-2xl border border-slate-200 bg-white shadow-sm p-6 mb-6">
-    <h2 class="text-base font-semibold text-slate-800 flex items-center gap-2 mb-1">
-      <span class="text-slate-400">📜</span> Trace
-      <span class="ml-auto text-xs font-normal text-slate-500">${runData.events.length} events</span>
-    </h2>
-    <p class="text-xs text-slate-500 mb-4">Every action, observation, and finding the Explorer recorded. Evidence chips in findings link here.</p>
-    <div class="space-y-1">
-      ${eventsHtml}
-    </div>
-  </section>`;
-}
-
-function renderTraceEvent(e: TraceEvent, runData: RunData): string {
-  const kindStyle = traceEventStyle(e.kind);
-  const screenshot = runData.screenshots.byEventId.get(e.id);
-  const summary = traceEventSummary(e);
-  const payloadStr = JSON.stringify(e.payload, null, 2);
-  return `<details id="evt-${escapeAttr(e.id)}" class="border ${kindStyle.border} rounded-md overflow-hidden">
-    <summary class="px-3 py-2 flex items-center gap-3 hover:bg-slate-50 ${kindStyle.bg}">
-      <span class="chev text-slate-400 text-xs">▸</span>
-      <span class="text-xs text-slate-500 font-mono w-12 text-right tabular-nums">step ${e.step}</span>
-      <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium ${kindStyle.pill} flex-shrink-0">${kindStyle.icon} ${escapeHtml(e.kind)}</span>
-      <span class="text-xs text-slate-600 flex-1 truncate">${escapeHtml(summary)}</span>
-      <code class="text-[10px] text-slate-400 font-mono flex-shrink-0">${escapeHtml(e.id.slice(-8))}</code>
-    </summary>
-    <div class="px-3 py-3 bg-white border-t border-slate-100 space-y-2">
-      <div class="text-xs text-slate-500">
-        <span class="uppercase tracking-wide font-medium">Actor:</span> ${escapeHtml(e.actor)}
-        <span class="mx-2 opacity-40">·</span>
-        <span class="uppercase tracking-wide font-medium">Time:</span> ${escapeHtml(new Date(e.ts * 1000).toLocaleTimeString())}
-        <span class="mx-2 opacity-40">·</span>
-        <code class="font-mono">${escapeHtml(e.id)}</code>
-      </div>
-      ${
-        screenshot
-          ? `<div class="rounded border border-slate-200 overflow-hidden bg-slate-50">
-        <a href="${escapeAttr(screenshot)}" target="_blank" rel="noopener">
-          <img src="${escapeAttr(screenshot)}" alt="Screenshot at this step" class="w-full max-h-64 object-contain bg-white" loading="lazy">
-        </a>
-      </div>`
-          : ''
-      }
-      <details>
-        <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-700">Payload</summary>
-        <pre class="mt-1 text-xs bg-slate-50 p-2 rounded overflow-x-auto text-slate-700"><code>${escapeHtml(payloadStr)}</code></pre>
-      </details>
-    </div>
+// Rubric breakdown — collapsed, low-priority
+function renderRubricSection(
+  scores: JudgeOutput['scores'],
+  eventIndex: Map<string, TraceEvent>,
+): string {
+  const entries = Object.entries(scores.profiles);
+  if (entries.length === 0) return '';
+  const profilesHtml = entries
+    .map(([name, p]) => {
+      const dims = Object.entries(p.dimensions)
+        .map(([dimId, d]) => {
+          return `<div class="rubric-dim">
+            <span class="dim-name">${escapeHtml(dimId.replace(/_/g, ' '))}</span><span class="dim-score">${d.score.toFixed(1)}</span>
+            <div style="margin-top: 2px;">${escapeHtml(d.rationale)}</div>
+            ${d.evidence.length > 0 ? `<div class="evidence-row" style="margin-top: 4px;">${d.evidence.map((id) => renderEvidenceChip(id, eventIndex)).join('')}</div>` : ''}
+          </div>`;
+        })
+        .join('');
+      return `<div class="rubric-profile">
+        <div class="rubric-profile-head">
+          <span class="name">${escapeHtml(name.replace(/_/g, ' '))}</span>
+          <span class="score">${p.score.toFixed(1)} / 10</span>
+        </div>
+        ${dims}
+      </div>`;
+    })
+    .join('');
+  return `<details class="rubric-section">
+    <summary><span class="chev">▸</span> Rubric breakdown (${entries.length} profile${entries.length === 1 ? '' : 's'})</summary>
+    <div class="body">${profilesHtml}</div>
   </details>`;
 }
 
-function traceEventStyle(kind: string): { border: string; bg: string; pill: string; icon: string } {
-  switch (kind) {
-    case 'run_start':
-    case 'run_end':
-      return {
-        border: 'border-slate-200',
-        bg: 'bg-slate-50',
-        pill: 'bg-slate-200 text-slate-700',
-        icon: '◉',
-      };
-    case 'observation':
-      return { border: 'border-slate-200', bg: '', pill: 'bg-sky-100 text-sky-800', icon: '👁' };
-    case 'action':
-      return {
-        border: 'border-slate-200',
-        bg: '',
-        pill: 'bg-violet-100 text-violet-800',
-        icon: '→',
-      };
-    case 'action_result':
-      return { border: 'border-slate-200', bg: '', pill: 'bg-slate-100 text-slate-700', icon: '←' };
-    case 'probe_call':
-    case 'probe_result':
-      return {
-        border: 'border-slate-200',
-        bg: '',
-        pill: 'bg-emerald-100 text-emerald-800',
-        icon: '?',
-      };
-    case 'tentative_finding':
-      return {
-        border: 'border-amber-200',
-        bg: 'bg-amber-50/30',
-        pill: 'bg-amber-100 text-amber-800',
-        icon: '⚠',
-      };
-    case 'give_up':
-    case 'budget_abort':
-      return {
-        border: 'border-rose-200',
-        bg: 'bg-rose-50/30',
-        pill: 'bg-rose-100 text-rose-800',
-        icon: '✗',
-      };
-    case 'done':
-      return {
-        border: 'border-emerald-200',
-        bg: 'bg-emerald-50/30',
-        pill: 'bg-emerald-100 text-emerald-800',
-        icon: '✓',
-      };
-    default:
-      return { border: 'border-slate-200', bg: '', pill: 'bg-slate-100 text-slate-700', icon: '·' };
-  }
+// Caveats
+function renderCaveatsSection(meta: JudgeOutput['meta']): string {
+  if (meta.confidence_caveats.length === 0 && meta.would_re_explore_with.length === 0) return '';
+  return `<aside class="caveats-section">
+    <h3>Caveats (confidence ${Math.round(meta.confidence_overall * 100)}%)</h3>
+    ${
+      meta.confidence_caveats.length > 0
+        ? `<ul class="caveats-list">${meta.confidence_caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul>`
+        : ''
+    }
+    ${
+      meta.would_re_explore_with.length > 0
+        ? `<div class="re-explore">
+          <span class="label">Try re-running with</span>
+          ${meta.would_re_explore_with.map((s) => `<code>${escapeHtml(s)}</code>`).join('')}
+        </div>`
+        : ''
+    }
+  </aside>`;
+}
+
+// Trace
+function renderTraceSection(runData: RunData): string {
+  if (runData.events.length === 0) return '';
+  const counts: Record<string, number> = {};
+  for (const e of runData.events) counts[e.kind] = (counts[e.kind] ?? 0) + 1;
+  const summary = Object.entries(counts)
+    .filter(([k]) => k !== 'run_start' && k !== 'run_end')
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${n} ${k.replace(/_/g, ' ')}`)
+    .join(', ');
+  const events = runData.events.map((e) => renderTraceEvent(e, runData)).join('');
+  return `<details class="trace-section">
+    <summary>
+      <span class="chev">▸</span> Trace
+      <span class="trace-meta">${runData.events.length} events — ${escapeHtml(summary)}</span>
+    </summary>
+    <div class="trace-events">${events}</div>
+  </details>`;
+}
+
+function renderTraceEvent(e: TraceEvent, runData: RunData): string {
+  const screenshot = runData.screenshots.byEventId.get(e.id);
+  const summary = traceEventSummary(e);
+  const payloadStr = JSON.stringify(e.payload, null, 2);
+  return `<details class="trace-event" id="evt-${escapeAttr(e.id)}">
+    <summary>
+      <span class="step">${e.step}</span>
+      <span class="kind kind-${escapeHtml(e.kind)}">${escapeHtml(e.kind)}</span>
+      <span class="one-line">${escapeHtml(summary)}</span>
+      <span class="ev-id-tail">${escapeHtml(e.id.slice(-6))}</span>
+    </summary>
+    <div class="details">
+      <div style="color: var(--text-faint);">
+        ${escapeHtml(e.actor)} — ${escapeHtml(new Date(e.ts * 1000).toLocaleTimeString())} — <span style="font-size: 10px;">${escapeHtml(e.id)}</span>
+      </div>
+      ${
+        screenshot
+          ? `<a href="${escapeAttr(screenshot)}" target="_blank" rel="noopener"><img src="${escapeAttr(screenshot)}" alt="Frame" loading="lazy"></a>`
+          : ''
+      }
+      <pre><code>${escapeHtml(payloadStr)}</code></pre>
+    </div>
+  </details>`;
 }
 
 function traceEventSummary(e: TraceEvent): string {
@@ -883,7 +1025,7 @@ function traceEventSummary(e: TraceEvent): string {
   switch (e.kind) {
     case 'observation': {
       const summary = String(p.summary ?? '')
-        .slice(0, 120)
+        .slice(0, 100)
         .replace(/\n/g, ' · ');
       return `${String(p.ref ?? '')} — ${summary}`;
     }
@@ -899,17 +1041,105 @@ function traceEventSummary(e: TraceEvent): string {
       return `${String(p.severity_hint ?? '')}/${String(p.category ?? '')}: ${String(p.title ?? '').slice(0, 80)}`;
     case 'give_up':
       return String(p.reason ?? '');
-    case 'run_start':
-    case 'run_end':
-    case 'done':
-    case 'budget_abort':
-      return JSON.stringify(p).slice(0, 100);
     default:
       return JSON.stringify(p).slice(0, 80);
   }
 }
 
-// --- Escaping ---
+function renderFooter(report: ReportJson): string {
+  return `<footer class="colophon">
+    <span>iris ${escapeHtml(report.tool.version)}</span>
+    <span>explorer: ${escapeHtml(report.run.models.explorer)}</span>
+    <span>judge: ${escapeHtml(report.run.models.judge)}</span>
+    <span>${escapeHtml(report.run.id)}</span>
+  </footer>`;
+}
+
+// ===========================================================================
+// Run data + helpers
+// ===========================================================================
+
+function loadRunData(runDir: string): RunData | null {
+  const tracePath = join(runDir, 'trace.jsonl');
+  if (!existsSync(tracePath)) return null;
+  let events: TraceEvent[];
+  try {
+    events = readFileSync(tracePath, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as TraceEvent);
+  } catch {
+    return null;
+  }
+
+  const screenshotsDir = join(runDir, 'evidence', 'screenshots');
+  const byObservationRef = new Map<string, string>();
+  const byEventId = new Map<string, string>();
+  if (existsSync(screenshotsDir)) {
+    const files = readdirSync(screenshotsDir).filter((f) => f.endsWith('.png'));
+    for (const f of files) {
+      const m = f.match(/^step-(\d+)/);
+      if (!m || !m[1]) continue;
+      const n = Number.parseInt(m[1], 10);
+      const obsRef = `OBS-${String(n).padStart(6, '0')}`;
+      if (f === `step-${m[1]}.png` || !byObservationRef.has(obsRef)) {
+        byObservationRef.set(obsRef, `evidence/screenshots/${f}`);
+      }
+    }
+    for (const e of events) {
+      if (e.kind === 'observation' && typeof e.payload?.ref === 'string') {
+        const path = byObservationRef.get(e.payload.ref as string);
+        if (path) byEventId.set(e.id, path);
+      }
+    }
+  }
+
+  const videosDir = join(runDir, 'evidence', 'videos');
+  let videoRelPath: string | null = null;
+  if (existsSync(videosDir)) {
+    const webms = readdirSync(videosDir).filter((f) => f.endsWith('.webm'));
+    if (webms.length > 0) {
+      webms.sort();
+      videoRelPath = `evidence/videos/${webms[webms.length - 1]}`;
+    }
+  }
+  return { events, screenshots: { byObservationRef, byEventId }, videoRelPath };
+}
+
+function buildActionMarkers(runData: RunData | null): ActionMarker[] {
+  if (!runData || runData.events.length === 0) return [];
+  const firstTs = runData.events[0]?.ts ?? 0;
+  const out: ActionMarker[] = [];
+  for (const e of runData.events) {
+    if (e.kind !== 'action') continue;
+    const p = e.payload as { tool?: string; args?: Record<string, unknown> };
+    let label = p.tool ?? 'action';
+    const args = p.args as { selector?: string; text?: string; url?: string } | undefined;
+    if (args?.text) label += ` "${args.text.slice(0, 24)}"`;
+    else if (args?.selector) label += ` ${args.selector.slice(0, 32)}`;
+    else if (args?.url) label += ` ${args.url.slice(0, 32)}`;
+    out.push({
+      ts_offset_s: Math.max(0, e.ts - firstTs),
+      label,
+      eventId: e.id,
+    });
+  }
+  return out;
+}
+
+function formatDuration(s: number): string {
+  if (s < 60) return `${s.toFixed(0)}s`;
+  const m = Math.floor(s / 60);
+  const sec = Math.round(s % 60);
+  return `${m}m ${sec}s`;
+}
+
+function formatTimecode(s: number): string {
+  if (!Number.isFinite(s) || s < 0) return '0:00';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
 
 function escapeHtml(s: string): string {
   return s
@@ -923,6 +1153,3 @@ function escapeHtml(s: string): string {
 function escapeAttr(s: string): string {
   return escapeHtml(s);
 }
-
-// Suppress unused-import lint complaints for re-exported types
-export type _ = { rel: typeof relative; b: typeof basename };
