@@ -198,10 +198,7 @@ export class Orchestrator {
     const freeExplorationSteps = config.free_exploration_steps ?? 0;
     const effectiveMaxSteps =
       specGoals && stepsPerGoal && stepsPerGoal > 0
-        ? Math.min(
-            config.max_steps,
-            specGoals.length * stepsPerGoal + freeExplorationSteps,
-          )
+        ? Math.min(config.max_steps, specGoals.length * stepsPerGoal + freeExplorationSteps)
         : config.max_steps;
 
     const explorer = new Explorer({
@@ -240,6 +237,7 @@ export class Orchestrator {
     // 7. Judge
     const judge = new Judge(this.deps.judgeClient);
     let judgeOutput: JudgeOutput;
+    let traceEvents: Awaited<ReturnType<typeof readTraceArray>> = [];
     try {
       judgeOutput = await judge.run({
         trace_path: tracePath,
@@ -252,7 +250,7 @@ export class Orchestrator {
       // Phase 5 G3: validate findings against the trace. Deterministic step;
       // drops findings whose cited event ids don't exist and downgrades severe
       // findings without concrete backing.
-      const traceEvents = await readTraceArray(tracePath);
+      traceEvents = await readTraceArray(tracePath);
       const validation = validateFindings(judgeOutput.findings, traceEvents);
       judgeOutput = {
         ...judgeOutput,
@@ -302,6 +300,7 @@ export class Orchestrator {
       this.deps.explorerClient.totals().cost_usd + this.deps.judgeClient.totals().cost_usd;
     const report = buildReportJson({
       judge: judgeOutput,
+      trace_events: traceEvents,
       run: {
         id: startedAt.toISOString().replace(/[:]/g, '-'),
         target: { kind: config.target.kind, url: config.target.url },
@@ -402,7 +401,11 @@ export class Orchestrator {
     config: OrchestratorRunConfig;
     startedAt: Date;
     startMs: number;
-    preflight: { ok: boolean; checks: Array<{ name: string; ok: boolean; detail?: string }>; screenshot?: string };
+    preflight: {
+      ok: boolean;
+      checks: Array<{ name: string; ok: boolean; detail?: string }>;
+      screenshot?: string;
+    };
     artifacts: Record<string, string>;
   }): ReportJson {
     const { config, startedAt, startMs, preflight, artifacts } = args;

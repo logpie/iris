@@ -148,7 +148,8 @@ export class WebTargetAdapter implements TargetAdapter {
       // Screenshot failures are non-fatal.
     }
 
-    const consoleMessages = this.consoleProbe?.snapshot().map((e) => ({ level: e.type, text: e.text })) ?? [];
+    const consoleMessages =
+      this.consoleProbe?.snapshot().map((e) => ({ level: e.type, text: e.text })) ?? [];
 
     const probe: PreflightProbe = {
       httpStatus: this.startGotoStatus,

@@ -64,7 +64,12 @@ export class GoalTracker {
       };
     }
     if (this.freeTurnsLeft > 0) {
-      return { phase: 'free', id: '__free__', description: 'free exploration', turnsLeft: this.freeTurnsLeft };
+      return {
+        phase: 'free',
+        id: '__free__',
+        description: 'free exploration',
+        turnsLeft: this.freeTurnsLeft,
+      };
     }
     return { phase: 'done', id: '__done__', description: '', turnsLeft: 0 };
   }

@@ -17,7 +17,7 @@ describe('buildSummaryLine', () => {
     expect(line.split('\n').filter((s) => s.length > 0)).toHaveLength(1);
 
     const parsed = JSON.parse(line.trim()) as SummaryInput & { v: number };
-    expect(parsed.v).toBe(1);
+    expect(parsed.v).toBe(2);
     expect(parsed.score).toBe(7.4);
     expect(parsed.threshold_passed).toBe(true);
     expect(parsed.findings.blocker).toBe(1);

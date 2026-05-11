@@ -1,4 +1,5 @@
 import { Command, type OutputConfiguration } from 'commander';
+import { diffCommand } from './commands/diff.js';
 import { evalCommand } from './commands/eval.js';
 import { judgeCommand } from './commands/judge.js';
 import { reportCommand } from './commands/report.js';
@@ -11,6 +12,7 @@ export function buildProgram(): Command {
   program.addCommand(evalCommand());
   program.addCommand(judgeCommand());
   program.addCommand(reportCommand());
+  program.addCommand(diffCommand());
 
   // Share the root program's _outputConfiguration object with all subcommands
   // so that test helpers calling program.configureOutput() also affect subcommand

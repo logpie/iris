@@ -433,7 +433,9 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
               entry.rationale = args.rationale;
             }
             await emit('goal_status', 'explorer', { ...args, auto_cutover: false });
-            return { content: [{ type: 'text' as const, text: `goal ${args.id}: ${args.status}` }] };
+            return {
+              content: [{ type: 'text' as const, text: `goal ${args.id}: ${args.status}` }],
+            };
           },
         ),
       ]

@@ -1,4 +1,6 @@
 import type { JudgeOutput } from '../judge/judge.js';
+import { findingHash } from '../trace/identity.js';
+import type { TraceEvent } from '../trace/schema.js';
 
 export interface ReportRunMeta {
   id: string;
@@ -37,6 +39,9 @@ export interface BuildReportJsonInputs {
   // Phase 5 additions:
   preflight?: PreflightReport;
   blocked?: { reasons: string[] };
+  // Trace events (with content_hash), used to compute stable finding_hash for
+  // cross-run diff. If omitted, finding_hash will fall back to per-id strings.
+  trace_events?: TraceEvent[];
 }
 
 export interface ReportJson {
@@ -84,7 +89,13 @@ const TOOL_VERSION = '0.0.0';
 
 // Coverage status helpers: which goal statuses count as "attempted" for scoring
 // purposes. Untested/skipped are excluded from the denominator.
-const ATTEMPTED_STATUSES = new Set(['verified', 'satisfied', 'partial', 'blocked', 'not_satisfied']);
+const ATTEMPTED_STATUSES = new Set([
+  'verified',
+  'satisfied',
+  'partial',
+  'blocked',
+  'not_satisfied',
+]);
 const VERIFIED_STATUSES = new Set(['verified', 'satisfied']);
 
 function countAttemptedGoals(judge: JudgeOutput): {
@@ -108,7 +119,21 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
   const threshold_passed = inp.threshold === undefined ? true : score >= inp.threshold;
   const coverage = countAttemptedGoals(inp.judge);
 
-  const for_builder = inp.judge.findings
+  // Phase 5 G4: compute a stable finding_hash for every finding. Uses content
+  // hashes of the cited trace events when available, so the same finding from
+  // two runs of the same app produces the same hash.
+  const eventIndex = new Map<string, { content_hash?: string }>();
+  if (inp.trace_events) {
+    for (const e of inp.trace_events) {
+      eventIndex.set(e.id, { ...(e.content_hash ? { content_hash: e.content_hash } : {}) });
+    }
+  }
+  const findingsWithHash = inp.judge.findings.map((f) => ({
+    ...f,
+    finding_hash: findingHash(f, eventIndex),
+  }));
+
+  const for_builder = findingsWithHash
     .map((f, idx) => ({ f, idx }))
     .sort((a, b) => severityRank(a.f.severity) - severityRank(b.f.severity))
     .slice(0, 10)
@@ -144,7 +169,7 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     headline,
     scores: inp.judge.scores,
     spec_compliance: inp.judge.spec_compliance,
-    findings: inp.judge.findings,
+    findings: findingsWithHash,
     coverage_review: inp.judge.coverage_review,
     meta: inp.judge.meta,
     ...(inp.artifacts ? { artifacts: inp.artifacts } : {}),

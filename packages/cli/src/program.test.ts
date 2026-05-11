@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { buildProgram } from './program.js';
 
 describe('iris CLI program', () => {
-  it('exposes three subcommands: eval, judge, report', () => {
+  it('exposes four subcommands: eval, judge, report, diff', () => {
     const p = buildProgram();
     const names = p.commands.map((c) => c.name());
-    expect(names).toEqual(expect.arrayContaining(['eval', 'judge', 'report']));
+    expect(names).toEqual(expect.arrayContaining(['eval', 'judge', 'report', 'diff']));
   });
 
   it('--help exits with code 0 (smoke)', async () => {

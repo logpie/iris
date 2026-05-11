@@ -749,9 +749,7 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
         `Iris verified ${counts.sat} of ${counts.total} spec goal${counts.total === 1 ? '' : 's'}${tailStr}.`,
       );
     } else {
-      sentences.push(
-        `Iris did not verify any spec goals end-to-end${tailStr || ''}.`,
-      );
+      sentences.push(`Iris did not verify any spec goals end-to-end${tailStr || ''}.`);
     }
   }
 
@@ -815,14 +813,15 @@ function renderBlockedBanner(report: ReportJson): string {
   const screenshotImg = report.preflight?.screenshot
     ? `<div class="finding-screenshot"><a href="${escapeAttr(report.preflight.screenshot)}" target="_blank" rel="noopener"><img src="${escapeAttr(report.preflight.screenshot)}" alt="Preflight screenshot" loading="lazy"></a></div>`
     : '';
-  const itemHtml = failedChecks.length > 0
-    ? failedChecks
-        .map(
-          (c) =>
-            `<li><code>${escapeHtml(c.name)}</code>${c.detail ? ` — ${escapeHtml(c.detail)}` : ''}</li>`,
-        )
-        .join('')
-    : reasons.map((r) => `<li><code>${escapeHtml(r)}</code></li>`).join('');
+  const itemHtml =
+    failedChecks.length > 0
+      ? failedChecks
+          .map(
+            (c) =>
+              `<li><code>${escapeHtml(c.name)}</code>${c.detail ? ` — ${escapeHtml(c.detail)}` : ''}</li>`,
+          )
+          .join('')
+      : reasons.map((r) => `<li><code>${escapeHtml(r)}</code></li>`).join('');
   return `<section class="blocked-banner">
     <h2>App blocked from evaluation</h2>
     <p>Iris could not evaluate this target because preflight checks failed:</p>
@@ -896,8 +895,7 @@ function effectiveGoalStatus(
   // For "blocked" or "not_satisfied" (legacy), downgrade to untested when the
   // only evidence is a budget abort or notes explicitly say not tested.
   const onlyBudgetAbort =
-    g.evidence.length > 0 &&
-    g.evidence.every((id) => eventIndex.get(id)?.kind === 'budget_abort');
+    g.evidence.length > 0 && g.evidence.every((id) => eventIndex.get(id)?.kind === 'budget_abort');
   const notesSayUntested = !!g.notes && /\bnot tested\b/i.test(g.notes);
   if (onlyBudgetAbort || notesSayUntested) return 'untested';
   return g.status === 'blocked' ? 'blocked' : 'not_satisfied';

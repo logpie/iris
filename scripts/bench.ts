@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const FIXTURES_ROOT = join(REPO_ROOT, 'fixtures', 'known-bugs');
+const BROKEN_APPS_ROOT = join(REPO_ROOT, 'fixtures', 'broken-apps');
 const IRIS_BIN = join(REPO_ROOT, 'packages', 'cli', 'dist', 'bin.js');
 
 interface FixtureMeta {
@@ -36,12 +37,18 @@ interface FixtureMeta {
   description: string;
   spec: string;
   mode: string;
-  expected_findings: Array<{
+  // Phase 5: 'preflight' fixtures expect the run to be blocked before Explorer.
+  kind?: 'preflight';
+  expected_blocked?: boolean;
+  expected_failed_checks?: string[];
+  expected_exit_code?: number;
+  preflight_timeout_s?: number;
+  expected_findings?: Array<{
     match: { category?: string | string[]; severity?: string[]; title_contains?: string[] };
     must_find: boolean;
   }>;
-  expected_score_range: { overall?: [number, number] };
-  expected_to_NOT_find: Array<{ category?: string; severity?: string }>;
+  expected_score_range?: { overall?: [number, number] };
+  expected_to_NOT_find?: Array<{ category?: string; severity?: string }>;
 }
 
 interface BenchResult {
@@ -80,11 +87,27 @@ if (!existsSync(IRIS_BIN)) {
   process.exit(1);
 }
 
-const fixtureDirs = readdirSync(FIXTURES_ROOT)
-  .filter((n) => statSync(join(FIXTURES_ROOT, n)).isDirectory())
-  .filter((n) => !filter || n.includes(filter));
+interface FixtureEntry {
+  name: string;
+  root: 'known-bugs' | 'broken-apps';
+  dir: string;
+}
 
-if (fixtureDirs.length === 0) {
+const knownBugFixtures: FixtureEntry[] = readdirSync(FIXTURES_ROOT)
+  .filter((n) => statSync(join(FIXTURES_ROOT, n)).isDirectory())
+  .filter((n) => !filter || n.includes(filter))
+  .map((name) => ({ name, root: 'known-bugs' as const, dir: join(FIXTURES_ROOT, name) }));
+
+const brokenAppFixtures: FixtureEntry[] = existsSync(BROKEN_APPS_ROOT)
+  ? readdirSync(BROKEN_APPS_ROOT)
+      .filter((n) => statSync(join(BROKEN_APPS_ROOT, n)).isDirectory())
+      .filter((n) => !filter || n.includes(filter))
+      .map((name) => ({ name, root: 'broken-apps' as const, dir: join(BROKEN_APPS_ROOT, name) }))
+  : [];
+
+const fixtures: FixtureEntry[] = [...knownBugFixtures, ...brokenAppFixtures];
+
+if (fixtures.length === 0) {
   console.error('bench: no fixtures matched filter');
   process.exit(1);
 }
@@ -92,8 +115,8 @@ if (fixtureDirs.length === 0) {
 const results: BenchResult[] = [];
 let totalCost = 0;
 
-for (const fixtureName of fixtureDirs) {
-  const fixtureDir = join(FIXTURES_ROOT, fixtureName);
+for (const fixture of fixtures) {
+  const { name: fixtureName, dir: fixtureDir, root } = fixture;
   const metaPath = join(fixtureDir, 'meta.json');
   if (!existsSync(metaPath)) {
     console.error(`bench: ${fixtureName} has no meta.json — skipping`);
@@ -101,23 +124,35 @@ for (const fixtureName of fixtureDirs) {
   }
   const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as FixtureMeta;
 
-  console.log(`\n=== ${fixtureName} ===`);
+  console.log(`\n=== ${fixtureName}${meta.kind ? ` [${meta.kind}]` : ''} ===`);
   console.log(meta.description);
 
-  // Start fixture server
-  const server = await startServer(join(fixtureDir, 'public'));
+  // Start fixture server. Most fixtures serve /public via static; some
+  // broken-app fixtures need a custom server.mjs for HTTP-level behavior.
+  let server: ServerHandle;
+  const customServer = join(fixtureDir, 'server.mjs');
+  if (existsSync(customServer)) {
+    server = await startCustomServer(customServer);
+  } else {
+    server = await startServer(join(fixtureDir, 'public'));
+  }
   const outDir = mkdtempSync(join(tmpdir(), `iris-bench-${fixtureName}-`));
   const specPath = join(outDir, 'spec.txt');
   writeFileSync(specPath, meta.spec);
 
   const start = Date.now();
   let exitCode = 0;
+  // Preflight fixtures hit / (no index.html); normal fixtures hit /index.html.
+  const targetPath = root === 'broken-apps' ? '' : '/index.html';
   try {
     exitCode = await runIris({
-      target: `${server.url}/index.html`,
+      target: `${server.url}${targetPath}`,
       out_dir: outDir,
       spec: specPath,
       max_cost: maxCost ?? '1',
+      ...(meta.preflight_timeout_s !== undefined
+        ? { preflight_timeout_s: String(meta.preflight_timeout_s) }
+        : {}),
     });
   } catch (err) {
     results.push({
@@ -154,45 +189,68 @@ for (const fixtureName of fixtureDirs) {
 
   const report = JSON.parse(readFileSync(reportPath, 'utf8'));
   const score = report.headline.score;
-  const findings = report.findings as Array<{ category: string; severity: string; title: string }>;
-  const cost = report.run.cost_usd;
+  const findings = (report.findings ?? []) as Array<{
+    category: string;
+    severity: string;
+    title: string;
+  }>;
+  const cost = report.run.cost_usd ?? 0;
   totalCost += cost;
 
   const failures: string[] = [];
 
-  // Score range check
-  if (meta.expected_score_range.overall) {
-    const [min, max] = meta.expected_score_range.overall;
-    if (score < min || score > max) {
-      failures.push(`score ${score} outside expected [${min}, ${max}]`);
+  if (meta.kind === 'preflight') {
+    // Preflight fixtures: assert blocked + expected failed checks + exit code 4.
+    if (!report.headline?.blocked) {
+      failures.push('expected headline.blocked=true');
+    }
+    if (meta.expected_exit_code !== undefined && exitCode !== meta.expected_exit_code) {
+      failures.push(`exit code ${exitCode} != expected ${meta.expected_exit_code}`);
+    }
+    const failedNames = (report.preflight?.checks ?? [])
+      .filter((c: { ok: boolean }) => !c.ok)
+      .map((c: { name: string }) => c.name);
+    for (const expected of meta.expected_failed_checks ?? []) {
+      if (!failedNames.includes(expected)) {
+        failures.push(`expected failed check "${expected}", got [${failedNames.join(', ')}]`);
+      }
+    }
+  } else {
+    // Score range check
+    if (meta.expected_score_range?.overall) {
+      const [min, max] = meta.expected_score_range.overall;
+      if (score < min || score > max) {
+        failures.push(`score ${score} outside expected [${min}, ${max}]`);
+      }
+    }
+
+    // must_find checks
+    for (const ef of meta.expected_findings ?? []) {
+      if (!ef.must_find) continue;
+      const matched = findings.some((f) => matchesFinding(f, ef.match));
+      if (!matched) {
+        failures.push(`missing required finding: ${JSON.stringify(ef.match)}`);
+      }
+    }
+
+    // expected_to_NOT_find checks
+    for (const ntf of meta.expected_to_NOT_find ?? []) {
+      const matched = findings.some(
+        (f) =>
+          (!ntf.category || f.category === ntf.category) &&
+          (!ntf.severity || f.severity === ntf.severity),
+      );
+      if (matched) {
+        failures.push(`unexpected finding present: ${JSON.stringify(ntf)}`);
+      }
     }
   }
 
-  // must_find checks
-  for (const ef of meta.expected_findings) {
-    if (!ef.must_find) continue;
-    const matched = findings.some((f) => matchesFinding(f, ef.match));
-    if (!matched) {
-      failures.push(`missing required finding: ${JSON.stringify(ef.match)}`);
-    }
-  }
-
-  // expected_to_NOT_find checks
-  for (const ntf of meta.expected_to_NOT_find) {
-    const matched = findings.some(
-      (f) =>
-        (!ntf.category || f.category === ntf.category) &&
-        (!ntf.severity || f.severity === ntf.severity),
-    );
-    if (matched) {
-      failures.push(`unexpected finding present: ${JSON.stringify(ntf)}`);
-    }
-  }
-
-  // exit code 0 = passed, 1 = below threshold, 2 = budget abort (still valid run with findings),
-  // 3 = error (no report). Bench passes if checks succeeded regardless of threshold/budget,
-  // because the bench evaluates the meta.json contract, not the user-supplied threshold.
-  const passed = failures.length === 0 && exitCode <= 2;
+  // exit codes: 0 = pass, 1 = below threshold, 2 = budget abort (still valid),
+  // 3 = error, 4 = preflight blocked. Bench passes if checks succeeded and
+  // exit code is in the allowed set for this fixture kind.
+  const allowedExit = meta.kind === 'preflight' ? [meta.expected_exit_code ?? 4] : [0, 1, 2];
+  const passed = failures.length === 0 && allowedExit.includes(exitCode);
   results.push({
     fixture: fixtureName,
     passed,
@@ -282,6 +340,7 @@ interface IrisRunArgs {
   out_dir: string;
   spec: string;
   max_cost: string;
+  preflight_timeout_s?: string;
 }
 
 function runIris(args: IrisRunArgs): Promise<number> {
@@ -302,10 +361,42 @@ function runIris(args: IrisRunArgs): Promise<number> {
       args.max_cost,
       '--transport',
       HAS_API_KEY ? 'api' : 'sdk',
+      ...(args.preflight_timeout_s ? ['--preflight-timeout-s', args.preflight_timeout_s] : []),
     ];
     const proc = spawn('node', cmdArgs, { stdio: 'inherit' });
     proc.on('error', reject);
     proc.on('exit', (code) => resolveRun(code ?? 0));
+  });
+}
+
+// Start a fixture's custom server.mjs (used for preflight fixtures that need
+// HTTP-level behavior like a 404 root or never-ending response stream).
+function startCustomServer(serverPath: string): Promise<ServerHandle> {
+  return new Promise((resolveSrv, reject) => {
+    const proc = spawn('node', [serverPath], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let buf = '';
+    const onData = (chunk: Buffer) => {
+      buf += chunk.toString();
+      const lines = buf.split('\n');
+      for (const line of lines) {
+        const m = line.match(/(https?:\/\/[^\s]+)/);
+        if (m) {
+          proc.stdout?.off('data', onData);
+          resolveSrv({
+            url: m[1]!,
+            close: () =>
+              new Promise<void>((r) => {
+                proc.kill('SIGTERM');
+                proc.on('exit', () => r());
+              }),
+          });
+          return;
+        }
+      }
+    };
+    proc.stdout?.on('data', onData);
+    proc.on('error', reject);
+    setTimeout(() => reject(new Error('custom server did not start within 5s')), 5000);
   });
 }
 

@@ -41,11 +41,11 @@ export function checkPageReady(loadFinished: boolean, timeoutS: number): CheckRe
   };
 }
 
-export function checkConsoleClean(
-  messages: Array<{ level: string; text: string }>,
-): CheckResult {
+export function checkConsoleClean(messages: Array<{ level: string; text: string }>): CheckResult {
   const fatals = messages.filter(
-    (m) => (m.level === 'error' || m.level === 'pageerror') && FATAL_PATTERNS.some((p) => p.test(m.text)),
+    (m) =>
+      (m.level === 'error' || m.level === 'pageerror') &&
+      FATAL_PATTERNS.some((p) => p.test(m.text)),
   );
   if (fatals.length === 0) return { ok: true, name: 'console_clean' };
   const first = fatals[0];

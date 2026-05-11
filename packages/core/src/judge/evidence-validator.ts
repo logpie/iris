@@ -37,10 +37,7 @@ function requiresBacking(severity: JudgeFinding['severity']): boolean {
   return severity !== 'suggestion';
 }
 
-export function validateFindings(
-  findings: JudgeFinding[],
-  trace: TraceEvent[],
-): ValidationOutput {
+export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]): ValidationOutput {
   const eventById = new Map<string, TraceEvent>();
   for (const e of trace) eventById.set(e.id, e);
 
@@ -85,14 +82,8 @@ export function validateFindings(
 // concrete backing. Real trace kinds are documented in
 // `packages/core/src/trace/schema.ts`. Probe results are payloads with shape
 // `{probe, summary: {violations?|error_count?|failure_count?}, data}`.
-function hasBackingEvidence(
-  citedIds: string[],
-  trace: TraceEvent[],
-  category: string,
-): boolean {
-  const indices = citedIds
-    .map((id) => trace.findIndex((e) => e.id === id))
-    .filter((i) => i >= 0);
+function hasBackingEvidence(citedIds: string[], trace: TraceEvent[], category: string): boolean {
+  const indices = citedIds.map((id) => trace.findIndex((e) => e.id === id)).filter((i) => i >= 0);
   for (const idx of indices) {
     const lo = Math.max(0, idx - 2);
     const hi = Math.min(trace.length, idx + 3);

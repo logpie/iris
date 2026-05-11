@@ -123,8 +123,14 @@ export function evalCommand(): Command {
             minors: number;
             nits: number;
             suggestions: number;
+            goals_attempted?: number;
+            goals_verified?: number;
+            goals_total?: number;
+            blocked?: boolean;
+            blocked_reasons?: string[];
           };
           meta: { confidence_caveats: string[] };
+          evidence_validation?: { verified: number; downgraded: number; discarded: number };
         };
         out_dir: string;
         duration_s: number;
@@ -189,6 +195,11 @@ export function evalCommand(): Command {
 
       if (opts.printSummary) {
         const counts = result.report.headline;
+        const ev = (
+          result.report as unknown as {
+            evidence_validation?: { verified: number; downgraded: number; discarded: number };
+          }
+        ).evidence_validation;
         process.stdout.write(
           buildSummaryLine({
             score: counts.score,
@@ -204,6 +215,23 @@ export function evalCommand(): Command {
             duration_s: result.duration_s,
             cost_usd: result.cost_usd,
             caveats: result.report.meta.confidence_caveats.length,
+            ...(counts.blocked !== undefined ? { blocked: counts.blocked } : {}),
+            ...(counts.blocked_reasons ? { blocked_reasons: counts.blocked_reasons } : {}),
+            ...(counts.goals_total !== undefined
+              ? {
+                  goals_attempted: counts.goals_attempted ?? 0,
+                  goals_verified: counts.goals_verified ?? 0,
+                  goals_total: counts.goals_total,
+                }
+              : {}),
+            ...(ev
+              ? {
+                  evidence_verified: ev.verified,
+                  evidence_downgraded: ev.downgraded,
+                  evidence_discarded: ev.discarded,
+                }
+              : {}),
+            exit_code: result.exit_code,
           }),
         );
       } else {

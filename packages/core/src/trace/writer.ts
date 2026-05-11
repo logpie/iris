@@ -1,5 +1,6 @@
 import { open } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
+import { eventContentHash } from './identity.js';
 import { type TraceEvent, TraceEventSchema } from './schema.js';
 
 export class TraceWriter {
@@ -18,7 +19,13 @@ export class TraceWriter {
   }
 
   async append(event: TraceEvent): Promise<void> {
-    const validated = TraceEventSchema.parse(event);
+    // Phase 5: add a stable content_hash so cross-run diff can identify the
+    // "same" event across two runs. Hash is computed before schema validation
+    // so the writer is the single source of truth for hashing.
+    const withHash: TraceEvent = event.content_hash
+      ? event
+      : { ...event, content_hash: eventContentHash(event) };
+    const validated = TraceEventSchema.parse(withHash);
     const line = `${JSON.stringify(validated)}\n`;
     const fh = await this.getHandle();
     await fh.write(line);

@@ -225,12 +225,11 @@ export async function runIrisViaSdk(
     );
   }
 
-  const goalList = hasGoals
-    ? goals.map((g, i) => `  G${i + 1}. ${g.description}`).join('\n')
-    : '';
-  const perGoalLine = stepsPerGoal && stepsPerGoal > 0
-    ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on.`
-    : '';
+  const goalList = hasGoals ? goals.map((g, i) => `  G${i + 1}. ${g.description}`).join('\n') : '';
+  const perGoalLine =
+    stepsPerGoal && stepsPerGoal > 0
+      ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on.`
+      : '';
 
   const initialUserPrompt = `Target: ${config.target.url}
 
@@ -351,6 +350,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
   const duration_s = (Date.now() - startMs) / 1000;
   const report = reportMod.buildReportJson({
     judge: judgeOutput,
+    trace_events: events,
     run: {
       id: startedAt.toISOString().replace(/[:]/g, '-'),
       target: { kind: 'web', url: config.target.url },

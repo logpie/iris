@@ -54,9 +54,7 @@ describe('preflight checks', () => {
     });
     it('passes on non-fatal errors (CORS, etc)', () => {
       expect(
-        checkConsoleClean([
-          { level: 'error', text: 'CORS warning: ignored cross-origin' },
-        ]).ok,
+        checkConsoleClean([{ level: 'error', text: 'CORS warning: ignored cross-origin' }]).ok,
       ).toBe(true);
     });
     it('fails on Uncaught TypeError', () => {
@@ -65,9 +63,9 @@ describe('preflight checks', () => {
       expect(r.detail).toContain('Uncaught TypeError');
     });
     it('fails on Minified React error', () => {
-      expect(
-        checkConsoleClean([{ level: 'error', text: 'Minified React error #418' }]).ok,
-      ).toBe(false);
+      expect(checkConsoleClean([{ level: 'error', text: 'Minified React error #418' }]).ok).toBe(
+        false,
+      );
     });
     it('treats pageerror level as fatal source', () => {
       expect(
