@@ -60,18 +60,27 @@ export function checkBodyHasContent(stats: {
   textChars: number;
   interactiveCount: number;
 }): CheckResult {
-  // Thresholds tuned empirically against real apps:
-  // - example.com:   129 chars / 1 interactive → passes via textChars
-  // - TodoMVC SPA:   616 chars / 12 interactive (post-hydration) → passes both
-  // - blank page:    0 chars / 0 interactive → fails
-  // - 404 with body: usually passes content (it's still a real page); the
-  //   http_status check is what catches a 404 — these are independent.
-  if (stats.textChars >= 30 || stats.interactiveCount >= 5) {
-    return { ok: true, name: 'body_has_content' };
+  // Thresholds re-tuned 2026-05-11 after dogfooding caught a real bug:
+  // a legitimate small sign-in form (11 chars / 3 interactive) was being
+  // blocked. Real-world apps vary wildly in visible-text density; the only
+  // case worth catching here is "truly nothing rendered." Make the check
+  // strict-AND with very low thresholds so it doesn't fire on minimal-but-real
+  // pages.
+  //
+  // Verified post-fix:
+  //   blank page:           0 chars / 0 interactive → FAIL (correct)
+  //   bench fixture 02:    11 chars / 3 interactive → pass
+  //   example.com:        129 chars / 1 interactive → pass
+  //   TodoMVC SPA:        616 chars / 12 interactive → pass
+  //   404 (with rich body): caught by http_status check, not this one
+  const veryLittleText = stats.textChars < 10;
+  const noInteractive = stats.interactiveCount < 1;
+  if (veryLittleText && noInteractive) {
+    return {
+      ok: false,
+      name: 'body_has_content',
+      detail: `body has ${stats.textChars} chars / ${stats.interactiveCount} interactive elements`,
+    };
   }
-  return {
-    ok: false,
-    name: 'body_has_content',
-    detail: `body has ${stats.textChars} chars / ${stats.interactiveCount} interactive elements`,
-  };
+  return { ok: true, name: 'body_has_content' };
 }

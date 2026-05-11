@@ -81,16 +81,24 @@ describe('preflight checks', () => {
     it('passes on minimal text (example.com)', () => {
       expect(checkBodyHasContent({ textChars: 129, interactiveCount: 1 }).ok).toBe(true);
     });
-    it('passes on many interactives but little text', () => {
+    it('passes on many interactives with little text', () => {
       expect(checkBodyHasContent({ textChars: 10, interactiveCount: 6 }).ok).toBe(true);
     });
-    it('fails on blank body', () => {
+    it('passes on a minimal real form (11 chars / 3 interactive)', () => {
+      // Regression: bench fixture 02 (focus-trap-modal) has body text
+      // "Open dialog" (11 chars) + 3 interactive elements. Earlier thresholds
+      // (30 chars OR 5 interactive) blocked it. Real bug caught by dogfooding.
+      expect(checkBodyHasContent({ textChars: 11, interactiveCount: 3 }).ok).toBe(true);
+    });
+    it('fails on truly blank body', () => {
       const r = checkBodyHasContent({ textChars: 0, interactiveCount: 0 });
       expect(r.ok).toBe(false);
       expect(r.detail).toContain('0 chars');
     });
-    it('fails just below thresholds', () => {
-      expect(checkBodyHasContent({ textChars: 29, interactiveCount: 4 }).ok).toBe(false);
+    it('passes when only one of text/interactive is present', () => {
+      // Strict-AND policy: only block when both are essentially zero.
+      expect(checkBodyHasContent({ textChars: 0, interactiveCount: 1 }).ok).toBe(true);
+      expect(checkBodyHasContent({ textChars: 10, interactiveCount: 0 }).ok).toBe(true);
     });
   });
 });
