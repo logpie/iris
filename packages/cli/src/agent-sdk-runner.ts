@@ -172,6 +172,9 @@ export interface ExplorerSdkConfig {
   /** When provided, registers a goal_status MCP tool and emits a final
    * `goal_status: untested` event for every goal the Explorer never closed. */
   goals?: Array<{ id: string; description: string }>;
+  /** Phase 10: max number of expansion goals the Explorer can append via
+   * propose_goal during the run. Defaults to 6. Set to 0 to disable expansion. */
+  maxExpansionGoals?: number;
 }
 
 export interface ExplorerSdkResult {
@@ -534,6 +537,67 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     goalLedger.set(g.id, { description: g.description, status: 'pending', rationale: '' });
   }
 
+  // Phase 10: dynamic goal expansion. Explorer can append goals via
+  // propose_goal mid-run. Tracked separately so the report can distinguish
+  // seed vs expansion goals.
+  const seedGoalCount = config.goals?.length ?? 0;
+  const maxExpansion = config.maxExpansionGoals ?? 6;
+  let expansionCount = 0;
+
+  // Phase 10: propose_goal — Explorer adds a goal mid-run. Only available
+  // when expansion is enabled (maxExpansion > 0). Capped to prevent runaway.
+  const proposeGoalTools =
+    maxExpansion > 0
+      ? [
+          tool(
+            'propose_goal',
+            'Add a new goal mid-run when you discover a surface or behavior not covered by seed goals. Example: you found a Settings panel — propose "change theme and verify persistence." New goals are tagged as expansion goals (priority should/could, never must). Capped per run to keep scope finite.',
+            {
+              description: z
+                .string()
+                .describe(
+                  'user-outcome-shaped goal, e.g. "Toggle dark mode and verify it persists across reload"',
+                ),
+              rationale: z.string().describe('why this matters / what you saw that prompted this'),
+              priority: z.enum(['should', 'could']).default('should'),
+            },
+            async (args) => {
+              if (expansionCount >= maxExpansion) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `expansion cap reached (${maxExpansion}); goal not added. Continue with existing goals.`,
+                    },
+                  ],
+                };
+              }
+              expansionCount++;
+              const newId = `G${seedGoalCount + expansionCount}`;
+              goalLedger.set(newId, {
+                description: args.description,
+                status: 'pending',
+                rationale: '',
+              });
+              await emit('goal_proposed', 'explorer', {
+                id: newId,
+                description: args.description,
+                rationale: args.rationale,
+                priority: args.priority,
+              });
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `goal ${newId} added: ${args.description}. Verify it before run end via goal_status({id: "${newId}", ...}).`,
+                  },
+                ],
+              };
+            },
+          ),
+        ]
+      : [];
+
   const goalStatusTools = config.goals
     ? [
         tool(
@@ -561,7 +625,13 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
 
   const irisToolServer = createSdkMcpServer({
     name: 'iris',
-    tools: [...adapterMcpTools, ...probeMcpTools, ...metaTools, ...goalStatusTools],
+    tools: [
+      ...adapterMcpTools,
+      ...probeMcpTools,
+      ...metaTools,
+      ...goalStatusTools,
+      ...proposeGoalTools,
+    ],
   });
 
   const allowedToolNames = [
@@ -576,6 +646,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     'mcp__iris__give_up',
     'mcp__iris__done',
     ...(config.goals ? ['mcp__iris__goal_status'] : []),
+    ...(maxExpansion > 0 ? ['mcp__iris__propose_goal'] : []),
   ];
 
   const q = query({

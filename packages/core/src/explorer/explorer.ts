@@ -93,6 +93,7 @@ const META_TOOL_NAMES = new Set([
   'step_done',
   'goal_status',
   'push_subgoal',
+  'propose_goal',
   'give_up',
   'done',
 ]);
@@ -169,6 +170,20 @@ const META_TOOL_SPECS = [
         rationale: { type: 'string' },
       },
       required: ['id', 'status', 'rationale'],
+    },
+  },
+  {
+    name: 'propose_goal',
+    description:
+      'Append a new goal mid-run when you discover a surface or behavior not covered by seed goals. New goal gets priority should/could (never must). Capped per run. Verify it via goal_status before run end.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        description: { type: 'string' },
+        rationale: { type: 'string' },
+        priority: { type: 'string', enum: ['should', 'could'] },
+      },
+      required: ['description', 'rationale'],
     },
   },
   {
@@ -422,6 +437,32 @@ export class Explorer {
     };
   }
 
+  private expansionCount = 0;
+  private readonly maxExpansionGoals = 6;
+
+  private async handleProposeGoal(args: {
+    description: string;
+    rationale: string;
+    priority?: 'should' | 'could';
+  }): Promise<MetaToolResult> {
+    if (this.expansionCount >= this.maxExpansionGoals) {
+      return { ok: false, error: `expansion cap reached (${this.maxExpansionGoals})` };
+    }
+    this.expansionCount++;
+    const seedCount = this.deps.config.spec_goals?.length ?? 0;
+    const newId = `G${seedCount + this.expansionCount}`;
+    await this.emit('goal_proposed', 'explorer', {
+      id: newId,
+      description: args.description,
+      rationale: args.rationale,
+      priority: args.priority ?? 'should',
+    });
+    if (this.goalTracker) {
+      this.goalTracker.appendGoal({ id: newId, description: args.description });
+    }
+    return { ok: true };
+  }
+
   private async handleGoalStatus(args: {
     id: string;
     status: GoalStatus;
@@ -559,6 +600,10 @@ export class Explorer {
         return this.handleGoalStatus(u as { id: string; status: GoalStatus; rationale: string });
       case 'push_subgoal':
         return meta.push_subgoal(w, s, u as PushSubgoalArgs, ulid, step, tk);
+      case 'propose_goal':
+        return this.handleProposeGoal(
+          u as { description: string; rationale: string; priority?: 'should' | 'could' },
+        );
       case 'give_up':
         return meta.give_up(w, s, u as GiveUpArgs, ulid, step, tk);
       case 'done':

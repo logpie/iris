@@ -6,6 +6,9 @@ const ALL_WEB_RUBRICS = [
   'accessibility',
   'frontend-correctness',
   'coverage',
+  // Phase 10: universal UX rubric that produces signal regardless of whether
+  // spec goals are provided. Default-on for web runs.
+  'ux-baseline',
 ] as const;
 
 export async function loadRubricsByNames(names?: string[]): Promise<RubricProfile[]> {

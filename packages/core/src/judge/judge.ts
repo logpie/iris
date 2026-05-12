@@ -54,7 +54,9 @@ export const JudgeOutputSchema = z.object({
         score: z.number(),
         dimensions: z.record(
           z.object({
-            score: z.number(),
+            // Phase 10: dimensions can be null when not testable in this run
+            // (e.g., destructive_confirmed when no destructive surface was visited).
+            score: z.number().nullable(),
             rationale: z.string(),
             evidence: z.array(z.string()),
           }),

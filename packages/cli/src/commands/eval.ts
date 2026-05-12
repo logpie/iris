@@ -44,6 +44,20 @@ export function evalCommand(): Command {
       'run Judge twice in parallel and intersect critical findings (Phase 6 F2). Reduces score variance on borderline ship decisions. Doubles Judge cost.',
     )
     .option(
+      '--no-discover',
+      'skip the Phase 10 discovery pass (default: discovery runs when no --spec is given)',
+    )
+    .option(
+      '--no-expand',
+      'disable propose_goal — Explorer cannot append goals mid-run (default: up to 6 expansion goals allowed)',
+    )
+    .option(
+      '--max-expansion-goals <n>',
+      'cap on dynamic goal expansion (Phase 10)',
+      (s) => Number.parseInt(s, 10),
+      6,
+    )
+    .option(
       '--max-cost-usd <n>',
       'abort when LLM cost exceeds this',
       (s) => Number.parseFloat(s),
@@ -187,6 +201,9 @@ export function evalCommand(): Command {
             no_preflight: opts.preflight === false,
             preflight_timeout_s: opts.preflightTimeoutS as number,
             judge_ensemble: !!opts.judgeEnsemble,
+            discover: opts.discover !== false,
+            expand_goals: opts.expand !== false,
+            max_expansion_goals: opts.maxExpansionGoals as number,
             ...(opts.persona !== undefined ? { persona: opts.persona as string } : {}),
           },
           adapter,

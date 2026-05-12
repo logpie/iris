@@ -20,6 +20,8 @@ export const TraceEventKindSchema = z.enum([
   'preflight',
   'retry_attempt',
   'interaction_kit',
+  'discovery',
+  'goal_proposed',
   'give_up',
   'done',
   'budget_warn',

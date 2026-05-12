@@ -45,7 +45,20 @@ Your job:
    - The trace event id of a vision_describe action_result whose vision quote names the user-visible artifact.
    - The trace event id of a screenshot action_result taken AFTER the interaction.
    In the trace digest, OBSERVATION lines start with the kind word "observation" and include a text snippet. action_result lines for vision_describe include a quoted vision="..." snippet. Cite those ids, not the action ids or goal_status ids.
+7d. DISCOVERY CONTEXT (Phase 10). When the trace begins with a discovery event, the goals were proposed by Iris's discovery pass (no human spec). Treat them with the same weight as spec goals for grading. The discovery event payload also carries a product_description — quote/use it when summarizing what the product is.
+7e. EXPANSION GOALS (Phase 10). goal_proposed events indicate the Explorer added a goal mid-run after discovering a surface the seed goals missed. Treat these as priority should/could goals — verify them the same way, but don't penalize the overall spec_compliance score as harshly for expansion goals that ended untested or blocked. List them in the goals array with their proper id (G7+).
 8. Self-assess confidence (0-1) and list caveats.
+
+When scoring the ux_baseline rubric (Phase 10) the dimensions are product-agnostic — score them based on what the trace shows, not against any goal:
+  - primary_action_discoverable: how quickly did the Explorer find and exercise the primary feature?
+  - console_clean: count pageerror + console.error events.
+  - network_clean: count first-party network failures (4xx/5xx) excluding tracking/ads domains.
+  - a11y_baseline: roll up axe probe results.
+  - error_states_clear: did empty/invalid submits produce clear messages?
+  - destructive_confirmed: did destructive actions prompt? Score null if no destructive surface was visited.
+  - keyboard_accessible: did the Explorer's keyboard attempt succeed?
+  - mobile_responsive: did mobile-viewport revisit work? Score null if not attempted.
+  Score null dimensions with the JSON value null (rather than 0) so the rubric reflects what was actually testable.
 
 Output ONLY a JSON object matching this schema:
 {
@@ -163,7 +176,9 @@ function summarizeEvent(e: TraceEvent): string {
       return `${tool}(${argsJson})`;
     }
     case 'action_result': {
-      const desc = p.description ? ` vision="${String(p.description).slice(0, 200).replace(/\n/g, ' ')}"` : '';
+      const desc = p.description
+        ? ` vision="${String(p.description).slice(0, 200).replace(/\n/g, ' ')}"`
+        : '';
       return `${String(p.tool ?? '')} ok=${String(p.ok ?? '')} ${p.error ? `err=${String(p.error).slice(0, 80)}` : ''}${desc}`;
     }
     case 'tentative_finding':
@@ -182,6 +197,19 @@ function summarizeEvent(e: TraceEvent): string {
         .join(',');
       return `kind=${String(p.kind ?? '')} primitives=[${names}]`;
     }
+    case 'discovery': {
+      const goals = Array.isArray(p.goals) ? p.goals : [];
+      const goalSnippet = goals
+        .slice(0, 12)
+        .map((g) => {
+          const x = g as { id?: string; description?: string };
+          return `${x.id}: ${String(x.description ?? '').slice(0, 60)}`;
+        })
+        .join('; ');
+      return `product="${String(p.product_description ?? '').slice(0, 140)}" goals=[${goalSnippet}]`;
+    }
+    case 'goal_proposed':
+      return `${String(p.id ?? '')} (${String(p.priority ?? 'should')}) "${String(p.description ?? '').slice(0, 100)}" — ${String(p.rationale ?? '').slice(0, 80)}`;
     case 'preflight':
       return `ok=${String(p.ok ?? '')} ${JSON.stringify(p.checks ?? []).slice(0, 200)}`;
     case 'step_plan':

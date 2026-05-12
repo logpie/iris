@@ -10,6 +10,7 @@ describe('loadRubricsByNames', () => {
       'frontend_correctness',
       'quality',
       'usability',
+      'ux_baseline',
     ]);
   });
 

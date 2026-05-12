@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import type { JudgeOutput } from '../judge/judge.js';
 import type { TraceEvent } from '../trace/schema.js';
 import type { ReportJson } from './report-json.js';
@@ -64,7 +64,12 @@ export function buildReportHtml(report: ReportJson, opts: BuildReportHtmlOptions
         report.findings,
         eventIndex,
         screenshotForEvent,
-        report.artifacts?.clips ?? {},
+        // Phase 9 fix: clip paths from sliceEvidence are absolute file paths.
+        // When the report is served over HTTP from runDir, absolute paths
+        // resolve to the wrong URL ("/tmp/..." instead of relative). Rewrite
+        // to runDir-relative paths so the report works both as file:// and
+        // when served from runDir as the doc root.
+        relativizeClipPaths(report.artifacts?.clips ?? {}, opts.runDir),
       ),
     );
     if (runData?.videoRelPath)
@@ -1218,8 +1223,9 @@ function renderRubricSection(
     .map(([name, p]) => {
       const dims = Object.entries(p.dimensions)
         .map(([dimId, d]) => {
+          const scoreLabel = d.score === null ? 'n/a' : d.score.toFixed(1);
           return `<div class="rubric-dim">
-            <span class="dim-name">${escapeHtml(dimId.replace(/_/g, ' '))}</span><span class="dim-score">${d.score.toFixed(1)}</span>
+            <span class="dim-name">${escapeHtml(dimId.replace(/_/g, ' '))}</span><span class="dim-score">${scoreLabel}</span>
             <div style="margin-top: 2px;">${escapeHtml(d.rationale)}</div>
             ${d.evidence.length > 0 ? `<div class="evidence-row" style="margin-top: 4px;">${d.evidence.map((id) => renderEvidenceChip(id, eventIndex)).join('')}</div>` : ''}
           </div>`;
@@ -1344,6 +1350,28 @@ function renderFooter(report: ReportJson): string {
 // ===========================================================================
 // Run data + helpers
 // ===========================================================================
+
+// Phase 9 fix: rewrite absolute clip paths to runDir-relative form so the
+// report works whether opened as file:// or served over HTTP from runDir.
+function relativizeClipPaths(
+  clips: Record<string, string>,
+  runDir: string | undefined,
+): Record<string, string> {
+  if (!runDir) return clips;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(clips)) {
+    if (!v) continue;
+    if (v.startsWith('/')) {
+      const rel = relative(runDir, v);
+      // If `relative` produces a `..`-prefixed path, the clip is outside
+      // runDir — leave it absolute (can't serve from doc root anyway).
+      out[k] = rel.startsWith('..') ? v : rel;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
 
 function loadRunData(runDir: string): RunData | null {
   const tracePath = join(runDir, 'trace.jsonl');

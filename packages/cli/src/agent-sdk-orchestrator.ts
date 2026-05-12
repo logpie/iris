@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { TargetAdapter } from '@iris/adapter-types';
 import {
   type Mode,
+  discovery as discoveryMod,
   explorer as explorerMod,
   trace as iristrace,
   judge as judgeMod,
@@ -45,6 +46,12 @@ export interface AgentSdkRunConfig {
   preflight_timeout_s?: number;
   /** Phase 6 F2: run Judge twice in parallel and intersect critical findings. */
   judge_ensemble?: boolean;
+  /** Phase 10: run discovery pass when no --spec is provided. Default true. */
+  discover?: boolean;
+  /** Phase 10: allow Explorer to append goals via propose_goal. Default true.
+   * Capped at max_expansion_goals (default 6). */
+  expand_goals?: boolean;
+  max_expansion_goals?: number;
 }
 
 export interface AgentSdkRunResult {
@@ -210,6 +217,88 @@ export async function runIrisViaSdk(
     });
   }
 
+  // 4.7. Phase 10: discovery pass. When no --spec was given (so no
+  // interpreted spec), play the role of a new user: capture the landed
+  // page and ask one LLM call to propose seed goals. The output looks
+  // identical to InterpretedSpec so the rest of the flow doesn't care
+  // where the goals came from.
+  const wantDiscovery = config.discover !== false && !interpreted;
+  if (wantDiscovery) {
+    process.stderr.write('iris: running discovery pass via Agent SDK...\n');
+    try {
+      const obs = await adapter.observe();
+      // Capture a screenshot via the adapter so discovery sees what the user sees.
+      const ssResult = await adapter.callTool('screenshot', { full_page: false });
+      const ssPath =
+        ssResult.ok && ssResult.evidence_refs && ssResult.evidence_refs.length > 0
+          ? ssResult.evidence_refs[0]
+          : undefined;
+      if (!ssPath) {
+        process.stderr.write('iris: discovery skipped — no screenshot available\n');
+      } else {
+        const { visionDescribeViaSdk } = await import('./agent-sdk-runner.js');
+        const discoveryResult = await discoveryMod.runDiscovery({
+          url: config.target.url,
+          observation_summary: obs.summary,
+          screenshot_path: ssPath,
+          model: config.explorer_model,
+          discoverer: async (i) =>
+            visionDescribeViaSdk({
+              systemPrompt: i.systemPrompt,
+              imagePath: i.imagePath,
+              textPrompt: i.userPrompt,
+              ...(i.model ? { model: i.model } : {}),
+            }),
+        });
+        if (!discoveryResult) {
+          process.stderr.write('iris: discovery returned no parseable goals — falling back\n');
+        } else {
+          totalCost += discoveryResult.cost_usd;
+          const out = discoveryResult.output;
+          process.stderr.write(
+            `iris: discovery — ${out.goals.length} seed goals proposed; product: "${out.product_description.slice(0, 100)}"\n`,
+          );
+          await traceWriter.append({
+            v: 1,
+            id: ulid(),
+            ts: Date.now() / 1000,
+            step: 0,
+            target_kind: 'web',
+            kind: 'discovery',
+            actor: 'system',
+            payload: {
+              product_description: out.product_description,
+              goals: out.goals,
+              focus_areas: out.focus_areas,
+              hints: out.hints,
+            },
+          });
+          writeFileSync(
+            join(config.out_dir, 'discovery.json'),
+            `${JSON.stringify(out, null, 2)}\n`,
+          );
+          // Shape into InterpretedSpec so downstream code paths converge.
+          interpreted = {
+            v: 1,
+            target_kind_hint: 'web',
+            goals: out.goals,
+            focus_areas: out.focus_areas,
+            hints: out.hints,
+            out_of_scope: out.out_of_scope,
+          };
+          // Discovery produced goals — upgrade an inferred `free` mode to
+          // `grounded` so per-goal budgeting and the grounded Explorer prompt
+          // kick in.
+          if (config.mode === 'free') {
+            (config as { mode: Mode }).mode = 'grounded';
+          }
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`iris: discovery failed: ${(err as Error).message} — falling back\n`);
+    }
+  }
+
   // 5. Explorer via Agent SDK
 
   const personaName = (config.persona ?? 'default') as
@@ -268,6 +357,8 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
   process.stderr.write('iris: starting Explorer (Agent SDK session)...\n');
   let explorerResult: Awaited<ReturnType<typeof runAgentSdkExplorer>>;
   try {
+    // Phase 10: expansion goal cap. 0 disables propose_goal entirely.
+    const maxExpansion = config.expand_goals === false ? 0 : (config.max_expansion_goals ?? 6);
     explorerResult = await runAgentSdkExplorer({
       adapter,
       traceWriter,
@@ -277,6 +368,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       maxCostUsd: config.max_cost_usd - totalCost,
       timeoutS: config.timeout_s,
       model: config.explorer_model,
+      maxExpansionGoals: maxExpansion,
       ...(hasGoals
         ? { goals: goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description })) }
         : {}),

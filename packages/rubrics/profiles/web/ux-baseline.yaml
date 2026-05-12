@@ -1,0 +1,90 @@
+name: ux_baseline
+applies_to_targets: [web]
+applies_to_modes: [free, grounded, targeted]
+weight_in_overall: 1.0
+
+# Phase 10: universal UX rubric that produces signal regardless of whether
+# spec goals were provided. These dimensions are about cross-cutting product
+# quality, not feature-specific compliance.
+
+dimensions:
+  - id: primary_action_discoverable
+    weight: 1.0
+    description: |
+      Is the product's primary action visible/findable without trial-and-error?
+      Scored against trace: did the Explorer find and exercise the primary
+      feature within the first 5 turns?
+    scoring_anchors:
+      0: "Explorer wandered for 10+ turns before finding the primary feature."
+      5: "Primary feature found within 5-10 turns; required multiple guesses."
+      10: "Primary feature obvious from initial observation; exercised on turn 1-2."
+
+  - id: console_clean
+    weight: 1.0
+    description: |
+      Were there uncaught JavaScript errors during the run? Includes pageerror
+      events, console.error calls, and unhandled promise rejections.
+    scoring_anchors:
+      0: "Multiple uncaught errors during normal interaction."
+      5: "Occasional non-fatal warnings; nothing crashed the UI."
+      10: "Zero errors across the full run."
+
+  - id: network_clean
+    weight: 0.7
+    description: |
+      Did network requests succeed during interaction? Failed XHR/fetch calls
+      to first-party hosts count against; third-party tracking/ads do not.
+    scoring_anchors:
+      0: "Critical API calls returned 4xx/5xx during normal use."
+      5: "Some non-critical failures; primary flow worked."
+      10: "All first-party requests succeeded."
+
+  - id: a11y_baseline
+    weight: 1.0
+    description: |
+      Axe-core serious + critical violations on the surfaces visited. Aggregate
+      count across the run, weighted by impact.
+    scoring_anchors:
+      0: "Many serious/critical axe violations on primary surfaces."
+      5: "Some violations; primary flow remains usable."
+      10: "Zero serious axe violations on visited surfaces."
+
+  - id: error_states_clear
+    weight: 0.7
+    description: |
+      When the user does something unexpected (empty submit, invalid input,
+      visit a not-found URL), does the product communicate clearly? Vague
+      "Error" or silent failure scores low; specific, actionable copy scores high.
+    scoring_anchors:
+      0: "Silent failures or generic 'Error' with no recovery hint."
+      5: "Errors visible but copy is vague or technical."
+      10: "Errors are specific, point at the field/cause, and offer next steps."
+
+  - id: destructive_confirmed
+    weight: 0.5
+    description: |
+      Do destructive actions (delete, sign-out, reset, clear-all) prompt for
+      confirmation? N/A if no destructive surface visited — score null.
+    scoring_anchors:
+      0: "Delete/reset proceeds without confirmation."
+      10: "Every destructive action prompts and is reversible or clearly warned."
+
+  - id: keyboard_accessible
+    weight: 0.7
+    description: |
+      Can the primary flow be completed using only Tab/Enter/Esc/arrow keys?
+      Scored against the Explorer's keyboard-only attempt.
+    scoring_anchors:
+      0: "Critical controls unreachable by keyboard."
+      5: "Most controls reachable but tab order is confusing."
+      10: "Full keyboard support across the primary flow."
+
+  - id: mobile_responsive
+    weight: 0.5
+    description: |
+      At a 375px viewport (mobile width), does the primary action remain
+      accessible without horizontal scrolling or overlap? N/A if not tested —
+      score null.
+    scoring_anchors:
+      0: "Primary action hidden or broken at mobile width."
+      10: "Layout adapts cleanly; primary action remains the obvious next step."

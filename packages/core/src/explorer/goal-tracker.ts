@@ -151,6 +151,27 @@ export class GoalTracker {
     return this.current().phase === 'done';
   }
 
+  // Phase 10: appendGoal extends the ledger with an expansion goal proposed
+  // by the Explorer at runtime. Free-exploration budget converts into a new
+  // per-goal budget for the appended goal — so adding a goal late in the run
+  // doesn't infinitely extend the overall step cap. If there's no free
+  // exploration budget left, the new goal gets stepsPerGoal turns charged
+  // against nothing (caller's max_steps cap still applies).
+  appendGoal(goal: { id: string; description: string }): void {
+    this.ledger.push({
+      id: goal.id,
+      description: goal.description,
+      status: 'pending',
+      rationale: '',
+      turnsSpent: 0,
+    });
+    // Consume free-exploration budget to "pay" for the new goal where
+    // possible — preserves the bound that an expansion goal can't infinitely
+    // extend the run beyond the user's max_steps cap.
+    const cost = this.cfg.stepsPerGoal;
+    this.freeTurnsLeft = Math.max(0, this.freeTurnsLeft - cost);
+  }
+
   effectiveMaxSteps(): number {
     return this.cfg.goals.length * this.cfg.stepsPerGoal + this.cfg.freeExplorationSteps;
   }
