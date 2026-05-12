@@ -18,6 +18,8 @@ import type {
 } from '@iris/adapter-types';
 import type { llm } from '@iris/core';
 import { WEB_INTERACTION_KIT, WEB_OUTCOME_CONTRACT } from './contract.js';
+import { type RichContentItem, formatRichContent, richContent } from './dom/rich-content.js';
+export { richContent, formatRichContent, type RichContentItem };
 import { domOutline } from './dom/snapshot.js';
 import { WebLifecycle } from './lifecycle.js';
 import { runAxe } from './probes/axe.js';
@@ -335,9 +337,19 @@ export class WebTargetAdapter implements TargetAdapter {
       .catch(() => '');
     const url = page.url();
     const title = await page.title();
+
+    // Phase 11: extract content from rich-input surfaces (textarea / input
+    // values, contenteditable text, CodeMirror/Monaco/ACE editors).
+    // body.innerText is blind to all of these — Dillinger's editor content
+    // never appeared in observations before this change.
+    const richItems = await richContent(page).catch(() => []);
+    const richSection = formatRichContent(richItems);
+
     const outlinePart = outline.slice(0, 2500);
     const textPart = bodyText.slice(0, 3000);
-    const summary = `${title}\n\n## VISIBLE TEXT\n${textPart}\n\n## OUTLINE\n${outlinePart}`.trim();
+    const richPart = richSection ? `\n\n## RICH CONTENT\n${richSection}` : '';
+    const summary =
+      `${title}\n\n## VISIBLE TEXT\n${textPart}${richPart}\n\n## OUTLINE\n${outlinePart}`.trim();
     return {
       observation_ref: ref,
       summary,
@@ -347,6 +359,7 @@ export class WebTargetAdapter implements TargetAdapter {
         screenshot_ref: screenshotPath,
         outline,
         body_text: bodyText,
+        rich_content: richItems,
       },
     };
   }

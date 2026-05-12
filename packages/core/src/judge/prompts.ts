@@ -47,6 +47,11 @@ Your job:
    In the trace digest, OBSERVATION lines start with the kind word "observation" and include a text snippet. action_result lines for vision_describe include a quoted vision="..." snippet. Cite those ids, not the action ids or goal_status ids.
 7d. DISCOVERY CONTEXT (Phase 10). When the trace begins with a discovery event, the goals were proposed by Iris's discovery pass (no human spec). Treat them with the same weight as spec goals for grading. The discovery event payload also carries a product_description — quote/use it when summarizing what the product is.
 7e. EXPANSION GOALS (Phase 10). goal_proposed events indicate the Explorer added a goal mid-run after discovering a surface the seed goals missed. Treat these as priority should/could goals — verify them the same way, but don't penalize the overall spec_compliance score as harshly for expansion goals that ended untested or blocked. List them in the goals array with their proper id (G7+).
+7f. INSTRUMENTATION-GAP RULE (Phase 11). Iris's observation captures DOM outline, body innerText, and a RICH CONTENT section (textarea/input values, contenteditable, CodeMirror/Monaco/ACE). If the trace shows the Explorer attempted a goal but the observations don't visibly reflect the result, do NOT confidently call the goal "blocked" or claim a failure finding. Three possibilities exist and you cannot tell them apart from the trace alone:
+   (a) The product genuinely failed (real bug — emit finding).
+   (b) The Explorer's interaction missed the target (instrumentation/agent gap — not a product defect).
+   (c) The observation snapshot couldn't see the result (instrumentation gap — frame Iris's blindness, not the product).
+   When you cannot distinguish (a) from (b)/(c) — for example, the post-interaction observation looks identical to the pre-interaction one and there's no error in console/network — set the goal status to "untested" with a caveat like "outcome not visible in trace; cannot distinguish product failure from instrumentation gap." Do NOT emit "the editor failed to accept input" type findings on this evidence alone. Real product failures should be backed by either: visible error messages on the page, console errors, failed network requests, or a vision_describe quote naming a broken state.
 8. Self-assess confidence (0-1) and list caveats.
 
 When scoring the ux_baseline rubric (Phase 10) the dimensions are product-agnostic — score them based on what the trace shows, not against any goal:
@@ -166,10 +171,29 @@ export function buildTraceDigest(events: TraceEvent[]): string {
 function summarizeEvent(e: TraceEvent): string {
   const p = e.payload as Record<string, unknown>;
   switch (e.kind) {
-    case 'observation':
-      return `ref=${String(p.ref ?? '')} ${String(p.summary ?? '')
-        .slice(0, 120)
-        .replace(/\n/g, ' ')}`;
+    case 'observation': {
+      // Phase 11: include rich-content (textarea/input values, contenteditable,
+      // CodeMirror/Monaco/ACE) as its own slice so the Judge can verify
+      // claims about typed text. The legacy summary truncation at 120 chars
+      // missed all rich content — caused the Dillinger false-failure.
+      const ref = String(p.ref ?? '');
+      const summary = String(p.summary ?? '')
+        .slice(0, 200)
+        .replace(/\n/g, ' ');
+      const rich = Array.isArray(p.rich_content) ? p.rich_content : [];
+      let richSnippet = '';
+      if (rich.length > 0) {
+        const parts = rich
+          .map((it) => {
+            const x = it as { kind?: string; label?: string; text?: string };
+            const t = (x.text ?? '').slice(0, 400).replace(/\n/g, ' ⏎ ');
+            return `[${x.kind} ${x.label}]:"${t}"`;
+          })
+          .join(' ');
+        richSnippet = ` rich=${parts.slice(0, 1200)}`;
+      }
+      return `ref=${ref} ${summary}${richSnippet}`;
+    }
     case 'action': {
       const tool = String(p.tool ?? 'unknown');
       const argsJson = JSON.stringify(p.args ?? {}).slice(0, 100);

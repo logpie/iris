@@ -270,6 +270,100 @@ describe('validateFindings', () => {
     expect(out.kept[0]?.suggested_fix?.code_pointer?.selector).toBe('.real-button');
   });
 
+  // Phase 11: agent-perspective title scan — discards fabricated findings that
+  // blame the product for the agent's selector/click strategy choices.
+  it('discards a finding with "not reachable via selectors" title and only action evidence', () => {
+    const trace = [
+      ev('E1', 'action', { tool: 'click', args: { selector: '.foo' } }),
+      ev('E2', 'action_result', { tool: 'click', ok: false, error: 'Timeout 5000ms exceeded' }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'CodeMirror editor not reachable via standard selectors',
+          severity: 'major',
+          evidence: ['E1', 'E2'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe('agent_perspective_title_no_user_visible_failure');
+  });
+
+  it('discards "not focusable via" findings (Dillinger-style agent failure phrasing)', () => {
+    const trace = [
+      ev('E1', 'action', { tool: 'click', args: { selector: 'role=textbox' } }),
+      ev('E2', 'action_result', { tool: 'click', ok: false, error: 'Timeout 5000ms' }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Editor textarea/CodeMirror not focusable via standard selectors',
+          severity: 'major',
+          evidence: ['E1', 'E2'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+  });
+
+  it('discards "lacks proper accessible textbox role" findings without user-visible evidence', () => {
+    const trace = [ev('E1', 'action_result', { tool: 'click', ok: false, error: 'Timeout' })];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Editor lacks proper accessible textbox role',
+          severity: 'major',
+          evidence: ['E1'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+  });
+
+  it('discards "could not be focused" findings without user-visible failure evidence', () => {
+    const trace = [
+      ev('E1', 'action', { tool: 'click', args: { selector: 'input.edit' } }),
+      ev('E2', 'action_result', { tool: 'click', ok: false, error: 'Timeout 5000ms' }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Edit input could not be focused',
+          severity: 'major',
+          evidence: ['E1', 'E2'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+  });
+
+  it('KEEPS an agent-phrased finding if there is real user-visible failure evidence', () => {
+    // A finding whose title looks agent-phrased but the cited evidence
+    // includes a console error or a probe failure should still be kept —
+    // the agent's wording is awkward but the underlying defect is real.
+    const trace = [
+      ev('E1', 'observation', {
+        summary: 'Page shows "An error occurred — could not load editor" message at top',
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Editor could not be focused after page load',
+          severity: 'major',
+          evidence: ['E1'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(1);
+  });
+
   it('backing window extends ±2 events around each cited event', () => {
     const trace = [
       ev('E1', 'action'),

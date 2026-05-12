@@ -61,6 +61,29 @@ const ADAPTER_CONFIG_ERROR_PATTERNS: RegExp[] = [
   /unknown tool:/i,
 ];
 
+// Phase 11: agent-perspective phrasings in a finding TITLE that betray the
+// finding is really about Iris's interaction strategy, not a product defect.
+// A real product finding talks about what the user sees; an agent-perspective
+// finding talks about what the agent's selectors/clicks/attempts did. The
+// Dillinger dogfood (2026-05-11) caught the Judge emitting "CodeMirror editor
+// not reachable via standard selectors" as a major finding against a Monaco-
+// based product — the editor was perfectly reachable, the Explorer used the
+// wrong CSS framework's selectors.
+const AGENT_PERSPECTIVE_TITLE_PATTERNS: RegExp[] = [
+  /\bnot\s+(reachable|actionable|focusable|clickable|targetable)\s+via\b/i,
+  /\bnot\s+(reachable|actionable|focusable|clickable|targetable)\s+(by|through|with)\b/i,
+  /\bcould\s+not\s+(be\s+)?(focused|located|reached|found|targeted)\b/i,
+  /\bcannot\s+(be\s+)?(focused|located|reached|found|targeted)\b/i,
+  /\bselector\s+(failed|timed\s+out|not\s+found|mismatch)\b/i,
+  /\bdoes\s+not\s+respond\s+to\s+clicks?\b/i,
+  /\b(lacks?|missing)\b.*\b(accessible|proper)\b.*\b(textbox\s+role|name|role|semantics)\b/i,
+  /\b(role=\w+|css=|data-testid)\b.*\b(timed?\s+out|failed|not\s+found)\b/i,
+];
+
+function looksLikeAgentPerspectiveFinding(title: string): boolean {
+  return AGENT_PERSPECTIVE_TITLE_PATTERNS.some((p) => p.test(title));
+}
+
 function isSelectorMissError(error?: string): boolean {
   if (!error) return false;
   return SELECTOR_MISS_PATTERNS.some((p) => p.test(error));
@@ -148,6 +171,37 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
       });
       continue;
     }
+
+    // Phase 11: agent-perspective title check. If the finding TITLE talks
+    // about the agent's interaction strategy ("not reachable via selectors",
+    // "could not focus", etc.), it is almost certainly a fabricated finding
+    // about Iris's interaction limits, not a real product defect. Discard
+    // unless there's clear non-agent evidence (a probe failure, a console
+    // error, an explicit error message visible to the user).
+    if (looksLikeAgentPerspectiveFinding(f.title)) {
+      const hasNonAgentBacking = validIds.some((id) => {
+        const e = eventById.get(id);
+        if (!e) return false;
+        const p = (e.payload ?? {}) as Record<string, unknown>;
+        if (e.kind === 'probe_result' && p.ok === true) return true;
+        if (
+          e.kind === 'observation' &&
+          typeof p.summary === 'string' &&
+          /\berror\b|\bfailed\b|\bcrashed\b/i.test(p.summary)
+        ) {
+          return true;
+        }
+        return false;
+      });
+      if (!hasNonAgentBacking) {
+        discarded.push({
+          tentative_event_id: f.id,
+          reason: 'agent_perspective_title_no_user_visible_failure',
+        });
+        continue;
+      }
+    }
+
     if (!requiresBacking(f.severity)) {
       kept.push({ ...f, unverified_backing: false });
       verified++;
