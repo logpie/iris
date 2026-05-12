@@ -19,10 +19,15 @@ export function evalCommand(): Command {
     .option('--tasks <path>', 'newline-separated tasks file')
     .option('--rubrics <list>', 'comma-separated rubric profile names')
     .option('--engine <engine>', 'dom | vision | hybrid (web-only)', 'hybrid')
-    .option('--max-steps <n>', 'hard cap on Explorer actions', (s) => Number.parseInt(s, 10), 60)
+    .option(
+      '--max-steps <n>',
+      'hard cap on Explorer actions. Phase 12: defaults to 500 — effectively unbounded for normal runs. The real budgets are --max-cost-usd and --timeout; per-goal auto-cutover (1.5× steps-per-goal) prevents single-goal grinds. The cap exists only as a runaway safeguard.',
+      (s) => Number.parseInt(s, 10),
+      500,
+    )
     .option(
       '--steps-per-goal <n>',
-      'per-goal turn budget (Phase 5). When set with a spec, max_steps is recomputed as goals × steps_per_goal + free_exploration_steps (capped by --max-steps).',
+      'per-goal turn budget. When set with a spec, max_steps is recomputed as goals × steps_per_goal + free_exploration_steps (capped by --max-steps). Also drives per-goal auto-cutover threshold (1.5× this).',
       (s) => Number.parseInt(s, 10),
       10,
     )

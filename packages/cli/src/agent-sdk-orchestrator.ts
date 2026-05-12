@@ -352,7 +352,7 @@ AVOID:
   - Trying many alternate selectors when the first failed. After one selector miss, try a different approach (different element, different action, or note_finding "I expected X but couldn't find it").
   - Spending more than the per-goal budget on one goal. Call goal_status and move on — you can come back later if there's time.
 
-Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). Total budget: ~${effectiveMaxSteps} interaction turns, $${config.max_cost_usd.toFixed(2)} cost cap.`;
+Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). BUDGET: $${config.max_cost_usd.toFixed(2)} total LLM cost and ${config.timeout_s}s wall-clock. There is NO turn count to race against — focus on doing each goal properly, not on speed. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns per goal prevents stuck goals from eating the run.`;
 
   process.stderr.write('iris: starting Explorer (Agent SDK session)...\n');
   let explorerResult: Awaited<ReturnType<typeof runAgentSdkExplorer>>;

@@ -1,5 +1,11 @@
+import { loadProjectSkill } from '../skills/loader.js';
 import type { Mode, TargetKind } from '../types.js';
 import { PERSONAS, type PersonaName } from './personas/index.js';
+
+// Phase 13: project-level skill that distills cross-phase evaluator
+// discipline. Loaded once at module init; prepended to every Explorer
+// system prompt so the agent consults it across every turn.
+const REAL_USER_EVAL_SKILL = loadProjectSkill('evaluating-products-as-real-user');
 
 // ---------------------------------------------------------------------------
 // [CORE] — target-agnostic Explorer rules. Always present.
@@ -98,9 +104,15 @@ export function buildSystemPrompt({
   mode,
   persona,
 }: BuildSystemPromptArgs): string {
-  return [core, targetKindSuffix(target_kind), modeSuffix(mode), personaSuffix(persona)].join(
-    '\n\n---\n\n',
-  );
+  const slots = [core, targetKindSuffix(target_kind), modeSuffix(mode), personaSuffix(persona)];
+  // Phase 13: prepend the skill body when available. The skill carries the
+  // durable evaluator discipline (real-user mindset, outcome vs side-effect,
+  // instrumentation-gap rule, etc.) so the prompt slots can stay focused on
+  // Iris-runtime specifics.
+  if (REAL_USER_EVAL_SKILL) {
+    slots.unshift(REAL_USER_EVAL_SKILL);
+  }
+  return slots.join('\n\n---\n\n');
 }
 
 // ---------------------------------------------------------------------------

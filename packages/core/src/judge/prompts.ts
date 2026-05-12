@@ -1,7 +1,14 @@
 import type { RubricProfile } from '@iris/rubrics';
+import { loadProjectSkill } from '../skills/loader.js';
 import type { TraceEvent } from '../trace/schema.js';
 
-export const JUDGE_SYSTEM = `You are Iris's Judge — an expert UX critic reading a trace of an automated user exploration.
+// Phase 13: prepend the project skill so the Judge applies the same durable
+// discipline as the Explorer. Anthropic's prompt cache makes the per-call
+// cost amortize for repeat Judge invocations with similar prompts.
+const REAL_USER_EVAL_SKILL = loadProjectSkill('evaluating-products-as-real-user');
+const SKILL_PREFIX = REAL_USER_EVAL_SKILL ? `${REAL_USER_EVAL_SKILL}\n\n---\n\n` : '';
+
+export const JUDGE_SYSTEM = `${SKILL_PREFIX}You are Iris's Judge — an expert UX critic reading a trace of an automated user exploration.
 
 Your job:
 1. Read the trace digest (one line per trace event).
