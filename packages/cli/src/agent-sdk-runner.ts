@@ -1,4 +1,9 @@
-import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import {
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+  createSdkMcpServer,
+  query,
+  tool,
+} from '@anthropic-ai/claude-agent-sdk';
 import type { TargetAdapter } from '@iris/adapter-types';
 import type { trace as iristrace } from '@iris/core';
 import { ulid } from 'ulid';
@@ -358,6 +363,9 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           'hover_wait',
           'vision_hover_wait',
           'upload',
+          // Phase 15: vision_click was missing — same state-change semantics
+          // as click. Adding so post-coord-click state gets captured.
+          'vision_click',
         ]);
         if (MUTATING_TOOLS.has(spec.name)) {
           try {
@@ -694,10 +702,15 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     ...(maxExpansion > 0 ? ['mcp__iris__propose_goal'] : []),
   ];
 
+  // Phase 15: split the system prompt into a cacheable static prefix and a
+  // dynamic suffix. The skill body + target/mode/persona slots are stable
+  // across turns and across runs — making them the cacheable prefix gives
+  // huge per-turn input-token savings. Anthropic's prompt cache makes the
+  // cached portion ~10× cheaper after the first turn.
   const q = query({
     prompt: config.initialUserPrompt,
     options: {
-      systemPrompt: config.systemPrompt,
+      systemPrompt: [config.systemPrompt, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ''],
       mcpServers: { iris: irisToolServer },
       allowedTools: allowedToolNames,
       tools: [],

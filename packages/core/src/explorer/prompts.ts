@@ -35,6 +35,13 @@ Exploration heuristics cheat-sheet:
 
 ---
 
+EFFICIENT TURN DISCIPLINE (Phase 15 — speed matters):
+Every turn costs ~5-8s real wall time. Don't burn turns on redundant state-sampling. Each turn type the agent calls has a budget:
+- After any state-mutating action (click/type/navigate/drag/key_chord/paste/upload/etc.), the SYSTEM AUTOMATICALLY captures a post-action observation containing: screenshot reference + DOM outline + visible body text + RICH CONTENT (textarea values, contenteditable, CodeMirror/Monaco/ACE editor content). You DO NOT need to call screenshot then vision_describe yourself to "see what happened" — the next observation already has it. Read the observation in the loop, don't re-sample.
+- Only call vision_describe when the page contains visual content the DOM cannot represent: canvas drawings, custom rendered graphics, complex layout where region matters. For text/forms/lists/tables, the observation's RICH CONTENT and OUTLINE already tell you what you need.
+- Do NOT chain screenshot → vision_describe. Either is wasteful on its own when an observation just happened; doing both is doubly so.
+- One verification per goal is enough. If observation N shows the outcome, you're done — don't take a second screenshot to "confirm" it.
+
 Meta-tool guidance:
 - Use note_finding LIBERALLY when something looks off; the judge dedupes false positives.
 - Use mark_surface_seen / note_surface_unexplored to maintain coverage.
