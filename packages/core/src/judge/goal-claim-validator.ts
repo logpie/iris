@@ -72,6 +72,22 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
 
   const next = goals.map((g) => {
     if (g.status !== 'verified') return g;
+    // Phase 14: every verified goal MUST have a notes field with substantive
+    // explanation. Empty notes are how audit drift starts — verifications
+    // get accepted without a paper trail tying claim to evidence. Downgrade
+    // verified→partial when notes is empty/trivial.
+    const notes = (g.notes ?? '').trim();
+    if (notes.length < 20) {
+      downgraded++;
+      const reason = `${g.id}: verified without substantive notes (mandatory under Phase 14)`;
+      reasons.push(reason);
+      const caveat = '[goal-claim validator: missing audit notes]';
+      return {
+        ...g,
+        status: 'partial' as const,
+        notes: g.notes ? `${g.notes} ${caveat}` : caveat,
+      };
+    }
     const window = goalWindows.get(g.id) ?? [];
     const artifacts = outcome_contract.collectOutcomeEvidence({
       goal: { id: g.id, description: g.description },

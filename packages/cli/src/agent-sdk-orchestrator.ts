@@ -317,17 +317,18 @@ export async function runIrisViaSdk(
   const goals = interpreted?.goals ?? [];
   const hasGoals = goals.length > 0;
 
-  // Phase 5: per-goal budget. If steps_per_goal is set, compute an effective
-  // max_steps that scales with the goal count.
+  // Phase 14: the SDK turn cap IS max_steps directly. The Phase-5 formula
+  // (goals × steps_per_goal + free) downward-clamped max_steps, which
+  // re-imposed the very cap Phase 13 tried to remove. Now: max_steps is the
+  // SDK-level safety upper bound. Per-goal cutover (1.5× steps_per_goal,
+  // enforced in runAgentSdkExplorer) handles single-goal grinds. Real budgets
+  // remain --max-cost-usd and --timeout.
   const stepsPerGoal = config.steps_per_goal;
   const freeExplorationSteps = config.free_exploration_steps ?? 0;
-  const effectiveMaxSteps =
-    hasGoals && stepsPerGoal && stepsPerGoal > 0
-      ? Math.min(config.max_steps, goals.length * stepsPerGoal + freeExplorationSteps)
-      : config.max_steps;
-  if (effectiveMaxSteps !== config.max_steps) {
+  const effectiveMaxSteps = config.max_steps;
+  if (hasGoals && stepsPerGoal && stepsPerGoal > 0) {
     process.stderr.write(
-      `iris: per-goal budget — ${goals.length} goals × ${stepsPerGoal} + ${freeExplorationSteps} free = ${effectiveMaxSteps} turns (max_steps cap: ${config.max_steps})\n`,
+      `iris: per-goal cutover ~${Math.ceil(stepsPerGoal * 1.5)} turns; total cap ${effectiveMaxSteps} (cost+time are the real budgets)\n`,
     );
   }
 
@@ -378,6 +379,64 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
     process.stderr.write(
       `iris: Explorer done — termination=${explorerResult.termination}, ${explorerResult.steps_taken} steps, $${explorerResult.cost_usd.toFixed(2)}\n`,
     );
+
+    // Phase 14: programmatically run a11y + console_errors at end of
+    // Explorer session so the Judge always has these data points. The
+    // Explorer was instructed to run them but skipped on 4 of 5 P13 apps —
+    // making "0 findings" partly mean "Iris didn't look." Now Iris always
+    // looks, regardless of agent discipline.
+    const alreadyRanAxe = (await iristrace.readTraceArray(tracePath)).some(
+      (e) => e.kind === 'probe_result' && (e.payload as { probe?: string })?.probe === 'axe',
+    );
+    if (!alreadyRanAxe) {
+      process.stderr.write('iris: auto-running axe (post-Explorer)…\n');
+      const axeResult = await adapter.runProbe('axe', {}).catch((err) => ({
+        ok: false as const,
+        probe: 'axe',
+        error: err instanceof Error ? err.message : String(err),
+      }));
+      await traceWriter.append({
+        v: 1,
+        id: ulid(),
+        ts: Date.now() / 1000,
+        step: 0,
+        target_kind: 'web',
+        kind: 'probe_result',
+        actor: 'system',
+        payload: axeResult.ok
+          ? { probe: 'axe', summary: axeResult.summary, data: axeResult.data, ok: true }
+          : { probe: 'axe', error: axeResult.error, ok: false },
+      });
+    }
+    const alreadyRanConsole = (await iristrace.readTraceArray(tracePath)).some(
+      (e) =>
+        e.kind === 'probe_result' &&
+        (e.payload as { probe?: string })?.probe === 'console_errors_since',
+    );
+    if (!alreadyRanConsole) {
+      const cResult = await adapter.runProbe('console_errors_since', {}).catch((err) => ({
+        ok: false as const,
+        probe: 'console_errors_since',
+        error: err instanceof Error ? err.message : String(err),
+      }));
+      await traceWriter.append({
+        v: 1,
+        id: ulid(),
+        ts: Date.now() / 1000,
+        step: 0,
+        target_kind: 'web',
+        kind: 'probe_result',
+        actor: 'system',
+        payload: cResult.ok
+          ? {
+              probe: 'console_errors_since',
+              summary: cResult.summary,
+              data: cResult.data,
+              ok: true,
+            }
+          : { probe: 'console_errors_since', error: cResult.error, ok: false },
+      });
+    }
   } finally {
     await traceWriter.close();
   }

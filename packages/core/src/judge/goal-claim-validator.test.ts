@@ -147,6 +147,49 @@ describe('validateGoalClaims', () => {
     expect(result.goals[0]?.status).toBe('partial');
   });
 
+  it('downgrades verified → partial when notes field is empty (Phase 14 mandatory notes)', () => {
+    const trace: TraceEvent[] = [
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'add a todo',
+        status: 'verified',
+        evidence: ['B'],
+        // notes omitted — should be auto-downgraded.
+      },
+    ]);
+    const contract = stubContract({ G1: ['B'] });
+    const result = validateGoalClaims({ judge, trace, outcome_contract: contract });
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.goals[0]?.status).toBe('partial');
+    expect(result.goals[0]?.notes).toMatch(/missing audit notes/);
+  });
+
+  it('keeps verified when notes contain substantive explanation (≥20 chars)', () => {
+    const trace: TraceEvent[] = [
+      ev('A', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'draw a rectangle',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Post-drag observation OBS-000003 contains rectangle in canvas outline.',
+      },
+    ]);
+    const contract = stubContract({ G1: ['B'] });
+    const result = validateGoalClaims({ judge, trace, outcome_contract: contract });
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
   it('leaves non-verified goals untouched', () => {
     const judge = judgeWithGoals([
       { id: 'G1', description: 'x', status: 'partial', evidence: [] },

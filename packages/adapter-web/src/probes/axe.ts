@@ -29,6 +29,26 @@ export async function runAxe(page: Page): Promise<ProbeResult> {
       return await axe.run();
     })) as AxeResults;
 
+    // Phase 14: include violation rule IDs + impact in the summary so the
+    // Judge (which reads the trace digest, not the full data payload) can
+    // emit actionable findings. "2 axe violations" without rule names is
+    // unactionable; "color-contrast (serious) + aria-required-children
+    // (critical)" is.
+    const impactRank: Record<string, number> = {
+      critical: 4,
+      serious: 3,
+      moderate: 2,
+      minor: 1,
+    };
+    const rankedViolations = [...results.violations].sort(
+      (a, b) => (impactRank[b.impact ?? ''] ?? 0) - (impactRank[a.impact ?? ''] ?? 0),
+    );
+    const topRules = rankedViolations.slice(0, 8).map((v) => ({
+      id: v.id,
+      impact: v.impact,
+      help: v.help,
+      node_count: v.nodes.length,
+    }));
     return {
       ok: true,
       probe: 'axe',
@@ -37,6 +57,7 @@ export async function runAxe(page: Page): Promise<ProbeResult> {
         passes: results.passes.length,
         incomplete: results.incomplete.length,
         inapplicable: results.inapplicable.length,
+        top_rules: topRules,
       },
       data: {
         violations: results.violations.map((v) => ({

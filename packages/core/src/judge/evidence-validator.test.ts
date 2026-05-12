@@ -338,7 +338,9 @@ describe('validateFindings', () => {
   });
 
   it('discards "not focusable/typable via standard selectors" (Phase-12 slash-alternative)', () => {
-    const trace = [ev('E1', 'action_result', { tool: 'click', ok: false, error: 'Timeout 5000ms' })];
+    const trace = [
+      ev('E1', 'action_result', { tool: 'click', ok: false, error: 'Timeout 5000ms' }),
+    ];
     const out = validateFindings(
       [
         finding({

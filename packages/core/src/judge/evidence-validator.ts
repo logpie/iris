@@ -226,10 +226,7 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
     // Phase 12: "no confirmation / no toast" finding is disproved if the
     // notifications_visible probe captured ≥1 notification anywhere in the
     // run. Direct evidence beats the Judge's eye-test.
-    if (
-      looksLikeNoConfirmationFinding(f.title) &&
-      notificationsProbeShowedSomething(trace)
-    ) {
+    if (looksLikeNoConfirmationFinding(f.title) && notificationsProbeShowedSomething(trace)) {
       discarded.push({
         tentative_event_id: f.id,
         reason: 'no_confirmation_finding_contradicted_by_notifications_probe',
