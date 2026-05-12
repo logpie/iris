@@ -70,18 +70,69 @@ const ADAPTER_CONFIG_ERROR_PATTERNS: RegExp[] = [
 // based product — the editor was perfectly reachable, the Explorer used the
 // wrong CSS framework's selectors.
 const AGENT_PERSPECTIVE_TITLE_PATTERNS: RegExp[] = [
+  // "not Xable/typable/focusable via standard selectors" — with optional
+  // /-separated alternatives between the verb and "via".
+  /\bnot\s+(reachable|actionable|focusable|clickable|targetable|typable)(\/(reachable|actionable|focusable|clickable|targetable|typable))*\s+(via|by|through|with)\b/i,
   /\bnot\s+(reachable|actionable|focusable|clickable|targetable)\s+via\b/i,
   /\bnot\s+(reachable|actionable|focusable|clickable|targetable)\s+(by|through|with)\b/i,
+  // "poor selector targeting" / "poor accessible name" — agent-perspective
+  // wording about how hard the agent found the control, dressed as a product
+  // finding.
+  /\bpoor\s+(selector\s+targeting|accessible\s+name|aria(\s+selector|\s+labelling)?)\b/i,
+  /\bselector\s+targeting\s+(is\s+)?(poor|weak|missing)\b/i,
   /\bcould\s+not\s+(be\s+)?(focused|located|reached|found|targeted)\b/i,
   /\bcannot\s+(be\s+)?(focused|located|reached|found|targeted)\b/i,
-  /\bselector\s+(failed|timed\s+out|not\s+found|mismatch)\b/i,
+  // Selector / locator / accessibility-name strategy talk — present tense too.
+  /\bselector\s+(failed|fails|timed\s+out|times?\s+out|not\s+found|mismatch)\b/i,
+  /\b(locator|click|focus|fill|type)\s+(via|using|on|by)\s+(role=|css=|data-testid|accessible(\s+name)?|aria(\s+selector)?)\b/i,
+  /\bclick\s+via\s+\w+\s+selector\s+times?\s+out\b/i,
   /\bdoes\s+not\s+respond\s+to\s+clicks?\b/i,
   /\b(lacks?|missing)\b.*\b(accessible|proper)\b.*\b(textbox\s+role|name|role|semantics)\b/i,
-  /\b(role=\w+|css=|data-testid)\b.*\b(timed?\s+out|failed|not\s+found)\b/i,
+  /\b(role=\w+|css=|data-testid)\b.*\b(timed?\s+out|times?\s+out|failed|not\s+found)\b/i,
+  // Any title that mentions a known automation-tool concept as the subject
+  // ("ARIA selector", "accessible-name locator", "Playwright click") — these
+  // are agent-perspective phrasings by construction.
+  /\b(ARIA|accessible-name|playwright|locator)\s+(selector|locator|click|target)\b/i,
 ];
 
 function looksLikeAgentPerspectiveFinding(title: string): boolean {
   return AGENT_PERSPECTIVE_TITLE_PATTERNS.some((p) => p.test(title));
+}
+
+// Phase 12: a "no confirmation / no toast / no notification" finding is only
+// legitimate if the trace actually checked for one. The notifications_visible
+// probe sweeps aria-live, role=alert/status, common toast frameworks, and
+// fixed-corner toasts. If it ran AND returned >0 items, the finding is
+// disproved by direct evidence — the Judge ignored the probe (Dillinger
+// dogfood 2026-05-11: probe returned "Preparing HTML... Exported as HTML"
+// and the Judge still claimed "no confirmation").
+const NO_CONFIRMATION_TITLE_PATTERNS: RegExp[] = [
+  // Single "no <thing>" — covers download/toast/dialog/file-dialog variants.
+  /\bno\s+(visible\s+)?(confirmation|toast|notification|feedback|indicator|response|notice|message|download|dialog|file\s+dialog|popup|modal)\b/i,
+  // "produced no visible X, Y, or Z" — common Judge phrasing after Export.
+  /\bproduced\s+no\s+(visible\s+)?\S+(\s*,\s*\S+){0,4}/i,
+  /\b(does\s+not|doesn't|fails\s+to)\s+(show|provide|produce|display)\s+(any\s+)?(confirmation|toast|notification|feedback|indicator|download|dialog)\b/i,
+  /\b(gives|provides|shows)\s+no\s+(visible\s+)?(confirmation|toast|notification|feedback|indicator|download|dialog)\b/i,
+  /\bwithout\s+(any\s+)?(visible\s+)?(confirmation|toast|notification|feedback|indicator|download|dialog)\b/i,
+];
+
+function looksLikeNoConfirmationFinding(title: string): boolean {
+  return NO_CONFIRMATION_TITLE_PATTERNS.some((p) => p.test(title));
+}
+
+function notificationsProbeShowedSomething(trace: TraceEvent[]): boolean {
+  for (const e of trace) {
+    if (e.kind !== 'probe_result') continue;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    if (p.probe !== 'notifications_visible') continue;
+    if (p.ok === false) continue;
+    const summary = (p.summary ?? {}) as Record<string, unknown>;
+    if (typeof summary.count === 'number' && summary.count > 0) return true;
+    // Defensive: also check data is a non-empty array.
+    const data = p.data;
+    if (Array.isArray(data) && data.length > 0) return true;
+  }
+  return false;
 }
 
 function isSelectorMissError(error?: string): boolean {
@@ -168,6 +219,20 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
       discarded.push({
         tentative_event_id: f.id,
         reason: 'all_evidence_ids_invalid',
+      });
+      continue;
+    }
+
+    // Phase 12: "no confirmation / no toast" finding is disproved if the
+    // notifications_visible probe captured ≥1 notification anywhere in the
+    // run. Direct evidence beats the Judge's eye-test.
+    if (
+      looksLikeNoConfirmationFinding(f.title) &&
+      notificationsProbeShowedSomething(trace)
+    ) {
+      discarded.push({
+        tentative_event_id: f.id,
+        reason: 'no_confirmation_finding_contradicted_by_notifications_probe',
       });
       continue;
     }

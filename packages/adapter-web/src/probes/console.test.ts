@@ -47,4 +47,27 @@ describe('ConsoleProbe', () => {
       expect(r.summary.error_count).toBe(1);
     }
   });
+
+  // Phase 12: categorize app_error vs resource_error so "Failed to load
+  // resource: net::ERR_CONNECTION_CLOSED" noise doesn't count as a product
+  // bug. Dillinger had 15 of these from blocked third-party trackers.
+  it('classifies "Failed to load resource: net::ERR_..." as resource_error, not app_error', async () => {
+    server = await startFixtureServer('hello');
+    const page = lc.getPage();
+    const probe = new ConsoleProbe(page);
+    probe.attach();
+    await page.goto(`${server.url}/index.html`);
+    probe.pushExternal('error', 'Failed to load resource: net::ERR_CONNECTION_CLOSED');
+    probe.pushExternal('error', 'Failed to load resource: net::ERR_NAME_NOT_RESOLVED');
+    await page.evaluate(() => console.error('actual app bug'));
+    await page.waitForTimeout(50);
+
+    const r = await probe.runProbe('console_errors_since', {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.summary.app_error_count).toBe(1);
+    expect(r.summary.resource_error_count).toBe(2);
+    // Backwards-compat: error_count now reflects ONLY app errors.
+    expect(r.summary.error_count).toBe(1);
+  });
 });

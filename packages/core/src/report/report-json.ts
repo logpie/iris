@@ -135,8 +135,20 @@ function countAttemptedGoals(judge: JudgeOutput): {
 export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
   const counts = countSeverities(inp.judge.findings);
   const score = inp.judge.scores.overall.score;
-  const threshold_passed = inp.threshold === undefined ? true : score >= inp.threshold;
   const coverage = countAttemptedGoals(inp.judge);
+  // Phase 12: threshold check is no longer just "score ≥ threshold." A high
+  // score on a barely-tested product was passing — Dillinger scored 5.2 with
+  // 3/12 coverage and "passed" because the (default null) threshold check
+  // returned true. Now: threshold passes only if score meets the bar AND at
+  // least 50% of goals were attempted AND there are no blocker findings.
+  // No explicit threshold means "passes with caveats" only when coverage and
+  // findings are clean.
+  const COVERAGE_FLOOR = 0.5;
+  const coverageRatio = coverage.total > 0 ? coverage.attempted / coverage.total : 1;
+  const scorePass = inp.threshold === undefined ? true : score >= inp.threshold;
+  const coveragePass = coverage.total === 0 || coverageRatio >= COVERAGE_FLOOR;
+  const noBlockers = counts.blocker === 0;
+  const threshold_passed = scorePass && coveragePass && noBlockers;
 
   // Phase 5 G4: compute a stable finding_hash for every finding. Uses content
   // hashes of the cited trace events when available, so the same finding from

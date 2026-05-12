@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Toasts — Iris fixture</title>
+  <style>
+    body { font-family: sans-serif; padding: 16px; }
+    .toast-bottom-right {
+      position: fixed; right: 16px; bottom: 16px;
+      background: #333; color: white; padding: 8px 16px; border-radius: 4px;
+    }
+    .Toastify__toast { padding: 8px; background: #4caf50; color: white; display: inline-block; }
+    .MuiSnackbar-root { padding: 8px; background: #2196f3; color: white; display: inline-block; }
+    [role=alert] { padding: 8px; background: #ffcdd2; display: inline-block; }
+  </style>
+  </head>
+  <body>
+    <h1>Notifications fixture</h1>
+
+    <!-- aria-live region -->
+    <div aria-live="polite" id="live-region">Saved successfully</div>
+
+    <!-- role=alert -->
+    <div role="alert">Invalid email address</div>
+
+    <!-- role=status -->
+    <div role="status">Loading complete</div>
+
+    <!-- Toastify-style -->
+    <div class="Toastify__toast">Exported as HTML</div>
+
+    <!-- MUI Snackbar-style -->
+    <div class="MuiSnackbar-root">Settings updated</div>
+
+    <!-- Fixed bottom-right corner toast (Dillinger-style) -->
+    <div class="toast-bottom-right">Preparing HTML...</div>
+
+    <!-- An EMPTY aria-live region (should NOT show up in results) -->
+    <div aria-live="polite" id="empty-live"></div>
+
+    <!-- A hidden toast (should NOT show up) -->
+    <div role="alert" style="display: none;">This is hidden — invisible</div>
+  </body>
+</html>

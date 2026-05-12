@@ -291,6 +291,99 @@ describe('validateFindings', () => {
     expect(out.discarded[0]?.reason).toBe('agent_perspective_title_no_user_visible_failure');
   });
 
+  // Phase 12: "no confirmation" finding is overruled by a successful
+  // notifications_visible probe with non-empty data. Dillinger 2026-05-11
+  // had this exact failure: probe captured "Preparing HTML... Exported as
+  // HTML" but the Judge claimed "no confirmation."
+  it('discards "Export shows no visible confirmation" when notifications probe captured a toast', () => {
+    const trace = [
+      ev('E1', 'action_result', { tool: 'click', ok: true }),
+      ev('E2', 'probe_result', {
+        probe: 'notifications_visible',
+        ok: true,
+        summary: { count: 1 },
+        data: [{ source: 'aria_live', text: 'Exported as HTML' }],
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Export shows no visible confirmation after click',
+          severity: 'major',
+          evidence: ['E1'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe(
+      'no_confirmation_finding_contradicted_by_notifications_probe',
+    );
+  });
+
+  it('keeps "no confirmation" findings when notifications_visible was NOT called', () => {
+    const trace = [ev('E1', 'action_result', { tool: 'click', ok: true })];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Submit shows no visible feedback to the user',
+          severity: 'minor',
+          evidence: ['E1'],
+        }),
+      ],
+      trace,
+    );
+    // No probe ran — finding stands (but normal backing check applies).
+    expect(out.kept).toHaveLength(1);
+  });
+
+  it('discards "not focusable/typable via standard selectors" (Phase-12 slash-alternative)', () => {
+    const trace = [ev('E1', 'action_result', { tool: 'click', ok: false, error: 'Timeout 5000ms' })];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'CodeMirror editor not focusable/typable via standard selectors',
+          severity: 'minor',
+          evidence: ['E1'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+  });
+
+  it('discards "poor selector targeting / accessible name" findings', () => {
+    const trace = [ev('E1', 'action_result', { tool: 'click', ok: false, error: 'Timeout' })];
+    const out = validateFindings(
+      [
+        finding({
+          title: "'Export as' top-bar button has poor selector targeting / accessible name",
+          severity: 'minor',
+          evidence: ['E1'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+  });
+
+  it('discards "Toggle checkbox click via ARIA selector times out" (TodoMVC-style)', () => {
+    const trace = [
+      ev('E1', 'action_result', { tool: 'click', ok: false, error: 'Timeout 5000ms' }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Toggle checkbox click via ARIA selector times out',
+          severity: 'minor',
+          evidence: ['E1'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+  });
+
   it('discards "not focusable via" findings (Dillinger-style agent failure phrasing)', () => {
     const trace = [
       ev('E1', 'action', { tool: 'click', args: { selector: 'role=textbox' } }),

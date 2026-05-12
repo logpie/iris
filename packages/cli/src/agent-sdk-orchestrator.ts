@@ -369,6 +369,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       timeoutS: config.timeout_s,
       model: config.explorer_model,
       maxExpansionGoals: maxExpansion,
+      ...(stepsPerGoal && stepsPerGoal > 0 ? { stepsPerGoal } : {}),
       ...(hasGoals
         ? { goals: goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description })) }
         : {}),

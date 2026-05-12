@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { judge as judgeMod, report as reportMod } from '@iris/core';
+import { judge as judgeMod, report as reportMod, trace as traceMod } from '@iris/core';
 import { Command } from 'commander';
 import { buildLlmClient } from '../llm-factory.js';
 import { loadRubricsByNames } from '../load-rubrics.js';
@@ -37,12 +37,25 @@ export function judgeCommand(): Command {
 
       const judgeClient = buildLlmClient();
       const judge = new judgeMod.Judge(judgeClient);
-      const out = await judge.run({
+      let out = await judge.run({
         trace_path: tracePath,
         ...(specText !== undefined ? { spec_text: specText } : {}),
         rubric_profiles: rubrics,
         model: opts.judgeModel as string,
       });
+
+      // Phase 12: apply the same validation pipeline as the orchestrator so
+      // `iris judge` produces the same shape of report as `iris eval`.
+      // Without this, the agent-perspective and notifications-probe filters
+      // never run on re-judge invocations.
+      const traceEvents = await traceMod.readTraceArray(tracePath);
+      const validation = judgeMod.validateFindings(out.findings, traceEvents);
+      out = {
+        ...out,
+        findings: validation.kept,
+        discarded_findings: [...(out.discarded_findings ?? []), ...validation.discarded],
+        evidence_validation: validation.summary,
+      };
 
       mkdirSync(outDir, { recursive: true });
       writeFileSync(

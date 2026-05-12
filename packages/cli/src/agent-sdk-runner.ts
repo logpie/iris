@@ -175,6 +175,11 @@ export interface ExplorerSdkConfig {
   /** Phase 10: max number of expansion goals the Explorer can append via
    * propose_goal during the run. Defaults to 6. Set to 0 to disable expansion. */
   maxExpansionGoals?: number;
+  /** Phase 12: per-goal budget for auto-cutover. When the Explorer spends
+   * more than 1.5× this on the current goal without calling goal_status,
+   * the system force-emits goal_status(partial, auto_cutover=true) and
+   * advances. Set to 0 to disable cutover. */
+  stepsPerGoal?: number;
 }
 
 export interface ExplorerSdkResult {
@@ -294,6 +299,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       jsonSchemaToZodShape(spec.input_schema),
       async (args: Record<string, unknown>) => {
         stepCount++;
+        turnsOnCurrentGoal++;
         await emit('action', 'explorer', { tool: spec.name, args });
         const result = await config.adapter.callTool(spec.name, args);
         // Phase 7 F7-1: retry_attempt events for trace audit.
@@ -365,18 +371,17 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
             // observation failed; continue
           }
         }
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: result.ok
-                ? description
-                  ? `OK — vision: ${description}`
-                  : `OK${result.observation_ref ? ` (observation_ref=${result.observation_ref})` : ''}`
-                : `ERROR: ${result.error}`,
-            },
-          ],
-        };
+        // Phase 12: check cutover after every action so a stuck goal cannot
+        // burn the whole budget on selector retries.
+        await checkAndApplyCutover();
+        const baseText = result.ok
+          ? description
+            ? `OK — vision: ${description}`
+            : `OK${result.observation_ref ? ` (observation_ref=${result.observation_ref})` : ''}`
+          : `ERROR: ${result.error}`;
+        const text = pendingCutoverNotice ? `${baseText}\n\n${pendingCutoverNotice}` : baseText;
+        if (pendingCutoverNotice) pendingCutoverNotice = null;
+        return { content: [{ type: 'text' as const, text }] };
       },
     ),
   );
@@ -544,6 +549,43 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
   const maxExpansion = config.maxExpansionGoals ?? 6;
   let expansionCount = 0;
 
+  // Phase 12: per-goal auto-cutover. When the Explorer spends more than
+  // 1.5× stepsPerGoal turns on a single pending goal without calling
+  // goal_status, force-advance. Without this, a single stuck goal eats
+  // the whole budget (Dillinger's G1 burning all 35 turns problem).
+  const stepsPerGoalCutover = config.stepsPerGoal ?? 0;
+  const cutoverThreshold = stepsPerGoalCutover > 0 ? Math.ceil(stepsPerGoalCutover * 1.5) : 0;
+  let turnsOnCurrentGoal = 0;
+  // Cutover notice to be prepended to the next tool result so the agent
+  // notices the system has moved on.
+  let pendingCutoverNotice: string | null = null;
+
+  function currentPendingGoalId(): string | null {
+    for (const [id, entry] of goalLedger) {
+      if (entry.status === 'pending') return id;
+    }
+    return null;
+  }
+
+  async function checkAndApplyCutover(): Promise<void> {
+    if (cutoverThreshold <= 0) return;
+    if (turnsOnCurrentGoal < cutoverThreshold) return;
+    const gid = currentPendingGoalId();
+    if (!gid) return;
+    const entry = goalLedger.get(gid);
+    if (!entry) return;
+    entry.status = 'partial';
+    entry.rationale = `auto-cutover after ${turnsOnCurrentGoal} turns without explicit goal_status`;
+    await emit('goal_status', 'system', {
+      id: gid,
+      status: 'partial',
+      rationale: entry.rationale,
+      auto_cutover: true,
+    });
+    pendingCutoverNotice = `[system] ${gid} auto-cut to "partial" after exceeding the per-goal budget. The next pending goal is now active — call goal_status on the current goal explicitly when finished, or you risk further auto-cutovers.`;
+    turnsOnCurrentGoal = 0;
+  }
+
   // Phase 10: propose_goal — Explorer adds a goal mid-run. Only available
   // when expansion is enabled (maxExpansion > 0). Capped to prevent runaway.
   const proposeGoalTools =
@@ -614,6 +656,9 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
               entry.status = args.status;
               entry.rationale = args.rationale;
             }
+            // Phase 12: reset the per-goal cutover counter so the next
+            // pending goal gets a fresh budget.
+            turnsOnCurrentGoal = 0;
             await emit('goal_status', 'explorer', { ...args, auto_cutover: false });
             return {
               content: [{ type: 'text' as const, text: `goal ${args.id}: ${args.status}` }],
