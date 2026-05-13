@@ -63,6 +63,12 @@ export function evalCommand(): Command {
       6,
     )
     .option(
+      '--parallel <n>',
+      'run N parallel Explorer sessions across goal partitions (Phase 16). Each session has its own browser + auth. Roughly N× speedup minus per-session auth overhead. Default 1.',
+      (s) => Number.parseInt(s, 10),
+      1,
+    )
+    .option(
       '--max-cost-usd <n>',
       'abort when LLM cost exceeds this',
       (s) => Number.parseFloat(s),
@@ -134,31 +140,82 @@ export function evalCommand(): Command {
       const transport = explicitTransport ?? (hasApiKey ? 'api' : 'sdk');
       process.stderr.write(`iris: transport=${transport}\n`);
 
-      const adapter = new WebTargetAdapter({ headless: true });
-
-      // Phase 8: wire vision_describer for the SDK transport so vision_describe
-      // can actually run (was missing since Phase 4 — every real-world dogfood
-      // ran with caveat "vision_describe unavailable").
-      if (transport === 'sdk') {
-        const { visionDescribeViaSdk } = await import('../agent-sdk-runner.js');
-        (
-          adapter as unknown as {
-            opts: {
-              vision_describer?: (i: {
-                imagePath: string;
-                prompt: string;
-                model?: string;
-              }) => Promise<{ text: string }>;
-            };
-          }
-        ).opts.vision_describer = async (i) =>
-          visionDescribeViaSdk({
-            systemPrompt: '',
-            imagePath: i.imagePath,
-            textPrompt: i.prompt,
-            ...(i.model ? { model: i.model } : {}),
+      // Phase 16: build an adapter factory so the SDK orchestrator can
+      // create as many adapters as it needs (1 for single-session, N for
+      // --parallel N). Each adapter has its own browser + own vision_describer
+      // wiring.
+      const buildAdapter = async () => {
+        const a = new WebTargetAdapter({ headless: true });
+        if (transport === 'sdk') {
+          const { visionDescribeViaSdk } = await import('../agent-sdk-runner.js');
+          (
+            a as unknown as {
+              opts: {
+                vision_describer?: (i: {
+                  imagePath: string;
+                  prompt: string;
+                  model?: string;
+                }) => Promise<{ text: string }>;
+              };
+            }
+          ).opts.vision_describer = async (i) =>
+            visionDescribeViaSdk({
+              systemPrompt: '',
+              imagePath: i.imagePath,
+              textPrompt: i.prompt,
+              ...(i.model ? { model: i.model } : {}),
+            });
+        }
+        return a;
+      };
+      // Pre-build the first adapter for the api/cli transports + for
+      // backwards-compat when SDK consumer expects an adapter directly.
+      const adapter = await buildAdapter();
+      // Wrap into a synchronous factory by warming a queue. For N=1, the
+      // existing adapter is reused; for N>1, additional adapters are
+      // synchronously constructed (no vision_describer wiring needed because
+      // the factory closure recreates it — but the SDK uses one path so we
+      // build sync replicas).
+      let _adapterIdx = 0;
+      const createAdapter = (): typeof adapter => {
+        if (_adapterIdx === 0) {
+          _adapterIdx++;
+          return adapter;
+        }
+        // For parallel sessions, construct a fresh WebTargetAdapter without
+        // awaiting (the factory closure for SDK wiring is sync — we use the
+        // already-imported visionDescribeViaSdk reference if needed).
+        _adapterIdx++;
+        const a = new WebTargetAdapter({ headless: true });
+        // SDK-transport sessions need vision_describer too. The async import
+        // above already resolved; replicate the wiring synchronously by
+        // requiring (in an ESM-safe way) — we reuse the same closure form.
+        // For simplicity, accept that parallel-mode vision_describe goes
+        // through the orchestrator's primary adapter binding; subsequent
+        // sessions get the same module-level callback.
+        if (transport === 'sdk') {
+          import('../agent-sdk-runner.js').then(({ visionDescribeViaSdk }) => {
+            (
+              a as unknown as {
+                opts: {
+                  vision_describer?: (i: {
+                    imagePath: string;
+                    prompt: string;
+                    model?: string;
+                  }) => Promise<{ text: string }>;
+                };
+              }
+            ).opts.vision_describer = async (i) =>
+              visionDescribeViaSdk({
+                systemPrompt: '',
+                imagePath: i.imagePath,
+                textPrompt: i.prompt,
+                ...(i.model ? { model: i.model } : {}),
+              });
           });
-      }
+        }
+        return a;
+      };
 
       let result: {
         report: {
@@ -209,9 +266,13 @@ export function evalCommand(): Command {
             discover: opts.discover !== false,
             expand_goals: opts.expand !== false,
             max_expansion_goals: opts.maxExpansionGoals as number,
+            parallel: opts.parallel as number,
             ...(opts.persona !== undefined ? { persona: opts.persona as string } : {}),
           },
-          adapter,
+          // Phase 16: pass a factory so the orchestrator can create per-session
+          // adapters when --parallel N>1. For N=1 the factory returns the
+          // already-created adapter on first call.
+          createAdapter,
         );
       } else {
         const explorerClient = buildLlmClient({ use_claude_cli: transport === 'cli' });

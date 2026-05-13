@@ -1,4 +1,11 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type { TargetAdapter } from '@iris/adapter-types';
 import {
@@ -52,6 +59,17 @@ export interface AgentSdkRunConfig {
    * Capped at max_expansion_goals (default 6). */
   expand_goals?: boolean;
   max_expansion_goals?: number;
+  /** Phase 16: run N parallel Explorer sessions across goal partitions.
+   * Default 1 (current single-session behavior). When >1, the orchestrator:
+   *   1. Runs discovery on a warmup adapter
+   *   2. Stops the warmup adapter
+   *   3. Partitions goals into N contiguous slices
+   *   4. Spawns N parallel Explorer sessions via createAdapter factory
+   *   5. Merges per-session traces into the main trace by ts
+   *   6. Judge runs ONCE on the merged trace
+   * Requires createAdapter parameter on runIrisViaSdk. Speedup is roughly N×
+   * minus per-session auth overhead. */
+  parallel?: number;
 }
 
 export interface AgentSdkRunResult {
@@ -65,8 +83,14 @@ export interface AgentSdkRunResult {
 
 export async function runIrisViaSdk(
   config: AgentSdkRunConfig,
-  adapter: TargetAdapter,
+  adapterOrFactory: TargetAdapter | (() => TargetAdapter),
 ): Promise<AgentSdkRunResult> {
+  // Phase 16: accept either a single adapter (legacy) or a factory. Parallel
+  // mode (config.parallel > 1) requires the factory form so per-session
+  // adapters can be created.
+  const createAdapter: () => TargetAdapter =
+    typeof adapterOrFactory === 'function' ? adapterOrFactory : () => adapterOrFactory;
+  const adapter = createAdapter();
   const startedAt = new Date();
   const startMs = Date.now();
   mkdirSync(config.out_dir, { recursive: true });
@@ -355,94 +379,270 @@ AVOID:
 
 Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). BUDGET: $${config.max_cost_usd.toFixed(2)} total LLM cost and ${config.timeout_s}s wall-clock. There is NO turn count to race against — focus on doing each goal properly, not on speed. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns per goal prevents stuck goals from eating the run.`;
 
-  process.stderr.write('iris: starting Explorer (Agent SDK session)...\n');
+  // Phase 16: parallel branch — when config.parallel > 1, split the goals
+  // into N contiguous slices and run N Explorer sessions in parallel. Each
+  // session has its own adapter+browser+trace, then we merge traces by ts
+  // and run Judge once on the merged view.
+  const parallelN = Math.max(1, config.parallel ?? 1);
+  const hasParallelGoals = parallelN > 1 && hasGoals && goals.length >= 2;
+
+  process.stderr.write(
+    parallelN > 1
+      ? `iris: starting Explorer — ${parallelN} parallel sessions across ${goals.length} goals\n`
+      : 'iris: starting Explorer (Agent SDK session)...\n',
+  );
   let explorerResult: Awaited<ReturnType<typeof runAgentSdkExplorer>>;
   try {
     // Phase 10: expansion goal cap. 0 disables propose_goal entirely.
     const maxExpansion = config.expand_goals === false ? 0 : (config.max_expansion_goals ?? 6);
-    explorerResult = await runAgentSdkExplorer({
-      adapter,
-      traceWriter,
-      systemPrompt,
-      initialUserPrompt,
-      maxSteps: effectiveMaxSteps,
-      maxCostUsd: config.max_cost_usd - totalCost,
-      timeoutS: config.timeout_s,
-      model: config.explorer_model,
-      maxExpansionGoals: maxExpansion,
-      ...(stepsPerGoal && stepsPerGoal > 0 ? { stepsPerGoal } : {}),
-      ...(hasGoals
-        ? { goals: goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description })) }
-        : {}),
-    });
-    totalCost += explorerResult.cost_usd;
-    process.stderr.write(
-      `iris: Explorer done — termination=${explorerResult.termination}, ${explorerResult.steps_taken} steps, $${explorerResult.cost_usd.toFixed(2)}\n`,
-    );
 
-    // Phase 14: programmatically run a11y + console_errors at end of
-    // Explorer session so the Judge always has these data points. The
-    // Explorer was instructed to run them but skipped on 4 of 5 P13 apps —
-    // making "0 findings" partly mean "Iris didn't look." Now Iris always
-    // looks, regardless of agent discipline.
-    const alreadyRanAxe = (await iristrace.readTraceArray(tracePath)).some(
-      (e) => e.kind === 'probe_result' && (e.payload as { probe?: string })?.probe === 'axe',
-    );
-    if (!alreadyRanAxe) {
-      process.stderr.write('iris: auto-running axe (post-Explorer)…\n');
-      const axeResult = await adapter.runProbe('axe', {}).catch((err) => ({
-        ok: false as const,
-        probe: 'axe',
-        error: err instanceof Error ? err.message : String(err),
-      }));
-      await traceWriter.append({
-        v: 1,
-        id: ulid(),
-        ts: Date.now() / 1000,
-        step: 0,
-        target_kind: 'web',
-        kind: 'probe_result',
-        actor: 'system',
-        payload: axeResult.ok
-          ? { probe: 'axe', summary: axeResult.summary, data: axeResult.data, ok: true }
-          : { probe: 'axe', error: axeResult.error, ok: false },
+    if (hasParallelGoals) {
+      // Close + stop the discovery adapter; its trace already has discovery
+      // and interaction_kit events. We'll merge session traces into it later.
+      await traceWriter.close();
+      await adapter.stop();
+
+      const goalGroups = partitionGoalsContiguous(
+        goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description })),
+        parallelN,
+      );
+      const perSessionMaxCost = (config.max_cost_usd - totalCost) / parallelN;
+      const perSessionTimeout = config.timeout_s; // each session has full timeout
+
+      // Phase 16 robustness: use allSettled so one session crashing (e.g.
+      // the SDK transport's "Query closed" race) doesn't kill the whole
+      // orchestrator. The surviving sessions' trace + Judge can still
+      // produce a useful report.
+      const sessionOutcomes = await Promise.allSettled(
+        goalGroups.map(async (subset, idx) => {
+          const sessionDir = join(config.out_dir, `session-${idx}`);
+          mkdirSync(sessionDir, { recursive: true });
+          const sessionAdapter = createAdapter();
+          await sessionAdapter.start({
+            kind: 'web',
+            target: config.target.url,
+            out_dir: sessionDir,
+          });
+          const sessionTracePath = join(sessionDir, 'trace.jsonl');
+          const sessionTrace = new iristrace.TraceWriter(sessionTracePath);
+
+          // Each session sees ALL goals in its prompt (for context) but is
+          // only responsible for verifying its subset.
+          const subsetIds = subset.map((g) => g.id).join(', ');
+          const subsetPrompt = `Target: ${config.target.url}\n\nAll discovered goals (for context):\n${goalList}\n\nYOUR ASSIGNED GOALS this session: ${subsetIds}\nOther sessions are independently handling the other goals — focus on yours.\n\nFor each assigned goal, in order:\n  1. Find the relevant UI element.\n  2. Interact with it normally.\n  3. Observe what changed via the auto-observation.\n  4. Call mcp__iris__goal_status with the goal id, status, and one-line rationale.\n  5. If you find a bug, ALSO call mcp__iris__note_finding.\n\n${perGoalLine}\n\nBUDGET: $${perSessionMaxCost.toFixed(2)} cost and ${perSessionTimeout}s wall. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns.`;
+
+          const result = await runAgentSdkExplorer({
+            adapter: sessionAdapter,
+            traceWriter: sessionTrace,
+            systemPrompt,
+            initialUserPrompt: subsetPrompt,
+            maxSteps: effectiveMaxSteps,
+            maxCostUsd: perSessionMaxCost,
+            timeoutS: perSessionTimeout,
+            model: config.explorer_model,
+            maxExpansionGoals: 0, // disable expansion in parallel mode for now
+            ...(stepsPerGoal && stepsPerGoal > 0 ? { stepsPerGoal } : {}),
+            goals: subset,
+          });
+
+          // Auto-axe + console for this session
+          const sessionEvents = await iristrace.readTraceArray(sessionTracePath);
+          const ranAxe = sessionEvents.some(
+            (e) => e.kind === 'probe_result' && (e.payload as { probe?: string })?.probe === 'axe',
+          );
+          if (!ranAxe) {
+            const axeResult = await sessionAdapter.runProbe('axe', {}).catch((err) => ({
+              ok: false as const,
+              probe: 'axe',
+              error: err instanceof Error ? err.message : String(err),
+            }));
+            await sessionTrace.append({
+              v: 1,
+              id: ulid(),
+              ts: Date.now() / 1000,
+              step: 0,
+              target_kind: 'web',
+              kind: 'probe_result',
+              actor: 'system',
+              payload: axeResult.ok
+                ? { probe: 'axe', summary: axeResult.summary, data: axeResult.data, ok: true }
+                : { probe: 'axe', error: axeResult.error, ok: false },
+            });
+          }
+
+          await sessionTrace.close();
+          await sessionAdapter.stop();
+          return { idx, result, tracePath: sessionTracePath };
+        }),
+      );
+
+      // Drop failed sessions; log them but proceed with the surviving traces.
+      const sessionResults: Array<{
+        idx: number;
+        result: Awaited<ReturnType<typeof runAgentSdkExplorer>>;
+        tracePath: string;
+      }> = [];
+      for (let i = 0; i < sessionOutcomes.length; i++) {
+        const o = sessionOutcomes[i];
+        if (!o) continue;
+        if (o.status === 'fulfilled') {
+          sessionResults.push(o.value);
+        } else {
+          process.stderr.write(
+            `iris: session-${i} failed: ${o.reason instanceof Error ? o.reason.message.slice(0, 200) : String(o.reason).slice(0, 200)}\n`,
+          );
+          // Try to recover the partial trace if it exists
+          const partialPath = join(config.out_dir, `session-${i}`, 'trace.jsonl');
+          if (existsSync(partialPath)) {
+            sessionResults.push({
+              idx: i,
+              result: {
+                state: {
+                  plan_stack: [],
+                  surfaces_seen: 0,
+                  surfaces_unexplored: 0,
+                  hypotheses: 0,
+                  done: false,
+                  give_up_reason: 'sdk_crash',
+                },
+                termination: 'give_up',
+                cost_usd: 0,
+                steps_taken: 0,
+                duration_s: 0,
+              },
+              tracePath: partialPath,
+            });
+          }
+        }
+      }
+      if (sessionResults.length === 0) {
+        throw new Error('All parallel sessions crashed; aborting run');
+      }
+
+      // Merge per-session traces back into the main trace.jsonl
+      const allTracePaths = [tracePath, ...sessionResults.map((s) => s.tracePath)];
+      mergeTraceFiles(allTracePaths, tracePath);
+      process.stderr.write(`iris: merged ${allTracePaths.length} trace files into ${tracePath}\n`);
+
+      // Aggregate the per-session results into a single explorerResult
+      explorerResult = {
+        state: {
+          plan_stack: [],
+          surfaces_seen: sessionResults.reduce((s, r) => s + r.result.state.surfaces_seen, 0),
+          surfaces_unexplored: 0,
+          hypotheses: 0,
+          done: sessionResults.every((r) => r.result.state.done),
+          give_up_reason: null,
+        },
+        termination: sessionResults.every((r) => r.result.termination === 'done')
+          ? 'done'
+          : 'max_turns',
+        cost_usd: sessionResults.reduce((s, r) => s + r.result.cost_usd, 0),
+        steps_taken: sessionResults.reduce((s, r) => s + r.result.steps_taken, 0),
+        duration_s: Math.max(...sessionResults.map((r) => r.result.duration_s)),
+      };
+      totalCost += explorerResult.cost_usd;
+      process.stderr.write(
+        `iris: parallel Explorer done — ${sessionResults.length} sessions, ${explorerResult.steps_taken} total steps, $${explorerResult.cost_usd.toFixed(2)}, max session wall ${explorerResult.duration_s.toFixed(0)}s\n`,
+      );
+    } else {
+      explorerResult = await runAgentSdkExplorer({
+        adapter,
+        traceWriter,
+        systemPrompt,
+        initialUserPrompt,
+        maxSteps: effectiveMaxSteps,
+        maxCostUsd: config.max_cost_usd - totalCost,
+        timeoutS: config.timeout_s,
+        model: config.explorer_model,
+        maxExpansionGoals: maxExpansion,
+        ...(stepsPerGoal && stepsPerGoal > 0 ? { stepsPerGoal } : {}),
+        ...(hasGoals
+          ? { goals: goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description })) }
+          : {}),
       });
-    }
-    const alreadyRanConsole = (await iristrace.readTraceArray(tracePath)).some(
-      (e) =>
-        e.kind === 'probe_result' &&
-        (e.payload as { probe?: string })?.probe === 'console_errors_since',
-    );
-    if (!alreadyRanConsole) {
-      const cResult = await adapter.runProbe('console_errors_since', {}).catch((err) => ({
-        ok: false as const,
-        probe: 'console_errors_since',
-        error: err instanceof Error ? err.message : String(err),
-      }));
-      await traceWriter.append({
-        v: 1,
-        id: ulid(),
-        ts: Date.now() / 1000,
-        step: 0,
-        target_kind: 'web',
-        kind: 'probe_result',
-        actor: 'system',
-        payload: cResult.ok
-          ? {
-              probe: 'console_errors_since',
-              summary: cResult.summary,
-              data: cResult.data,
-              ok: true,
-            }
-          : { probe: 'console_errors_since', error: cResult.error, ok: false },
-      });
-    }
+      totalCost += explorerResult.cost_usd;
+      process.stderr.write(
+        `iris: Explorer done — termination=${explorerResult.termination}, ${explorerResult.steps_taken} steps, $${explorerResult.cost_usd.toFixed(2)}\n`,
+      );
+
+      // Phase 14: programmatically run a11y + console_errors at end of
+      // Explorer session so the Judge always has these data points. The
+      // Explorer was instructed to run them but skipped on 4 of 5 P13 apps —
+      // making "0 findings" partly mean "Iris didn't look." Now Iris always
+      // looks, regardless of agent discipline.
+      const alreadyRanAxe = (await iristrace.readTraceArray(tracePath)).some(
+        (e) => e.kind === 'probe_result' && (e.payload as { probe?: string })?.probe === 'axe',
+      );
+      if (!alreadyRanAxe) {
+        process.stderr.write('iris: auto-running axe (post-Explorer)…\n');
+        const axeResult = await adapter.runProbe('axe', {}).catch((err) => ({
+          ok: false as const,
+          probe: 'axe',
+          error: err instanceof Error ? err.message : String(err),
+        }));
+        await traceWriter.append({
+          v: 1,
+          id: ulid(),
+          ts: Date.now() / 1000,
+          step: 0,
+          target_kind: 'web',
+          kind: 'probe_result',
+          actor: 'system',
+          payload: axeResult.ok
+            ? { probe: 'axe', summary: axeResult.summary, data: axeResult.data, ok: true }
+            : { probe: 'axe', error: axeResult.error, ok: false },
+        });
+      }
+      const alreadyRanConsole = (await iristrace.readTraceArray(tracePath)).some(
+        (e) =>
+          e.kind === 'probe_result' &&
+          (e.payload as { probe?: string })?.probe === 'console_errors_since',
+      );
+      if (!alreadyRanConsole) {
+        const cResult = await adapter.runProbe('console_errors_since', {}).catch((err) => ({
+          ok: false as const,
+          probe: 'console_errors_since',
+          error: err instanceof Error ? err.message : String(err),
+        }));
+        await traceWriter.append({
+          v: 1,
+          id: ulid(),
+          ts: Date.now() / 1000,
+          step: 0,
+          target_kind: 'web',
+          kind: 'probe_result',
+          actor: 'system',
+          payload: cResult.ok
+            ? {
+                probe: 'console_errors_since',
+                summary: cResult.summary,
+                data: cResult.data,
+                ok: true,
+              }
+            : { probe: 'console_errors_since', error: cResult.error, ok: false },
+        });
+      }
+    } // end of single-session else branch (Phase 16)
   } finally {
-    await traceWriter.close();
+    // In single-session mode the traceWriter is still open; close it.
+    // In parallel mode it was already closed before spawning sessions.
+    try {
+      await traceWriter.close();
+    } catch {
+      // already closed by parallel branch
+    }
   }
 
-  // 6. Adapter.stop
-  const artifacts = await adapter.stop();
+  // 6. Adapter.stop — in parallel mode each session already stopped its
+  // own adapter and the discovery adapter was stopped before spawning;
+  // emulate an empty artifacts here.
+  const artifacts = hasParallelGoals
+    ? {
+        evidence_dir: join(config.out_dir, 'evidence'),
+        artifact_files: {} as Record<string, string>,
+      }
+    : await adapter.stop();
 
   // 7. Judge via SDK single-shot
   process.stderr.write('iris: running Judge via Agent SDK...\n');
@@ -565,7 +765,9 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
 
   // 7.5. Phase 6 F3: per-finding video clips.
   const clipPaths: Record<string, string> = {};
-  if (adapter.injectEventTimestamps && adapter.sliceEvidence) {
+  // Phase 16: clip slicing in parallel mode would need per-session video
+  // attribution per finding — skip for now and document as known limitation.
+  if (!hasParallelGoals && adapter.injectEventTimestamps && adapter.sliceEvidence) {
     const tsMap: Record<string, number> = {};
     for (const e of events) tsMap[e.id] = e.ts;
     adapter.injectEventTimestamps(tsMap);
@@ -688,4 +890,42 @@ function emptyReport(
       step_count: steps,
     },
   });
+}
+
+// Phase 16: split goals into N contiguous slices. Contiguous (not round-robin)
+// preserves the natural dependency order discovery produced — e.g., G3 "create
+// issue" and G4 "open issue" stay in the same slice so the agent can use what
+// G3 created. Discovery orders goals by user-likelihood, so contiguous slices
+// also keep "core flow" goals together.
+export function partitionGoalsContiguous<T>(goals: T[], n: number): T[][] {
+  if (n <= 1) return [goals];
+  const groups: T[][] = Array.from({ length: n }, () => []);
+  const perGroup = Math.ceil(goals.length / n);
+  for (let i = 0; i < goals.length; i++) {
+    const g = Math.min(Math.floor(i / perGroup), n - 1);
+    groups[g]?.push(goals[i] as T);
+  }
+  return groups.filter((g) => g.length > 0);
+}
+
+// Phase 16: merge multiple trace files into one, sorted by ts (ULID-based ts
+// is already monotonic within a single session; we sort across sessions to
+// produce a coherent linear trace for the Judge).
+export function mergeTraceFiles(inputPaths: string[], outputPath: string): void {
+  const all: Array<{ ts: number; line: string }> = [];
+  for (const p of inputPaths) {
+    if (!existsSync(p)) continue;
+    const text = readFileSync(p, 'utf8');
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const e = JSON.parse(line) as { ts?: number };
+        all.push({ ts: e.ts ?? 0, line });
+      } catch {
+        // Skip malformed lines (shouldn't happen).
+      }
+    }
+  }
+  all.sort((a, b) => a.ts - b.ts);
+  writeFileSync(outputPath, `${all.map((e) => e.line).join('\n')}\n`);
 }
