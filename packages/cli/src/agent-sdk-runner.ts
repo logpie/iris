@@ -171,7 +171,6 @@ export interface ExplorerSdkConfig {
   systemPrompt: string;
   initialUserPrompt: string;
   maxSteps: number;
-  maxCostUsd: number;
   timeoutS: number;
   model?: string;
   /** When provided, registers a goal_status MCP tool and emits a final
@@ -724,16 +723,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
 
   try {
     for await (const msg of q) {
-      if (totalCost >= config.maxCostUsd) {
-        termination = 'budget_cost';
-        await emit('budget_abort', 'system', { reason: 'max_cost_usd', cost_usd: totalCost });
-        try {
-          q.interrupt?.();
-        } catch {
-          /* ignore */
-        }
-        break;
-      }
+      // Phase 17: cost budget removed; time is the only spend cap.
       const elapsedS = (Date.now() - start) / 1000;
       if (elapsedS >= config.timeoutS) {
         termination = 'budget_time';

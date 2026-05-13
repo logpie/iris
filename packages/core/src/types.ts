@@ -31,7 +31,9 @@ export const RunConfigSchema = z.object({
   focus: z.array(z.string()).optional(),
   out_dir: z.string().min(1),
   max_steps: z.number().int().nonnegative(),
-  max_cost_usd: z.number().nonnegative(),
+  // Phase 17: cost budget removed. Time is the only spend cap. Field kept
+  // optional for backwards-compat parsing of older config.json files.
+  max_cost_usd: z.number().nonnegative().optional(),
   timeout_s: z.number().int().positive(),
   explore_budget: z.number().min(0).max(1).optional(),
   explorer_model: z.string().min(1),

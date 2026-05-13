@@ -31,7 +31,9 @@ export interface OrchestratorRunConfig {
   initial_tasks?: string[];
   rubric_profiles: RubricProfile[];
   max_steps: number;
-  max_cost_usd: number;
+  /** Phase 17: cost budget removed. Field kept optional for backwards
+   * compat with old config callers; ignored at runtime. */
+  max_cost_usd?: number;
   timeout_s: number;
   threshold?: number;
   explorer_model: string;
@@ -234,7 +236,6 @@ export class Orchestrator {
         target_kind: config.target.kind,
         model: config.explorer_model,
         max_steps: effectiveMaxSteps,
-        max_cost_usd: config.max_cost_usd,
         timeout_s: config.timeout_s,
         ...(initialPlanStack.length > 0 ? { initial_plan_stack: initialPlanStack } : {}),
         ...(config.persona !== undefined ? { persona: config.persona } : {}),
@@ -427,7 +428,6 @@ export class Orchestrator {
     // 9. Determine exit code
     if (
       explorerResult.termination === 'budget_steps' ||
-      explorerResult.termination === 'budget_cost' ||
       explorerResult.termination === 'budget_time'
     ) {
       exitCode = 2;

@@ -30,7 +30,6 @@ export interface ExplorerConfig {
   persona?: PersonaName;
   model: string;
   max_steps: number;
-  max_cost_usd: number;
   timeout_s: number;
   spec_summary?: string;
   initial_plan_stack?: string[];
@@ -267,11 +266,9 @@ export class Explorer {
           break;
         }
       }
-      // Budget checks
-      if (this.deps.llmClient.totals().cost_usd >= this.deps.config.max_cost_usd) {
-        this.termination = 'budget_cost';
-        break;
-      }
+      // Phase 17: time is the only budget. Cost was removed because it
+      // was hard to reason about in parallel mode (split or not?) and the
+      // time cap practically constrains cost anyway (~ $0.04/turn × turns/s).
       const elapsedS = (Date.now() - this.startTime) / 1000;
       if (elapsedS >= this.deps.config.timeout_s) {
         this.termination = 'budget_time';
@@ -326,7 +323,8 @@ export class Explorer {
         recent_actions: this.recentActions.slice(-5),
         budget: {
           steps: this.deps.config.max_steps - this.step,
-          usd: this.deps.config.max_cost_usd - this.deps.llmClient.totals().cost_usd,
+          // Phase 17: usd budget removed; keep field for prompt compat.
+          usd: 0,
           seconds: this.deps.config.timeout_s - elapsedS,
         },
       });
@@ -413,8 +411,6 @@ export class Explorer {
 
     if (this.termination === 'budget_steps') {
       await this.emit('budget_abort', 'system', { reason: 'max_steps' });
-    } else if (this.termination === 'budget_cost') {
-      await this.emit('budget_abort', 'system', { reason: 'max_cost_usd' });
     } else if (this.termination === 'budget_time') {
       await this.emit('budget_abort', 'system', { reason: 'timeout_s' });
     }

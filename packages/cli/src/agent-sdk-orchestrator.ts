@@ -37,7 +37,9 @@ export interface AgentSdkRunConfig {
   spec_path?: string;
   rubric_profiles: RubricProfile[];
   max_steps: number;
-  max_cost_usd: number;
+  /** Phase 17: cost budget removed; field kept optional for backwards-compat
+   * parsing of legacy AgentSdkRunConfig literals. Ignored at runtime. */
+  max_cost_usd?: number;
   timeout_s: number;
   threshold?: number;
   explorer_model: string;
@@ -377,7 +379,7 @@ AVOID:
   - Trying many alternate selectors when the first failed. After one selector miss, try a different approach (different element, different action, or note_finding "I expected X but couldn't find it").
   - Spending more than the per-goal budget on one goal. Call goal_status and move on — you can come back later if there's time.
 
-Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). BUDGET: $${config.max_cost_usd.toFixed(2)} total LLM cost and ${config.timeout_s}s wall-clock. There is NO turn count to race against — focus on doing each goal properly, not on speed. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns per goal prevents stuck goals from eating the run.`;
+Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). BUDGET: ${config.timeout_s}s wall-clock. There is NO turn count to race against — focus on doing each goal properly, not on speed. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns per goal prevents stuck goals from eating the run.`;
 
   // Phase 16: parallel branch — when config.parallel > 1, split the goals
   // into N contiguous slices and run N Explorer sessions in parallel. Each
@@ -406,8 +408,8 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
         goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description })),
         parallelN,
       );
-      const perSessionMaxCost = (config.max_cost_usd - totalCost) / parallelN;
-      const perSessionTimeout = config.timeout_s; // each session has full timeout
+      // Phase 17: cost budget removed. Each session gets the full timeout.
+      const perSessionTimeout = config.timeout_s;
 
       // Phase 16 robustness: use allSettled so one session crashing (e.g.
       // the SDK transport's "Query closed" race) doesn't kill the whole
@@ -429,7 +431,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
           // Each session sees ALL goals in its prompt (for context) but is
           // only responsible for verifying its subset.
           const subsetIds = subset.map((g) => g.id).join(', ');
-          const subsetPrompt = `Target: ${config.target.url}\n\nAll discovered goals (for context):\n${goalList}\n\nYOUR ASSIGNED GOALS this session: ${subsetIds}\nOther sessions are independently handling the other goals — focus on yours.\n\nFor each assigned goal, in order:\n  1. Find the relevant UI element.\n  2. Interact with it normally.\n  3. Observe what changed via the auto-observation.\n  4. Call mcp__iris__goal_status with the goal id, status, and one-line rationale.\n  5. If you find a bug, ALSO call mcp__iris__note_finding.\n\n${perGoalLine}\n\nBUDGET: $${perSessionMaxCost.toFixed(2)} cost and ${perSessionTimeout}s wall. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns.`;
+          const subsetPrompt = `Target: ${config.target.url}\n\nAll discovered goals (for context):\n${goalList}\n\nYOUR ASSIGNED GOALS this session: ${subsetIds}\nOther sessions are independently handling the other goals — focus on yours.\n\nFor each assigned goal, in order:\n  1. Find the relevant UI element.\n  2. Interact with it normally.\n  3. Observe what changed via the auto-observation.\n  4. Call mcp__iris__goal_status with the goal id, status, and one-line rationale.\n  5. If you find a bug, ALSO call mcp__iris__note_finding.\n\n${perGoalLine}\n\nBUDGET: ${perSessionTimeout}s wall. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns.`;
 
           const result = await runAgentSdkExplorer({
             adapter: sessionAdapter,
@@ -437,7 +439,6 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
             systemPrompt,
             initialUserPrompt: subsetPrompt,
             maxSteps: effectiveMaxSteps,
-            maxCostUsd: perSessionMaxCost,
             timeoutS: perSessionTimeout,
             model: config.explorer_model,
             maxExpansionGoals: 0, // disable expansion in parallel mode for now
@@ -552,7 +553,6 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
         systemPrompt,
         initialUserPrompt,
         maxSteps: effectiveMaxSteps,
-        maxCostUsd: config.max_cost_usd - totalCost,
         timeoutS: config.timeout_s,
         model: config.explorer_model,
         maxExpansionGoals: maxExpansion,

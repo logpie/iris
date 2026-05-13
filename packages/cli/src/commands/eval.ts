@@ -21,7 +21,7 @@ export function evalCommand(): Command {
     .option('--engine <engine>', 'dom | vision | hybrid (web-only)', 'hybrid')
     .option(
       '--max-steps <n>',
-      'hard cap on Explorer actions. Phase 12: defaults to 500 — effectively unbounded for normal runs. The real budgets are --max-cost-usd and --timeout; per-goal auto-cutover (1.5× steps-per-goal) prevents single-goal grinds. The cap exists only as a runaway safeguard.',
+      'hard cap on Explorer actions. Defaults to 500 — effectively unbounded for normal runs. The real budget is --timeout; per-goal auto-cutover (1.5× steps-per-goal) prevents single-goal grinds.',
       (s) => Number.parseInt(s, 10),
       500,
     )
@@ -69,12 +69,11 @@ export function evalCommand(): Command {
       1,
     )
     .option(
-      '--max-cost-usd <n>',
-      'abort when LLM cost exceeds this',
-      (s) => Number.parseFloat(s),
-      5,
+      '--timeout <s>',
+      'total wall-clock seconds. Phase 17: time is the only budget — cost was removed because it was hard to reason about (especially in parallel mode). In practice ~$0.04 per agent turn × turns-per-second × N parallel sessions ≈ cost, so cap time and you cap spend.',
+      (s) => Number.parseInt(s, 10),
+      900,
     )
-    .option('--timeout <s>', 'total wall-clock seconds', (s) => Number.parseInt(s, 10), 600)
     .option('--explorer-model <id>', 'model for Explorer agent', 'claude-sonnet-4-6')
     .option('--judge-model <id>', 'model for Judge agent', 'claude-opus-4-7')
     .option('--out <dir>', 'run output directory')
@@ -254,7 +253,6 @@ export function evalCommand(): Command {
             max_steps: opts.maxSteps as number,
             steps_per_goal: opts.stepsPerGoal as number,
             free_exploration_steps: opts.freeExplorationSteps as number,
-            max_cost_usd: opts.maxCostUsd as number,
             timeout_s: opts.timeout as number,
             ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
             explorer_model: opts.explorerModel as string,
@@ -293,7 +291,6 @@ export function evalCommand(): Command {
           max_steps: opts.maxSteps as number,
           steps_per_goal: opts.stepsPerGoal as number,
           free_exploration_steps: opts.freeExplorationSteps as number,
-          max_cost_usd: opts.maxCostUsd as number,
           timeout_s: opts.timeout as number,
           ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
           explorer_model: opts.explorerModel as string,
