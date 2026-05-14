@@ -191,6 +191,12 @@ export interface TargetAdapter {
   // post-Judge goal-claim validation. Adapters without a contract skip
   // validation (legacy behavior).
   outcomeContract?(): OutcomeContract;
+
+  // Phase 18: optional. Adapters that support session state export (e.g.
+  // Playwright's storageState — cookies + localStorage) implement this so
+  // an authenticated bootstrap session can hand its state to parallel
+  // productive sessions, skipping auth duplication.
+  exportStorageState?(outPath: string): Promise<void>;
 }
 
 export * from './conformance.js';

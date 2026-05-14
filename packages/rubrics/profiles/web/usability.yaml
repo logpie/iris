@@ -10,9 +10,9 @@ dimensions:
       Can a new user tell what the product does and what to do next on each
       screen? Are labels, headers, and CTAs unambiguous?
     scoring_anchors:
-      0: "Confusing — unclear what the product is or what to do next."
-      3: "Mostly clear, with several rough spots."
-      5: "Immediately clear; copy and structure carry the user."
+      0: "A new user cannot tell what the product does or which visible action to take next on primary screens."
+      5: "The product purpose is understandable, but some visited screens have ambiguous labels, competing CTAs, or jargon that forces guessing."
+      10: "The product purpose and next action are obvious on each visited screen; labels and structure match user vocabulary."
     evidence_required: at_least_one_observation_id
     common_signals:
       positive:

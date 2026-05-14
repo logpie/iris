@@ -186,4 +186,26 @@ describe('Judge', () => {
     expect(lines[0]).toContain('run_start');
     expect(lines[1]).toContain('click');
   });
+
+  it('buildTraceDigest includes goal_status evidence ids', () => {
+    const events: TraceEvent[] = [
+      {
+        v: 1,
+        id: 'GSTAT',
+        ts: 1,
+        step: 1,
+        target_kind: 'web',
+        kind: 'goal_status',
+        actor: 'explorer',
+        payload: {
+          id: 'G1',
+          status: 'verified',
+          rationale: 'todo row appeared',
+          evidence_event_ids: ['OBS1'],
+        },
+      },
+    ];
+    const digest = buildTraceDigest(events);
+    expect(digest).toContain('evidence=[OBS1]');
+  });
 });

@@ -40,7 +40,7 @@ preflight → discovery → Explorer → Judge → validators → report
 3. Take one screenshot.
 4. Send screenshot + observation summary + URL to a single LLM call with a discovery prompt:
 
-   > You are a curious new user. Given this screenshot and page text, describe what this product is (1-2 sentences) and propose 6-12 testable goals a normal user would try on their first visit. Order them by user-likelihood: most common actions first.
+   > You are a curious new user. Given this screenshot and page text, first inventory every visible surface a user could act on, dismiss, navigate to, or consume. Then describe what this product is (1-2 sentences) and propose one user-observable outcome goal for each distinct visible surface or tightly-coupled surface group. Do not aim for a target number of goals; the goal list follows the surface inventory. Order primary outcomes first, then secondary surfaces.
 
 5. Parse goals (same shape as the existing `InterpretedSpec`). Treat as the seed spec.
 6. Emit a `discovery` trace event with the product description + seed goals.

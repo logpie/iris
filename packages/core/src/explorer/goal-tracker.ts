@@ -18,6 +18,8 @@ export interface CurrentPhase {
   id: string;
   description: string;
   turnsLeft: number;
+  turnsSpent?: number;
+  cutoverTurns?: number;
 }
 
 export interface AutoCutover {
@@ -61,6 +63,8 @@ export class GoalTracker {
         id: entry.id,
         description: entry.description,
         turnsLeft: Math.max(0, this.cfg.stepsPerGoal - this.turnsOnCurrent),
+        turnsSpent: this.turnsOnCurrent,
+        cutoverTurns: Math.ceil(this.cfg.stepsPerGoal * 1.5),
       };
     }
     if (this.freeTurnsLeft > 0) {

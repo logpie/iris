@@ -9,3 +9,5 @@ coverage/
 iris-runs/
 .superpowers/
 *.tsbuildinfo
+.claude/scheduled_tasks.lock
+.agents/

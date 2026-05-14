@@ -8,24 +8,27 @@ dimensions:
     weight: 1.0
     description: How many distinct surfaces (pages/sections) were explored?
     scoring_anchors:
-      0: "Only one surface explored."
-      5: "Most prominent surfaces explored."
-      10: "All advertised surfaces explored."
+      0: "Primary surfaces unexplored; surface inventory missing or limited to one incidental surface."
+      5: "Primary surface inventory partially attempted; visible secondary surfaces unexplored."
+      10: "All visible primary surfaces attempted at least once; user-relevant secondary surfaces attempted or recorded as unexplored with reasons."
   - id: depth
     weight: 1.0
     description: Were primary flows exercised end-to-end?
     scoring_anchors:
-      0: "Only homepage touched."
-      10: "Multi-step flows exercised through completion."
+      0: "No primary flow attempted beyond landing or passive observation."
+      5: "Primary flows started, but completion or visible outcome evidence is missing for some."
+      10: "Multi-step primary flows exercised through visible completion."
   - id: weirdness_attempted
     weight: 0.5
     description: Were edge cases (empty submit, weird input, keyboard nav, mobile viewport) attempted?
     scoring_anchors:
       0: "No edge cases attempted."
-      10: "All applicable weirdness heuristics exercised."
+      5: "Some applicable edge checks attempted on one primary surface, but other distinct primary surfaces were not checked."
+      10: "Applicable edge checks exercised for each distinct primary surface whose behavior could differ."
   - id: persona_balance
     weight: 0.5
     description: Was the exploration limited to one persona, or did multiple perspectives apply?
     scoring_anchors:
       0: "Single persona; obvious blind spots."
+      5: "Primary persona covered, with limited evidence from a second perspective."
       10: "Multiple personas applied (note: P4 feature; P3 default 0)."

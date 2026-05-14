@@ -12,12 +12,12 @@ dimensions:
     weight: 1.0
     description: |
       Is the product's primary action visible/findable without trial-and-error?
-      Scored against trace: did the Explorer find and exercise the primary
-      feature within the first 5 turns?
+      Scored against trace: can a new user identify and exercise the primary
+      feature from visible UI signals rather than hidden or guessed paths?
     scoring_anchors:
-      0: "Explorer wandered for 10+ turns before finding the primary feature."
-      5: "Primary feature found within 5-10 turns; required multiple guesses."
-      10: "Primary feature obvious from initial observation; exercised on turn 1-2."
+      0: "Primary action required following non-obvious labels, hidden navigation, or repeated failed attempts before the user could find it."
+      5: "Primary action was findable after a few visible-surface navigations or guesses, but not obvious from the first view."
+      10: "Primary action discoverable on first observation without exploration and exercisable from an obvious affordance."
 
   - id: console_clean
     weight: 1.0

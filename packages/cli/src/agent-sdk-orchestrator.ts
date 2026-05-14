@@ -6,7 +6,7 @@ import {
   readdirSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { TargetAdapter } from '@iris/adapter-types';
 import {
   type Mode,
@@ -20,7 +20,11 @@ import {
 } from '@iris/core';
 import type { RubricProfile } from '@iris/rubrics';
 import { ulid } from 'ulid';
-import { runAgentSdkExplorer, runAgentSdkSingleShot } from './agent-sdk-runner.js';
+import {
+  type SingleShotResult,
+  runAgentSdkExplorer,
+  runAgentSdkSingleShot,
+} from './agent-sdk-runner.js';
 
 /**
  * SDK-driven orchestrator. Runs the full iris pipeline (spec interp + Explorer + Judge + Report)
@@ -35,6 +39,7 @@ export interface AgentSdkRunConfig {
   out_dir: string;
   spec_text?: string;
   spec_path?: string;
+  initial_tasks?: Array<{ description: string; priority?: string }>;
   rubric_profiles: RubricProfile[];
   max_steps: number;
   /** Phase 17: cost budget removed; field kept optional for backwards-compat
@@ -72,6 +77,12 @@ export interface AgentSdkRunConfig {
    * Requires createAdapter parameter on runIrisViaSdk. Speedup is roughly N×
    * minus per-session auth overhead. */
   parallel?: number;
+  /** Phase 18: when parallel>1 and the app has auth, run ONE bootstrap
+   * Explorer session focused only on signing up/in, export Playwright
+   * storageState, then launch N productive sessions hydrated with that
+   * state. Prevents per-session auth duplication, email-collision retry
+   * thrash, and the email-verification gate blocking late sessions. */
+  share_auth?: boolean;
 }
 
 export interface AgentSdkRunResult {
@@ -83,15 +94,228 @@ export interface AgentSdkRunResult {
   exit_code: 0 | 1 | 2 | 3 | 4;
 }
 
+/** Phase 18: adapter factory may take an optional storage_state_path to
+ * hydrate the BrowserContext with cookies + localStorage from a previous
+ * authenticated session. Used by --share-auth to skip per-session auth. */
+export type AdapterFactory = (opts?: { storage_state_path?: string }) => TargetAdapter;
+
+type JudgeResponseForDiagnostics = Pick<
+  SingleShotResult,
+  'text' | 'partial' | 'partial_error' | 'hit_output_cap'
+>;
+
+export class JudgeResponseParseError extends Error {
+  readonly label: string;
+  readonly parseError: unknown;
+  readonly response: JudgeResponseForDiagnostics;
+
+  constructor(label: string, parseError: unknown, response: JudgeResponseForDiagnostics) {
+    super(`${label} parse failed: ${errorMessage(parseError)}`);
+    this.name = 'JudgeResponseParseError';
+    this.label = label;
+    this.parseError = parseError;
+    this.response = response;
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export function extractJsonObjectCandidate(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+
+  return text.slice(start).replace(/```(?:json)?\s*$/i, '').trim();
+}
+
+function repairTruncatedJsonCandidate(candidate: string): string {
+  let repaired = candidate.trim().replace(/```(?:json)?\s*$/i, '').trim();
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (const ch of repaired) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      stack.push('}');
+    } else if (ch === '[') {
+      stack.push(']');
+    } else if (ch === '}' || ch === ']') {
+      const expected = stack[stack.length - 1];
+      if (expected === ch) stack.pop();
+    }
+  }
+
+  if (escaped) repaired = repaired.slice(0, -1);
+  if (inString) repaired += '"';
+  while (stack.length > 0) {
+    repaired = repaired.replace(/,\s*$/, '');
+    repaired += stack.pop();
+  }
+  return repaired;
+}
+
+function parseJsonCandidateWithSalvage(candidate: string): unknown {
+  try {
+    return JSON.parse(candidate);
+  } catch (firstErr) {
+    const repaired = repairTruncatedJsonCandidate(candidate);
+    if (repaired !== candidate) {
+      try {
+        return JSON.parse(repaired);
+      } catch {
+        // Preserve the original parser error; it points at the real failure.
+      }
+    }
+    throw firstErr;
+  }
+}
+
+function parseJudgeOutputFromResponse(
+  response: JudgeResponseForDiagnostics,
+  label: string,
+): judgeMod.JudgeOutput {
+  try {
+    const jsonCandidate = extractJsonObjectCandidate(response.text);
+    if (!jsonCandidate) throw new Error(`${label} returned no JSON`);
+    const parsed = parseJsonCandidateWithSalvage(jsonCandidate);
+    return judgeMod.JudgeOutputSchema.parse(parsed);
+  } catch (err) {
+    throw new JudgeResponseParseError(label, err, response);
+  }
+}
+
+const TRUNCATION_ERROR_PATTERNS = [
+  /Expected ',' or '\}'/i,
+  /Unexpected end of JSON input/i,
+  /unterminated string/i,
+  /after property value in JSON/i,
+  /max[_ -]?output[_ -]?tokens/i,
+  /output cap/i,
+];
+
+export function isTruncationShapedJudgeError(
+  err: unknown,
+  response?: JudgeResponseForDiagnostics,
+): boolean {
+  if (response?.partial || response?.hit_output_cap) return true;
+  const msg = errorMessage(err);
+  if (TRUNCATION_ERROR_PATTERNS.some((pattern) => pattern.test(msg))) return true;
+
+  const candidate = response?.text ? extractJsonObjectCandidate(response.text) : null;
+  if (!candidate) return false;
+  const trimmed = candidate.trim();
+  return trimmed.startsWith('{') && !trimmed.endsWith('}');
+}
+
+function errorTextExcerpt(text: string): string {
+  const max = 100_000;
+  if (text.length <= max) return text;
+  const half = Math.floor(max / 2);
+  return `${text.slice(0, half)}\n\n[... omitted ${text.length - max} chars ...]\n\n${text.slice(-half)}`;
+}
+
+export function formatJudgeErrorForFile(err: unknown): string {
+  const parseErr = err instanceof JudgeResponseParseError ? err : undefined;
+  const label = parseErr?.label ?? 'Judge';
+  const rootErr = parseErr?.parseError ?? err;
+  const response = parseErr?.response;
+  const rootMessage = errorMessage(rootErr);
+  const likelyTruncated = isTruncationShapedJudgeError(rootErr, response);
+  const lines: string[] = [];
+
+  if (likelyTruncated && response) {
+    lines.push(
+      `${label} output was truncated at ${response.text.length} chars - likely hit model output cap.`,
+    );
+    lines.push(`Original error: ${rootMessage}`);
+    lines.push(
+      'Recovery: shorten the Judge prompt/trace digest or rerun Judge from the saved trace. SingleShotInput.maxTokens is currently not forwarded because the Agent SDK exposes taskBudget.total, not an output-only cap.',
+    );
+  } else {
+    lines.push(`${label} failed: ${rootMessage}`);
+  }
+
+  if (response?.hit_output_cap) lines.push('SDK signal: max_output_tokens.');
+  if (response?.partial_error) lines.push(`SDK partial error: ${response.partial_error}`);
+  if (response?.text) {
+    const descriptor = response.partial ? 'partial Judge output' : 'Judge output';
+    lines.push('', `--- ${descriptor} (${response.text.length} chars) ---`, errorTextExcerpt(response.text));
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
 export async function runIrisViaSdk(
   config: AgentSdkRunConfig,
-  adapterOrFactory: TargetAdapter | (() => TargetAdapter),
+  adapterOrFactory: TargetAdapter | AdapterFactory,
 ): Promise<AgentSdkRunResult> {
   // Phase 16: accept either a single adapter (legacy) or a factory. Parallel
   // mode (config.parallel > 1) requires the factory form so per-session
   // adapters can be created.
-  const createAdapter: () => TargetAdapter =
+  const createAdapter: AdapterFactory =
     typeof adapterOrFactory === 'function' ? adapterOrFactory : () => adapterOrFactory;
+
+  // Phase 18.1: The Agent SDK transport has a known race where the spawned
+  // `claude` subprocess fires an "exit"/"error" event after the awaited
+  // query promise has already settled. The cleanup path inside the SDK
+  // rejects an INTERNAL promise nobody is awaiting, which surfaces as an
+  // unhandledRejection. Under Node 25's default policy that crashes the
+  // orchestrator AFTER Explorer succeeded — losing the merged trace + Judge
+  // + report. Catch and log; the awaited code paths handle real failures
+  // through normal rejection.
+  const sdkNoiseHandler = (reason: unknown) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    if (
+      /Query closed before response received|Claude Code process|ProcessTransport/i.test(msg)
+    ) {
+      process.stderr.write(`iris: swallowed SDK cleanup noise: ${msg.slice(0, 200)}\n`);
+      return;
+    }
+    // Non-SDK rejections: re-throw on next tick so Node logs them normally.
+    process.stderr.write(`iris: unhandledRejection (non-SDK): ${msg.slice(0, 200)}\n`);
+  };
+  process.on('unhandledRejection', sdkNoiseHandler);
+
   const adapter = createAdapter();
   const startedAt = new Date();
   const startMs = Date.now();
@@ -137,6 +361,22 @@ export async function runIrisViaSdk(
         process.stderr.write(`iris: spec interpreter parse failed: ${(err as Error).message}\n`);
       }
     }
+  }
+
+  if (!interpreted && config.initial_tasks && config.initial_tasks.length > 0) {
+    interpreted = {
+      v: 1,
+      target_kind_hint: 'web',
+      goals: config.initial_tasks.map((task, i) => ({
+        id: `G${i + 1}`,
+        description: task.description,
+        priority: task.priority === 'should' ? 'should' : 'must',
+      })),
+      focus_areas: [],
+      hints: [],
+      out_of_scope: [],
+    };
+    process.stderr.write(`iris: targeted run — ${interpreted.goals.length} initial tasks\n`);
   }
 
   // 4. Adapter.start
@@ -216,6 +456,7 @@ export async function runIrisViaSdk(
           reportMod.buildReportHtml(blockedReport, { runDir: config.out_dir }),
         );
       }
+      process.off('unhandledRejection', sdkNoiseHandler);
       return {
         report: blockedReport,
         out_dir: config.out_dir,
@@ -361,22 +602,22 @@ export async function runIrisViaSdk(
   const goalList = hasGoals ? goals.map((g, i) => `  G${i + 1}. ${g.description}`).join('\n') : '';
   const perGoalLine =
     stepsPerGoal && stepsPerGoal > 0
-      ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on.`
+      ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. For verified goals, include evidence_event_ids with the post-action observation/screenshot/vision_describe event id that shows the outcome. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on.`
       : '';
 
   const initialUserPrompt = `Target: ${config.target.url}
 
-${hasGoals ? `What this app is supposed to do (from the spec):\n${goalList}\n\nYour job: USE THIS APP. Verify each spec goal by performing it as a normal user would.\n\nFor each goal, in order:\n  1. Find the relevant UI element (input, button, link).\n  2. Interact with it normally — type text, click, submit. Don't just look.\n  3. Observe what changed.\n  4. Call \`mcp__iris__goal_status\` with the goal id (G1, G2, …), status (verified / partial / blocked / skipped), and a one-line rationale.\n  5. If you find a bug, ALSO call \`mcp__iris__note_finding\` with category="bug".\n\n${perGoalLine}\n` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons. Don't just look at the page.\n`}
+${hasGoals ? `What this app is supposed to do (from the spec):\n${goalList}\n\nYour job: USE THIS APP. Verify each spec goal by performing it as a normal user would.\n\nFor each goal, in order:\n  1. Find the relevant UI element (input, button, link).\n  2. Interact with it normally — type text, click, submit. Don't just look.\n  3. Observe what changed.\n  4. Call \`mcp__iris__goal_status\` with the goal id (G1, G2, …), status (verified / partial / blocked / skipped), a one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome.\n  5. If you find a bug, ALSO call \`mcp__iris__note_finding\` with category="bug".\n\n${perGoalLine}\n` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons. Don't just look at the page.\n`}
 PRIORITY ORDER:
   1. HAPPY PATHS FIRST. Make the primary features work before anything else. If the app is a TODO list, your first action is to add a todo. If it's a sign-in form, your first action is to fill it in and submit.
   2. AFTER happy paths complete, run \`mcp__iris__axe\` and \`mcp__iris__console_errors_since\` once to catch passive issues.
   3. THEN try edge cases: empty submits, very long inputs, special characters, the destructive action.
 
 AVOID:
-  - Reading the page for 2+ turns before acting. ONE observe, then act.
+  - Reading the page after the primary affordance or surface inventory is understood. Continue observing only when a new modal, panel, dense nav, or content area appears that materially changes what's actionable.
   - Calling probes before any user interaction. Probes are useful AFTER you've exercised the flows, not before.
   - Defaulting to screenshot when DOM observation already shows what you need.
-  - Trying many alternate selectors when the first failed. After one selector miss, try a different approach (different element, different action, or note_finding "I expected X but couldn't find it").
+  - Treating a selector miss as product evidence. A selector miss is automation evidence; try an alternative user path (different visible element, keyboard alternative, or vision-driven action). Only file note_finding when the user-visible behavior is confirmed inaccessible across multiple paths.
   - Spending more than the per-goal budget on one goal. Call goal_status and move on — you can come back later if there's time.
 
 Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). BUDGET: ${config.timeout_s}s wall-clock. There is NO turn count to race against — focus on doing each goal properly, not on speed. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns per goal prevents stuck goals from eating the run.`;
@@ -411,6 +652,92 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       // Phase 17: cost budget removed. Each session gets the full timeout.
       const perSessionTimeout = config.timeout_s;
 
+      // Phase 18: optional auth-bootstrap. Run ONE session focused only on
+      // sign-up/sign-in, export Playwright storageState, then start the N
+      // productive sessions hydrated with that state. Avoids per-session
+      // auth duplication (each session creating colliding accounts, hitting
+      // email-verification gates, etc.).
+      let sharedStatePath: string | undefined;
+      if (config.share_auth) {
+        const bootDir = join(config.out_dir, 'auth-bootstrap');
+        mkdirSync(bootDir, { recursive: true });
+        const bootAdapter = createAdapter();
+        if (typeof bootAdapter.exportStorageState !== 'function') {
+          process.stderr.write(
+            'iris: share_auth=true but adapter does not support exportStorageState; skipping bootstrap\n',
+          );
+        } else {
+          process.stderr.write('iris: auth bootstrap — running focused sign-up/in session...\n');
+          await bootAdapter.start({
+            kind: 'web',
+            target: config.target.url,
+            out_dir: bootDir,
+          });
+          const bootTracePath = join(bootDir, 'trace.jsonl');
+          const bootTrace = new iristrace.TraceWriter(bootTracePath);
+          const bootPrompt = `Target: ${config.target.url}\n\nYOUR ONLY MISSION: get this browser session authenticated. Sign up or sign in. Use a UNIQUE email (include a random suffix). If the app has NO auth, stop immediately and call mcp__iris__goal_status with id=auth status=verified rationale="no auth required". \n\nWhen authenticated (you can see the post-login UI), call mcp__iris__goal_status with id=auth status=verified and STOP. Do NOT explore features. Do NOT verify other goals. Just auth and exit.\n\nIMPORTANT: if the app gates registration behind email verification you cannot satisfy, call mcp__iris__goal_status with id=auth status=blocked and STOP. Other sessions will proceed without auth.\n\nBUDGET: 180s wall. Maximum 25 turns.`;
+          try {
+            await runAgentSdkExplorer({
+              adapter: bootAdapter,
+              traceWriter: bootTrace,
+              systemPrompt,
+              initialUserPrompt: bootPrompt,
+              maxSteps: 25,
+              timeoutS: 180,
+              model: config.explorer_model,
+              maxExpansionGoals: 0,
+              goals: [{ id: 'auth', description: 'Authenticate (sign up or sign in)' }],
+            });
+          } catch (err) {
+            process.stderr.write(
+              `iris: auth bootstrap raised: ${err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200)} — continuing\n`,
+            );
+          }
+          await bootTrace.close();
+          const stateFile = join(bootDir, 'storage-state.json');
+          try {
+            await bootAdapter.exportStorageState(stateFile);
+            // Phase 18.1: only hydrate downstream sessions if the bootstrap
+            // actually captured reusable auth state. Empty cookies+origins
+            // means the bootstrap couldn't auth (email verification gate,
+            // captcha, OAuth redirect failure, or an app that just has no
+            // auth at all) — fall back to per-session auth in that case.
+            // This is a generic "did we get usable state" check, not a
+            // failure-mode-specific heuristic.
+            if (existsSync(stateFile)) {
+              try {
+                const s = JSON.parse(readFileSync(stateFile, 'utf8')) as {
+                  cookies?: unknown[];
+                  origins?: Array<{ localStorage?: unknown[] }>;
+                };
+                const cookieCount = s.cookies?.length ?? 0;
+                const lsCount =
+                  s.origins?.reduce((n, o) => n + (o.localStorage?.length ?? 0), 0) ?? 0;
+                if (cookieCount > 0 || lsCount > 0) {
+                  sharedStatePath = stateFile;
+                  process.stderr.write(
+                    `iris: auth bootstrap succeeded — ${cookieCount} cookies, ${lsCount} localStorage entries; sessions will hydrate\n`,
+                  );
+                } else {
+                  process.stderr.write(
+                    'iris: auth bootstrap produced empty storageState (likely email-verification, captcha, or no-auth app) — sessions will auth individually\n',
+                  );
+                }
+              } catch (parseErr) {
+                process.stderr.write(
+                  `iris: storageState parse failed: ${parseErr instanceof Error ? parseErr.message : String(parseErr)} — sessions will auth individually\n`,
+                );
+              }
+            }
+          } catch (err) {
+            process.stderr.write(
+              `iris: storageState export failed: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+          await bootAdapter.stop();
+        }
+      }
+
       // Phase 16 robustness: use allSettled so one session crashing (e.g.
       // the SDK transport's "Query closed" race) doesn't kill the whole
       // orchestrator. The surviving sessions' trace + Judge can still
@@ -419,61 +746,111 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
         goalGroups.map(async (subset, idx) => {
           const sessionDir = join(config.out_dir, `session-${idx}`);
           mkdirSync(sessionDir, { recursive: true });
-          const sessionAdapter = createAdapter();
-          await sessionAdapter.start({
-            kind: 'web',
-            target: config.target.url,
-            out_dir: sessionDir,
-          });
+          const sessionAdapter = sharedStatePath
+            ? createAdapter({ storage_state_path: sharedStatePath })
+            : createAdapter();
           const sessionTracePath = join(sessionDir, 'trace.jsonl');
           const sessionTrace = new iristrace.TraceWriter(sessionTracePath);
-
-          // Each session sees ALL goals in its prompt (for context) but is
-          // only responsible for verifying its subset.
-          const subsetIds = subset.map((g) => g.id).join(', ');
-          const subsetPrompt = `Target: ${config.target.url}\n\nAll discovered goals (for context):\n${goalList}\n\nYOUR ASSIGNED GOALS this session: ${subsetIds}\nOther sessions are independently handling the other goals — focus on yours.\n\nFor each assigned goal, in order:\n  1. Find the relevant UI element.\n  2. Interact with it normally.\n  3. Observe what changed via the auto-observation.\n  4. Call mcp__iris__goal_status with the goal id, status, and one-line rationale.\n  5. If you find a bug, ALSO call mcp__iris__note_finding.\n\n${perGoalLine}\n\nBUDGET: ${perSessionTimeout}s wall. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns.`;
-
-          const result = await runAgentSdkExplorer({
-            adapter: sessionAdapter,
-            traceWriter: sessionTrace,
-            systemPrompt,
-            initialUserPrompt: subsetPrompt,
-            maxSteps: effectiveMaxSteps,
-            timeoutS: perSessionTimeout,
-            model: config.explorer_model,
-            maxExpansionGoals: 0, // disable expansion in parallel mode for now
-            ...(stepsPerGoal && stepsPerGoal > 0 ? { stepsPerGoal } : {}),
-            goals: subset,
-          });
-
-          // Auto-axe + console for this session
-          const sessionEvents = await iristrace.readTraceArray(sessionTracePath);
-          const ranAxe = sessionEvents.some(
-            (e) => e.kind === 'probe_result' && (e.payload as { probe?: string })?.probe === 'axe',
-          );
-          if (!ranAxe) {
-            const axeResult = await sessionAdapter.runProbe('axe', {}).catch((err) => ({
-              ok: false as const,
-              probe: 'axe',
-              error: err instanceof Error ? err.message : String(err),
-            }));
-            await sessionTrace.append({
-              v: 1,
-              id: ulid(),
-              ts: Date.now() / 1000,
-              step: 0,
-              target_kind: 'web',
-              kind: 'probe_result',
-              actor: 'system',
-              payload: axeResult.ok
-                ? { probe: 'axe', summary: axeResult.summary, data: axeResult.data, ok: true }
-                : { probe: 'axe', error: axeResult.error, ok: false },
+          try {
+            await sessionAdapter.start({
+              kind: 'web',
+              target: config.target.url,
+              out_dir: sessionDir,
             });
-          }
 
-          await sessionTrace.close();
-          await sessionAdapter.stop();
-          return { idx, result, tracePath: sessionTracePath };
+            // Each session sees ALL goals in its prompt (for context) but is
+            // only responsible for verifying its subset.
+            const subsetIds = subset.map((g) => g.id).join(', ');
+            const subsetPrompt = `Target: ${config.target.url}\n\nAll discovered goals (for context):\n${goalList}\n\nYOUR ASSIGNED GOALS this session: ${subsetIds}\nOther sessions are independently handling the other goals — focus on yours.\n\nFor each assigned goal, in order:\n  1. Find the relevant UI element.\n  2. Interact with it normally.\n  3. Observe what changed via the auto-observation.\n  4. Call mcp__iris__goal_status with the goal id, status, one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome.\n  5. If you find a bug, ALSO call mcp__iris__note_finding.\n\n${perGoalLine}\n\nBUDGET: ${perSessionTimeout}s wall. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns.`;
+            const perSessionMaxSteps = Math.max(
+              30,
+              Math.ceil(subset.length * (stepsPerGoal ?? 10) * 1.5) +
+                (config.free_exploration_steps ?? 8),
+            );
+
+            const result = await runAgentSdkExplorer({
+              adapter: sessionAdapter,
+              traceWriter: sessionTrace,
+              systemPrompt,
+              initialUserPrompt: subsetPrompt,
+              maxSteps: perSessionMaxSteps,
+              timeoutS: perSessionTimeout,
+              model: config.explorer_model,
+              maxExpansionGoals: 0, // disable expansion in parallel mode for now
+              ...(stepsPerGoal && stepsPerGoal > 0 ? { stepsPerGoal } : {}),
+              goals: subset,
+            });
+
+            // Auto-axe + console for this session
+            const sessionEvents = await iristrace.readTraceArray(sessionTracePath);
+            const ranAxe = sessionEvents.some(
+              (e) =>
+                e.kind === 'probe_result' && (e.payload as { probe?: string })?.probe === 'axe',
+            );
+            if (!ranAxe) {
+              const axeResult = await sessionAdapter.runProbe('axe', {}).catch((err) => ({
+                ok: false as const,
+                probe: 'axe',
+                error: err instanceof Error ? err.message : String(err),
+              }));
+              await sessionTrace.append({
+                v: 1,
+                id: ulid(),
+                ts: Date.now() / 1000,
+                step: 0,
+                target_kind: 'web',
+                kind: 'probe_result',
+                actor: 'system',
+                payload: axeResult.ok
+                  ? { probe: 'axe', summary: axeResult.summary, data: axeResult.data, ok: true }
+                  : { probe: 'axe', error: axeResult.error, ok: false },
+              });
+            }
+            const ranConsole = sessionEvents.some(
+              (e) =>
+                e.kind === 'probe_result' &&
+                (e.payload as { probe?: string })?.probe === 'console_errors_since',
+            );
+            if (!ranConsole) {
+              const cResult = await sessionAdapter
+                .runProbe('console_errors_since', {})
+                .catch((err) => ({
+                  ok: false as const,
+                  probe: 'console_errors_since',
+                  error: err instanceof Error ? err.message : String(err),
+                }));
+              await sessionTrace.append({
+                v: 1,
+                id: ulid(),
+                ts: Date.now() / 1000,
+                step: 0,
+                target_kind: 'web',
+                kind: 'probe_result',
+                actor: 'system',
+                payload: cResult.ok
+                  ? {
+                      probe: 'console_errors_since',
+                      summary: cResult.summary,
+                      data: cResult.data,
+                      ok: true,
+                    }
+                  : { probe: 'console_errors_since', error: cResult.error, ok: false },
+              });
+            }
+
+            return { idx, result, tracePath: sessionTracePath };
+          } finally {
+            try {
+              await sessionTrace.close();
+            } catch {
+              // Preserve the original session outcome.
+            }
+            try {
+              await sessionAdapter.stop();
+            } catch {
+              // Preserve the original session outcome.
+            }
+          }
         }),
       );
 
@@ -677,11 +1054,8 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
         }),
       ]);
       totalCost += r1.cost_usd + r2.cost_usd;
-      const m1 = r1.text.match(/\{[\s\S]*\}/);
-      const m2 = r2.text.match(/\{[\s\S]*\}/);
-      if (!m1 || !m2) throw new Error('Judge ensemble: one or both passes returned no JSON');
-      const p1 = judgeMod.JudgeOutputSchema.parse(JSON.parse(m1[0]));
-      const p2 = judgeMod.JudgeOutputSchema.parse(JSON.parse(m2[0]));
+      const p1 = parseJudgeOutputFromResponse(r1, 'Judge ensemble pass 1');
+      const p2 = parseJudgeOutputFromResponse(r2, 'Judge ensemble pass 2');
       const merged = judgeMod.mergeJudgePasses(p1, p2, events);
       judgeOutput = merged.output;
       process.stderr.write(
@@ -696,9 +1070,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       });
       totalCost += judgeResp.cost_usd;
       process.stderr.write(`iris: Judge done — $${judgeResp.cost_usd.toFixed(2)}\n`);
-      const jsonMatch = judgeResp.text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('Judge returned no JSON');
-      judgeOutput = judgeMod.JudgeOutputSchema.parse(JSON.parse(jsonMatch[0]));
+      judgeOutput = parseJudgeOutputFromResponse(judgeResp, 'Judge');
     }
 
     // Phase 5 G3: validate findings against the trace.
@@ -745,8 +1117,9 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
   } catch (err) {
     writeFileSync(
       join(config.out_dir, 'judge-error.txt'),
-      err instanceof Error ? err.message : String(err),
+      formatJudgeErrorForFile(err),
     );
+    process.off('unhandledRejection', sdkNoiseHandler);
     return {
       report: emptyReport(
         config,
@@ -846,6 +1219,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
     exitCode = 1;
   }
 
+  process.off('unhandledRejection', sdkNoiseHandler);
   return {
     report,
     out_dir: config.out_dir,
@@ -915,12 +1289,14 @@ export function mergeTraceFiles(inputPaths: string[], outputPath: string): void 
   const all: Array<{ ts: number; line: string }> = [];
   for (const p of inputPaths) {
     if (!existsSync(p)) continue;
+    const session_id = sessionIdForTracePath(p, outputPath);
     const text = readFileSync(p, 'utf8');
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
       try {
-        const e = JSON.parse(line) as { ts?: number };
-        all.push({ ts: e.ts ?? 0, line });
+        const e = JSON.parse(line) as { ts?: number; payload?: Record<string, unknown> };
+        e.payload = { ...(e.payload ?? {}), session_id };
+        all.push({ ts: e.ts ?? 0, line: JSON.stringify(e) });
       } catch {
         // Skip malformed lines (shouldn't happen).
       }
@@ -928,4 +1304,11 @@ export function mergeTraceFiles(inputPaths: string[], outputPath: string): void 
   }
   all.sort((a, b) => a.ts - b.ts);
   writeFileSync(outputPath, `${all.map((e) => e.line).join('\n')}\n`);
+}
+
+function sessionIdForTracePath(path: string, outputPath: string): string {
+  if (path === outputPath) return 'main';
+  const parent = basename(dirname(path));
+  if (/^session-\d+$/.test(parent) || parent === 'auth-bootstrap') return parent;
+  return parent || 'main';
 }

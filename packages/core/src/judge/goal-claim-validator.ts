@@ -140,12 +140,13 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
 }
 
 // Slice trace events into per-goal windows. A goal's window starts at the
-// first event after the previous goal's goal_status (or trace start), and
-// ends at this goal's goal_status event (inclusive).
+// first event after the previous goal's goal_status in the same session (or
+// session trace start), and ends at this goal's goal_status event (inclusive).
 //
-// This is approximate — the Explorer doesn't tag every event with goal_id —
-// but it captures the natural "what was the agent doing before it claimed
-// this goal done" window, which is what we want to validate against.
+// This is approximate — the Explorer doesn't tag every event with goal_id.
+// Parallel Agent SDK runs do tag merged events with payload.session_id; using
+// that keeps unrelated sessions' goal_status events from truncating each
+// other's outcome windows.
 export function sliceGoalWindows(
   trace: TraceEvent[],
   goals: JudgeOutput['spec_compliance']['goals'],
@@ -153,20 +154,24 @@ export function sliceGoalWindows(
   const out = new Map<string, OutcomeContractTraceEvent[]>();
   // Build an ordered list of goal_status events keyed by goal id.
   const goalIdSet = new Set(goals.map((g) => g.id));
-  const goalStatusIdx: Array<{ idx: number; id: string }> = [];
+  const goalStatusIdx: Array<{ idx: number; id: string; session_id: string }> = [];
   for (let i = 0; i < trace.length; i++) {
     const e = trace[i];
     if (!e || e.kind !== 'goal_status') continue;
     const p = (e.payload ?? {}) as Record<string, unknown>;
     const gid = String(p.id ?? '');
     if (!gid || !goalIdSet.has(gid)) continue;
-    goalStatusIdx.push({ idx: i, id: gid });
+    goalStatusIdx.push({ idx: i, id: gid, session_id: sessionIdOf(e) });
   }
-  let lastEnd = -1;
-  for (const { idx, id } of goalStatusIdx) {
-    const window = trace.slice(lastEnd + 1, idx + 1).map(toContractEvent);
+  const lastEndBySession = new Map<string, number>();
+  for (const { idx, id, session_id } of goalStatusIdx) {
+    const lastEnd = lastEndBySession.get(session_id) ?? -1;
+    const window = trace
+      .slice(lastEnd + 1, idx + 1)
+      .filter((e) => sessionIdOf(e) === session_id)
+      .map(toContractEvent);
     out.set(id, window);
-    lastEnd = idx;
+    lastEndBySession.set(session_id, idx);
   }
   // Goals with no goal_status event in the trace get an empty window.
   for (const g of goals) {
@@ -177,6 +182,11 @@ export function sliceGoalWindows(
 
 function toContractEvent(e: TraceEvent): OutcomeContractTraceEvent {
   return { id: e.id, kind: e.kind, payload: e.payload };
+}
+
+function sessionIdOf(e: TraceEvent): string {
+  const p = (e.payload ?? {}) as Record<string, unknown>;
+  return typeof p.session_id === 'string' && p.session_id ? p.session_id : '__default__';
 }
 
 export function applyGoalClaimValidationToJudgeOutput(

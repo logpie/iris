@@ -180,3 +180,93 @@ These genuinely shape the plan; I don't want to guess wrong.
 6. **Anything in my "Iris is a toy" diagnosis you disagree with?** If the diagnosis is wrong the plan will be wrong.
 
 Once you answer these — even briefly — I'll write `docs/superpowers/specs/2026-05-10-iris-phase-5-design.md` with the scoped design, then the implementation plan after that.
+
+---
+
+# TodoMVC Realistic Demo Vendoring — Research
+
+**Date:** 2026-05-13
+**Status:** Scoped implementation note for vendoring a pinned real-product fixture.
+
+## What exists today
+
+- `fixtures/known-bugs/` contains small synthetic static fixtures. `scripts/bench.ts` discovers these fixtures directly from `fixtures/known-bugs/`.
+- `fixtures/broken-apps/` contains preflight failure fixtures. `scripts/bench.ts` also discovers these directly.
+- `packages/adapter-web/test-fixtures/` is a separate adapter capability fixture family and is not part of `scripts/bench.ts`.
+- `docs/dynamic-website-testing.md` recommends one vendored realistic demo served locally because live public demos drift.
+
+## Upstream TodoMVC state
+
+- Source repo: `https://github.com/tastejs/todomvc`.
+- Shell network is unavailable in this environment, so upstream metadata and files are read through the GitHub connector.
+- The current `master` ref resolves to commit `ff43b02e59dfa604386bb382034b2cd07c2bcd8a` (`Revise README for 2.0.0`, 2026-05-03 UTC).
+- The current `gh-pages` ref resolves to commit `983c8382ed28b6bbf1a3c6a49ba4d96400016103` (`V1.4.1`).
+- Current upstream no longer exposes `examples/vanillajs/` at those refs. The plain vanilla JS implementation is now present as `examples/javascript-es5/`, with `data-framework="javascript-es5"` and no app build step.
+
+## Constraints
+
+- The new fixture should live under `fixtures/realistic-demos/todomvc-vanilla/`.
+- `public/` must be self-contained for a static server rooted at `public/`.
+- Do not include TodoMVC CI, lint, package, or test files.
+- Preserve upstream behavior; only path changes should be made if required for static serving.
+- Keep `scripts/bench.ts` default discovery unchanged so the existing nightly bench cost does not increase.
+
+## Open questions resolved by implementation choice
+
+- Do not vendor current `master` commit `ff43b02e59dfa604386bb382034b2cd07c2bcd8a` for this fixture. Although it is the current branch head, `examples/vanillajs/` is gone there, and the closest no-build replacement (`examples/javascript-es5/`) uses in-memory storage rather than localStorage. That would conflict with the requested clean TodoMVC contract that includes persistence across reload.
+- Use `examples/vanillajs/` at commit `25a9e31eb32db752d959df18e4d214295a2875e8` (`Fix vanillajs cypress test run (#1902)`, 2018-07-02 UTC), which is the latest upstream commit found for the requested vanilla fixture path and preserves the localStorage implementation.
+- Preserve the upstream `node_modules/...` asset paths inside `public/` rather than rewriting `index.html`; this keeps the app closest to upstream and avoids unnecessary modifications.
+
+---
+
+# TodoMVC E2E Follow-up — Research
+
+**Date:** 2026-05-14
+**Status:** Diagnosis before patching remaining TodoMVC eval issues.
+
+## Saved run reviewed
+
+- Run artifact: `/tmp/iris-todomvc-v2/report.json`.
+- Headline: score 7.6, threshold passed, 11/11 goals attempted, 0/11 kept verified after goal-claim validation.
+- Findings: 1 major and 2 minor, all passed evidence validation.
+
+## Concern 1 — finding legitimacy
+
+- **Axe button-name: keep, major.** The fixture template renders todo delete controls as `<button class="destroy"></button>` with no text or aria label (`public/js/template.js`). The axe probe directly targets that HTML under the `button-name` rule. This is a real accessibility defect. The same axe result also reports unlabeled checkbox controls, but the current finding title emphasizes the button-name violation.
+- **Hover-only delete: keep, minor a11y/ux.** `public/node_modules/todomvc-app-css/index.css` sets `.todo-list li .destroy { display: none; }` and only reveals it via `.todo-list li:hover .destroy { display: block; }`. There is no equivalent `:focus-within` or keyboard-visible rule, so keyboard and touch users cannot discover the delete affordance reliably.
+- **Resource load errors: keep as minor bug, with caveat.** The saved console probe records two resource 404s but not the URLs. Static source shows `todomvc-common/base.js` requests `learn.json` from the server root, and this vendored `public/` does not include `learn.json`. A second missing resource is likely browser-driven `/favicon.ico`, but the trace does not preserve enough URL data to prove that part from the saved run.
+
+## Concern 2 — all goals downgraded
+
+The initial hypothesis that Explorer cited only action-result ids is incomplete. In this Agent SDK path, `goal_status` currently has no `evidence_event_ids` input at all, so Explorer cannot preserve the post-action observation id when it closes a goal.
+
+There is also a parallel-trace bug. `/tmp/iris-todomvc-v2/trace.jsonl` merges `session-0` and `session-1` by timestamp. `goal-claim-validator.ts` slices a goal window from the previous global `goal_status` to the current one. With parallel sessions, unrelated goal statuses interleave, so a goal's actual post-action observation can sit outside the validator's global window. Example from the saved merged trace:
+
+- G3's real outcome observation is `01KRHVK0K497MHWMYCBS6T900S` (`Buy groceries and milk` displayed).
+- G8's `goal_status` lands after that observation and before G3's `goal_status`.
+- The validator starts G3's window after G8, sees no successful interaction, and downgrades G3 as `no outcome-shaped evidence in goal window`.
+
+Root fix needs both sides:
+
+- Make `goal_status` carry `evidence_event_ids`, and instruct Explorer to cite post-action observation/screenshot/vision_describe event ids for verified goals.
+- Preserve session identity when merging parallel traces and make goal-window slicing session-aware. Otherwise correct evidence ids from one session can still be excluded by another session's interleaved goal status.
+- Include `goal_status` evidence ids in the Judge trace digest so the Judge copies the Explorer's validated outcome citations instead of choosing similar-looking observations from another session.
+
+## Concern 3 — TodoMVC meta
+
+The fixture is functionally useful as a reference TodoMVC implementation, but it is not a clean accessibility baseline. The blanket "no major" expectation is too strict because the vendored legacy app has real major-level a11y findings. The meta should instead require the known issues Iris should find and preserve false-positive guards for fabricated CRUD/data-loss/filter/persistence claims.
+
+## Plan
+
+1. Update Explorer/core and Agent SDK `goal_status` contract wording and payloads to include `evidence_event_ids` for verified goals.
+   Verify: prompt tests contain `evidence_event_ids`; Judge digest test shows goal_status evidence ids.
+2. Make parallel trace merging add `payload.session_id` and make goal-window slicing session-aware.
+   Verify: validator unit test covers interleaved parallel sessions.
+3. Reconcile TodoMVC `meta.json` with the confirmed issues and teach the bench matcher to honor nested `expected_to_NOT_find.match` patterns.
+   Verify: JSON parses and a static matcher check passes against `/tmp/iris-todomvc-v2/report.json`.
+4. Run build, CLI typecheck, focused tests, and attempt the TodoMVC eval rerun.
+   Verify: report whether local networking permits the live rerun; if not, report the static validation boundary.
+
+## Plan Review
+
+Codex Gate could not be executed because the required `mcp__codex__codex` tool is not available in this session. Fallback is local artifact-backed review plus focused deterministic tests.

@@ -20,29 +20,74 @@ import { type ZodRawShape, z } from 'zod';
  */
 
 type TraceWriter = iristrace.TraceWriter;
-type TraceEventKind =
-  | 'run_start'
-  | 'spec_interpreted'
-  | 'step_plan'
-  | 'action'
-  | 'action_result'
-  | 'observation'
-  | 'probe_call'
-  | 'probe_result'
-  | 'evidence'
-  | 'tentative_finding'
-  | 'hypothesis'
-  | 'surface_seen'
-  | 'surface_unexplored'
-  | 'step_done'
-  | 'goal_status'
-  | 'preflight'
-  | 'retry_attempt'
-  | 'give_up'
-  | 'done'
-  | 'budget_warn'
-  | 'budget_abort'
-  | 'run_end';
+type TraceEventKind = iristrace.TraceEventKind;
+
+type SdkQueryHandle = AsyncIterable<unknown> & {
+  interrupt?: () => void;
+  return?: () => Promise<unknown> | unknown;
+  [Symbol.asyncDispose]?: () => Promise<unknown> | unknown;
+};
+
+async function sdkDisposeStep(fn: (() => Promise<unknown> | unknown) | undefined): Promise<void> {
+  if (!fn) return;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(fn),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 5000);
+        timer.unref?.();
+      }),
+    ]);
+  } catch {
+    // Disposal is best-effort. Callers are already on teardown paths.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function disposeSdkQuery(q: SdkQueryHandle): Promise<void> {
+  await sdkDisposeStep(q.return?.bind(q));
+  await sdkDisposeStep(q[Symbol.asyncDispose]?.bind(q));
+}
+
+async function runSdkIteratorWithTimeout(
+  q: SdkQueryHandle,
+  label: string,
+  timeoutS: number,
+  iterate: () => Promise<void>,
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  let timedOut = false;
+  let timeoutError: Error | undefined;
+  const iteratorPromise = iterate();
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      timeoutError = new Error(`${label} timed out after ${timeoutS}s`);
+      process.stderr.write(`iris: ${label} timed out after ${timeoutS}s; disposing SDK query\n`);
+      try {
+        q.interrupt?.();
+      } catch {
+        // ignore interrupt errors; disposal follows
+      }
+      void disposeSdkQuery(q).finally(() => {
+        reject(timeoutError);
+      });
+    }, timeoutS * 1000);
+    timer.unref?.();
+  });
+
+  try {
+    await Promise.race([iteratorPromise, timeoutPromise]);
+    if (timeoutError) throw timeoutError;
+  } catch (err) {
+    if (timedOut) iteratorPromise.catch(() => undefined);
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 // --- Single-shot helper for spec-interpreter and Judge ---
 
@@ -50,13 +95,33 @@ export interface SingleShotInput {
   systemPrompt: string;
   userPrompt: string;
   model?: string;
+  /**
+   * Historical caller-provided output token cap. The current Agent SDK exposes
+   * `taskBudget.total`, but that is an input+output task budget, not an output
+   * cap, so this is intentionally a no-op for now.
+   *
+   * TODO: forward this when the Agent SDK exposes a real output-only token cap.
+   */
   maxTokens?: number;
+  timeoutS?: number;
 }
 
 export interface SingleShotResult {
   text: string;
   cost_usd: number;
   usage: { input_tokens: number; output_tokens: number };
+  /** True when the SDK returned text after an error/cap signal, so callers should treat it as partial. */
+  partial: boolean;
+  partial_error?: string;
+  hit_output_cap?: boolean;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isOutputCapSignal(value: unknown): boolean {
+  return /max[_ -]?output[_ -]?tokens|output cap|output token/i.test(errorMessage(value));
 }
 
 // Phase 8: vision through the Agent SDK. The SDK's query() accepts either a
@@ -69,6 +134,7 @@ export interface VisionViaSdkInput {
   imagePath: string;
   textPrompt: string;
   model?: string;
+  timeoutS?: number;
 }
 
 export async function visionDescribeViaSdk(
@@ -109,27 +175,39 @@ export async function visionDescribeViaSdk(
       tools: [],
       maxTurns: 1,
       permissionMode: 'bypassPermissions',
+      // Phase 19: see runAgentSdkSingleShot for the rationale.
+      settingSources: [],
+      strictMcpConfig: true,
       ...(opts.model ? { model: opts.model } : {}),
     },
   });
-  for await (const msg of q) {
-    if (msg.type === 'assistant') {
-      const content =
-        (msg.message as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
-      for (const b of content) if (b.type === 'text' && b.text) text += b.text;
-    } else if (msg.type === 'result') {
-      const r = msg as { total_cost_usd?: number };
-      cost_usd = r.total_cost_usd ?? 0;
+  await runSdkIteratorWithTimeout(q, 'visionDescribeViaSdk', opts.timeoutS ?? 60, async () => {
+    try {
+      for await (const msg of q) {
+        if (msg.type === 'assistant') {
+          const content =
+            (msg.message as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
+          for (const b of content) if (b.type === 'text' && b.text) text += b.text;
+        } else if (msg.type === 'result') {
+          const r = msg as { total_cost_usd?: number };
+          cost_usd = r.total_cost_usd ?? 0;
+        }
+      }
+    } finally {
+      await disposeSdkQuery(q);
     }
-  }
+  });
   return { text, cost_usd };
 }
 
 export async function runAgentSdkSingleShot(opts: SingleShotInput): Promise<SingleShotResult> {
   let text = '';
+  let streamedText = '';
   let cost_usd = 0;
   let input_tokens = 0;
   let output_tokens = 0;
+  let hitOutputCap = false;
+  const sdkErrors: string[] = [];
 
   const q = query({
     prompt: opts.userPrompt,
@@ -138,29 +216,114 @@ export async function runAgentSdkSingleShot(opts: SingleShotInput): Promise<Sing
       tools: [],
       maxTurns: 1,
       permissionMode: 'bypassPermissions',
+      // Phase 19: ISOLATE this call from the user's global Claude Code config.
+      // Without settingSources:[], the SDK loads ~/.claude/settings.json which
+      // can declare many MCP servers (excalidraw, lark, chrome-devtools, etc.),
+      // each opened with a 30s connection timeout. With ~14 servers configured,
+      // the Judge subprocess can sit 6-8 min just initializing them before the
+      // actual API call. Diagnosed via debug:true log showing the SDK fetching
+      // mcp_servers from api.anthropic.com and dialing each one per spawn.
+      settingSources: [],
+      strictMcpConfig: true,
+      // Phase 19: surface streaming progress so callers can detect a healthy
+      // long-running call vs an actual hang. Sonnet 4.6 default thinking on a
+      // complex Judge prompt can spend 5+ minutes in extended reasoning before
+      // emitting its first text token. With default false, the SDK buffers all
+      // thinking_delta events and the caller sees zero progress; that pattern
+      // is indistinguishable from a stalled HTTP stream. With partial messages
+      // on, the iterator yields thinking_delta events as they arrive — we can
+      // log a counter to stderr so users see the model is working.
+      includePartialMessages: true,
+      // Intentionally do not forward opts.maxTokens. Callers use it as an
+      // output cap, while the SDK's taskBudget is a total input+output task
+      // budget and can be smaller than large Judge prompts.
       ...(opts.model ? { model: opts.model } : {}),
     },
   });
 
-  for await (const msg of q) {
-    if (msg.type === 'assistant') {
-      const content =
-        (msg.message as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
-      for (const b of content) {
-        if (b.type === 'text' && b.text) text += b.text;
-      }
-    } else if (msg.type === 'result') {
-      const r = msg as {
-        total_cost_usd?: number;
-        usage?: { input_tokens?: number; output_tokens?: number };
-      };
-      cost_usd = r.total_cost_usd ?? 0;
-      input_tokens = r.usage?.input_tokens ?? 0;
-      output_tokens = r.usage?.output_tokens ?? 0;
+  // Phase 19: heartbeat for visibility into long thinking phases.
+  let thinkingChunks = 0;
+  let lastReportedTick = 0;
+  const reportProgress = () => {
+    if (thinkingChunks - lastReportedTick >= 50) {
+      lastReportedTick = thinkingChunks;
+      process.stderr.write(
+        `iris:   judge thinking — ${thinkingChunks} chunks streamed so far...\n`,
+      );
     }
+  };
+
+  try {
+    await runSdkIteratorWithTimeout(q, 'SingleShot', opts.timeoutS ?? 600, async () => {
+      try {
+        for await (const msg of q) {
+          if (msg.type === 'stream_event') {
+            const ev = (msg as { event?: { delta?: { type?: string; text?: string } } }).event;
+            if (ev?.delta?.type === 'thinking_delta') {
+              thinkingChunks++;
+              reportProgress();
+            } else if (ev?.delta?.type === 'text_delta' && ev.delta.text) {
+              streamedText += ev.delta.text;
+            }
+          } else if (msg.type === 'assistant') {
+            const assistantError = (msg as { error?: string }).error;
+            if (assistantError) {
+              sdkErrors.push(`assistant error: ${assistantError}`);
+              if (assistantError === 'max_output_tokens') hitOutputCap = true;
+            }
+            const content =
+              (msg.message as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
+            for (const b of content) {
+              if (b.type === 'text' && b.text) text += b.text;
+            }
+          } else if (msg.type === 'result') {
+            const r = msg as {
+              total_cost_usd?: number;
+              usage?: { input_tokens?: number; output_tokens?: number };
+              subtype?: string;
+              errors?: string[];
+            };
+            cost_usd = r.total_cost_usd ?? 0;
+            input_tokens = r.usage?.input_tokens ?? 0;
+            output_tokens = r.usage?.output_tokens ?? 0;
+            if (r.subtype && r.subtype !== 'success') {
+              const errors = r.errors?.length ? `: ${r.errors.join('; ')}` : '';
+              sdkErrors.push(`result ${r.subtype}${errors}`);
+              if (isOutputCapSignal(`${r.subtype}${errors}`)) hitOutputCap = true;
+            }
+          }
+        }
+      } finally {
+        await disposeSdkQuery(q);
+      }
+    });
+  } catch (err) {
+    const partialText = text || streamedText;
+    if (partialText.length > 0) {
+      const msg = errorMessage(err);
+      return {
+        text: partialText,
+        cost_usd,
+        usage: { input_tokens, output_tokens },
+        partial: true,
+        partial_error: msg,
+        ...(hitOutputCap || isOutputCapSignal(msg) ? { hit_output_cap: true } : {}),
+      };
+    }
+    throw err;
   }
 
-  return { text, cost_usd, usage: { input_tokens, output_tokens } };
+  if (!text && streamedText) text = streamedText;
+  const partial = hitOutputCap || sdkErrors.length > 0;
+  const partialError = sdkErrors.join('; ');
+  return {
+    text,
+    cost_usd,
+    usage: { input_tokens, output_tokens },
+    partial,
+    ...(partialError ? { partial_error: partialError } : {}),
+    ...(hitOutputCap ? { hit_output_cap: true } : {}),
+  };
 }
 
 // --- Explorer-loop runner ---
@@ -204,6 +367,7 @@ export interface ExplorerSdkResult {
     description: string;
     status: 'verified' | 'partial' | 'blocked' | 'skipped' | 'untested';
     rationale: string;
+    evidence_event_ids?: string[];
   }>;
 }
 
@@ -331,7 +495,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
         // ref and concluded "no outcome evidence." Carry it through so the
         // Judge can read what the vision model actually saw.
         const description = (result as { description?: string }).description;
-        await emit('action_result', 'adapter', {
+        const actionResultEventId = await emit('action_result', 'adapter', {
           tool: spec.name,
           ok: result.ok,
           ...(result.ok ? { evidence_refs: result.evidence_refs } : { error: result.error }),
@@ -366,11 +530,14 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           // as click. Adding so post-coord-click state gets captured.
           'vision_click',
         ]);
+        let postActionObservationEventId: string | null = null;
+        let postActionObservationSummary = '';
         if (MUTATING_TOOLS.has(spec.name)) {
           try {
             const obs = await config.adapter.observe();
             observationCounter++;
-            await emit('observation', 'adapter', {
+            postActionObservationSummary = obs.summary.slice(0, 1500);
+            postActionObservationEventId = await emit('observation', 'adapter', {
               ref: obs.observation_ref,
               summary: obs.summary.slice(0, 4000),
             });
@@ -381,10 +548,17 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
         // Phase 12: check cutover after every action so a stuck goal cannot
         // burn the whole budget on selector retries.
         await checkAndApplyCutover();
+        await finishIfAllAssignedGoalsTerminal();
+        const evidenceHint =
+          postActionObservationEventId !== null
+            ? `\npost_action_observation_event_id=${postActionObservationEventId}\npost_action_observation_summary:\n${postActionObservationSummary}`
+            : spec.name === 'screenshot' || spec.name === 'vision_describe'
+              ? `\noutcome_action_result_event_id=${actionResultEventId}`
+              : '';
         const baseText = result.ok
           ? description
-            ? `OK — vision: ${description}`
-            : `OK${result.observation_ref ? ` (observation_ref=${result.observation_ref})` : ''}`
+            ? `OK — vision: ${description}${evidenceHint}`
+            : `OK${result.observation_ref ? ` (observation_ref=${result.observation_ref})` : ''}${evidenceHint}`
           : `ERROR: ${result.error}`;
         const text = pendingCutoverNotice ? `${baseText}\n\n${pendingCutoverNotice}` : baseText;
         if (pendingCutoverNotice) pendingCutoverNotice = null;
@@ -433,7 +607,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       async () => {
         const obs = await config.adapter.observe();
         observationCounter++;
-        await emit('observation', 'adapter', {
+        const observationEventId = await emit('observation', 'adapter', {
           ref: obs.observation_ref,
           summary: obs.summary.slice(0, 4000),
         });
@@ -441,7 +615,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           content: [
             {
               type: 'text' as const,
-              text: `${obs.summary.slice(0, 1500)}\n\n(observation_ref=${obs.observation_ref})`,
+              text: `${obs.summary.slice(0, 1500)}\n\n(observation_ref=${obs.observation_ref}, trace_event_id=${observationEventId})`,
             },
           ],
         };
@@ -544,9 +718,17 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
   ];
 
   // Track goal status across the run (only used when config.goals is provided).
-  const goalLedger = new Map<string, { description: string; status: string; rationale: string }>();
+  const goalLedger = new Map<
+    string,
+    { description: string; status: string; rationale: string; evidence_event_ids: string[] }
+  >();
   for (const g of config.goals ?? []) {
-    goalLedger.set(g.id, { description: g.description, status: 'pending', rationale: '' });
+    goalLedger.set(g.id, {
+      description: g.description,
+      status: 'pending',
+      rationale: '',
+      evidence_event_ids: [],
+    });
   }
 
   // Phase 10: dynamic goal expansion. Explorer can append goals via
@@ -566,6 +748,9 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
   // Cutover notice to be prepended to the next tool result so the agent
   // notices the system has moved on.
   let pendingCutoverNotice: string | null = null;
+  let activeQuery: SdkQueryHandle | undefined;
+  let terminalGoalsReached = false;
+  let termination: ExplorerSdkResult['termination'] = 'budget_steps';
 
   function currentPendingGoalId(): string | null {
     for (const [id, entry] of goalLedger) {
@@ -583,14 +768,38 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     if (!entry) return;
     entry.status = 'partial';
     entry.rationale = `auto-cutover after ${turnsOnCurrentGoal} turns without explicit goal_status`;
+    entry.evidence_event_ids = [];
     await emit('goal_status', 'system', {
       id: gid,
       status: 'partial',
       rationale: entry.rationale,
+      evidence_event_ids: [],
       auto_cutover: true,
     });
     pendingCutoverNotice = `[system] ${gid} auto-cut to "partial" after exceeding the per-goal budget. The next pending goal is now active — call goal_status on the current goal explicitly when finished, or you risk further auto-cutovers.`;
     turnsOnCurrentGoal = 0;
+  }
+
+  function allGoalsTerminal(): boolean {
+    if (goalLedger.size === 0) return false;
+    return Array.from(goalLedger.values()).every((entry) =>
+      ['verified', 'partial', 'blocked', 'skipped', 'untested'].includes(entry.status),
+    );
+  }
+
+  async function finishIfAllAssignedGoalsTerminal(): Promise<boolean> {
+    if (terminalGoalsReached) return true;
+    if (maxExpansion > 0 || !allGoalsTerminal()) return false;
+    terminalGoalsReached = true;
+    termination = 'done';
+    state.done = true;
+    await emit('done', 'system', { reason: 'all_assigned_goals_terminal' });
+    try {
+      activeQuery?.interrupt?.();
+    } catch {
+      // ignore; loop disposal handles cleanup
+    }
+    return true;
   }
 
   // Phase 10: propose_goal — Explorer adds a goal mid-run. Only available
@@ -627,6 +836,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
                 description: args.description,
                 status: 'pending',
                 rationale: '',
+                evidence_event_ids: [],
               });
               await emit('goal_proposed', 'explorer', {
                 id: newId,
@@ -651,22 +861,45 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     ? [
         tool(
           'goal_status',
-          'Mark a spec goal as verified/partial/blocked/skipped. Call this when you have finished (or determined you cannot complete) a goal so the run can move on. verified = goal works end-to-end; partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable.',
+          'Mark a spec goal as verified/partial/blocked/skipped. For verified goals, evidence_event_ids is required and must cite the post-action observation, screenshot, or vision_describe action_result event id that visibly shows the user-facing outcome. Do not cite the action, action_result for the mutation, or goal_status event itself as verified evidence. partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable.',
           {
             id: z.string(),
             status: z.enum(['verified', 'partial', 'blocked', 'skipped']),
             rationale: z.string(),
+            evidence_event_ids: z
+              .array(z.string())
+              .default([])
+              .describe(
+                'For verified: post-action observation/screenshot/vision_describe event ids that show the outcome.',
+              ),
           },
           async (args) => {
+            const evidenceEventIds = args.evidence_event_ids ?? [];
+            if (args.status === 'verified' && evidenceEventIds.length === 0) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: 'ERROR: verified goal_status requires evidence_event_ids with a post-action observation/screenshot/vision_describe event id. Retry goal_status with the outcome event id from the trace.',
+                  },
+                ],
+              };
+            }
             const entry = goalLedger.get(args.id);
             if (entry) {
               entry.status = args.status;
               entry.rationale = args.rationale;
+              entry.evidence_event_ids = evidenceEventIds;
             }
             // Phase 12: reset the per-goal cutover counter so the next
             // pending goal gets a fresh budget.
             turnsOnCurrentGoal = 0;
-            await emit('goal_status', 'explorer', { ...args, auto_cutover: false });
+            await emit('goal_status', 'explorer', {
+              ...args,
+              evidence_event_ids: evidenceEventIds,
+              auto_cutover: false,
+            });
+            await finishIfAllAssignedGoalsTerminal();
             return {
               content: [{ type: 'text' as const, text: `goal ${args.id}: ${args.status}` }],
             };
@@ -715,14 +948,20 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       tools: [],
       maxTurns: config.maxSteps,
       permissionMode: 'bypassPermissions',
+      // Phase 19: see runAgentSdkSingleShot — isolate from user's global
+      // Claude Code MCP servers. Each parallel Explorer session spawn would
+      // otherwise re-initialize ~14 globally-configured MCP servers with 30s
+      // timeouts each, adding minutes of startup tax per session.
+      settingSources: [],
+      strictMcpConfig: true,
       ...(config.model ? { model: config.model } : {}),
     },
   });
-
-  let termination: ExplorerSdkResult['termination'] = 'budget_steps';
+  activeQuery = q as SdkQueryHandle;
 
   try {
     for await (const msg of q) {
+      if (terminalGoalsReached) break;
       // Phase 17: cost budget removed; time is the only spend cap.
       const elapsedS = (Date.now() - start) / 1000;
       if (elapsedS >= config.timeoutS) {
@@ -757,17 +996,22 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           else termination = 'max_turns';
         }
       }
+      if (await finishIfAllAssignedGoalsTerminal()) break;
     }
   } catch (err) {
     // SDK throws on maxTurns or other errors; treat as graceful termination so Judge can still run
     const msg = err instanceof Error ? err.message : String(err);
-    if (/maximum number of turns/i.test(msg)) {
+    if (terminalGoalsReached) {
+      termination = 'done';
+    } else if (/maximum number of turns/i.test(msg)) {
       termination = 'max_turns';
       await emit('budget_abort', 'system', { reason: 'max_turns', error: msg });
     } else {
       termination = 'give_up';
       await emit('give_up', 'explorer', { reason: `sdk error: ${msg.slice(0, 200)}` });
     }
+  } finally {
+    await disposeSdkQuery(q as SdkQueryHandle);
   }
 
   // Emit a final goal_status: untested for every goal the Explorer never closed.
@@ -778,8 +1022,10 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           id,
           status: 'untested',
           rationale: 'never reached within budget',
+          evidence_event_ids: [],
         });
         entry.status = 'untested';
+        entry.evidence_event_ids = [];
       }
     }
   }
@@ -798,6 +1044,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
         description: entry.description,
         status: entry.status as 'verified' | 'partial' | 'blocked' | 'skipped' | 'untested',
         rationale: entry.rationale,
+        evidence_event_ids: entry.evidence_event_ids,
       }))
     : undefined;
 

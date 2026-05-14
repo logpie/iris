@@ -67,6 +67,11 @@ export interface WebTargetAdapterOptions {
   headless?: boolean;
   vision_llm_client?: llm.LlmClient;
   vision_describer?: VisionDescriber;
+  /** Phase 18: hydrate the BrowserContext from a storageState JSON file (cookies +
+   * localStorage). When provided, the session starts already authenticated.
+   * Pair with exportStorageState() on a "boot" adapter to share auth across
+   * parallel sessions. */
+  storage_state_path?: string;
 }
 
 export class WebTargetAdapter implements TargetAdapter {
@@ -104,6 +109,9 @@ export class WebTargetAdapter implements TargetAdapter {
       headless: this.opts.headless ?? true,
       record_video_dir: this.videoDir,
       trace_out_path: this.tracePath,
+      ...(this.opts.storage_state_path
+        ? { storage_state_path: this.opts.storage_state_path }
+        : {}),
     });
     await this.lifecycle.start();
     this.recordingStartedTs = Date.now() / 1000;
@@ -190,6 +198,15 @@ export class WebTargetAdapter implements TargetAdapter {
     };
     if (this.startGotoErrorKind) probe.gotoErrorKind = this.startGotoErrorKind;
     return probe;
+  }
+
+  /** Phase 18: serialize the current BrowserContext's cookies + localStorage to
+   * a JSON file. Call BEFORE stop(). The output path can then be passed to
+   * another adapter via WebTargetAdapterOptions.storage_state_path to start
+   * that session already authenticated. */
+  async exportStorageState(outPath: string): Promise<void> {
+    if (!this.lifecycle) throw new Error('adapter not started');
+    await this.lifecycle.getContext().storageState({ path: outPath });
   }
 
   async stop(): Promise<AdapterArtifacts> {

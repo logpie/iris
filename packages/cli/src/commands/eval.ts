@@ -64,9 +64,13 @@ export function evalCommand(): Command {
     )
     .option(
       '--parallel <n>',
-      'run N parallel Explorer sessions across goal partitions (Phase 16). Each session has its own browser + auth. Roughly N× speedup minus per-session auth overhead. Default 1.',
+      'run N parallel Explorer sessions across goal partitions. Default 2 — the empirical sweet spot for auth-gated apps (P17 tracker: 786s/4 verified). N=3+ adds Anthropic-API + target-server contention that nets slower per Phase 18 tracker scaling tests. Pass 1 for single-session runs.',
       (s) => Number.parseInt(s, 10),
-      1,
+      2,
+    )
+    .option(
+      '--share-auth',
+      'Phase 18: when --parallel >1, run ONE bootstrap session focused only on sign-up/in, export Playwright storageState, then auto-decide: if bootstrap got cookies/localStorage, downstream sessions hydrate from it; if not (email-verification, captcha, no-auth app), they auth individually. Off by default — costs ~50s of sequential bootstrap time on email-verification-gated apps where the cookies will end up empty anyway. Recommended for apps with one-shot signup (no email confirmation).',
     )
     .option(
       '--timeout <s>',
@@ -176,8 +180,12 @@ export function evalCommand(): Command {
       // the factory closure recreates it — but the SDK uses one path so we
       // build sync replicas).
       let _adapterIdx = 0;
-      const createAdapter = (): typeof adapter => {
-        if (_adapterIdx === 0) {
+      const createAdapter = (factoryOpts?: { storage_state_path?: string }): typeof adapter => {
+        // Phase 18: a storage_state_path means the caller wants a NEW adapter
+        // hydrated with shared auth — never reuse the pre-built one (which
+        // was constructed without storage state). The pre-built adapter only
+        // applies on the very first non-stateful call.
+        if (_adapterIdx === 0 && !factoryOpts?.storage_state_path) {
           _adapterIdx++;
           return adapter;
         }
@@ -185,7 +193,12 @@ export function evalCommand(): Command {
         // awaiting (the factory closure for SDK wiring is sync — we use the
         // already-imported visionDescribeViaSdk reference if needed).
         _adapterIdx++;
-        const a = new WebTargetAdapter({ headless: true });
+        const a = new WebTargetAdapter({
+          headless: true,
+          ...(factoryOpts?.storage_state_path
+            ? { storage_state_path: factoryOpts.storage_state_path }
+            : {}),
+        });
         // SDK-transport sessions need vision_describer too. The async import
         // above already resolved; replicate the wiring synchronously by
         // requiring (in an ESM-safe way) — we reuse the same closure form.
@@ -265,6 +278,10 @@ export function evalCommand(): Command {
             expand_goals: opts.expand !== false,
             max_expansion_goals: opts.maxExpansionGoals as number,
             parallel: opts.parallel as number,
+            ...(initialTasks.length > 0
+              ? { initial_tasks: initialTasks.map((description) => ({ description })) }
+              : {}),
+            ...(opts.shareAuth ? { share_auth: true } : {}),
             ...(opts.persona !== undefined ? { persona: opts.persona as string } : {}),
           },
           // Phase 16: pass a factory so the orchestrator can create per-session

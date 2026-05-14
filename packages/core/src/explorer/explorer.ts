@@ -155,7 +155,7 @@ const META_TOOL_SPECS = [
   {
     name: 'goal_status',
     description:
-      'Mark the current spec goal as verified/partial/blocked/skipped, then advance to the next goal. Call this when you have finished (or determined you cannot complete) a goal. If you do not call this, the system will auto-mark the goal as partial after ~1.5x the per-goal budget.',
+      'Mark the current spec goal as verified/partial/blocked/skipped, then advance to the next goal. For verified goals, evidence_event_ids must include a post-action observation/screenshot/vision_describe event id that visibly shows the user-facing outcome; do not cite action, action_result, or goal_status ids as verified evidence. If you do not call this, the system will auto-mark the goal as partial after ~1.5x the per-goal budget.',
     input_schema: {
       type: 'object',
       properties: {
@@ -164,9 +164,15 @@ const META_TOOL_SPECS = [
           type: 'string',
           enum: ['verified', 'partial', 'blocked', 'skipped'],
           description:
-            'verified = goal works end-to-end; partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable to this run',
+            'verified = goal works end-to-end and evidence_event_ids cites the outcome; partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable to this run',
         },
         rationale: { type: 'string' },
+        evidence_event_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Required when status is verified: post-action observation/screenshot/vision_describe event ids that show the outcome.',
+        },
       },
       required: ['id', 'status', 'rationale'],
     },
@@ -257,6 +263,7 @@ export class Explorer {
             id: cutover.goalId,
             status: cutover.status,
             rationale: cutover.rationale,
+            evidence_event_ids: [],
             auto_cutover: true,
           });
           this.goalTracker.completeCurrent(cutover.status, cutover.rationale);
@@ -313,7 +320,7 @@ export class Explorer {
       const sizes = this.siteMap.size();
       const totalSurfaces = sizes.seen + sizes.unexplored;
       const basePrompt = buildUserPrompt({
-        observation_summary: observation.summary,
+        observation_summary: `trace_event_id: ${obsEventId}\n${observation.summary}`,
         plan_stack: this.state.plan_stack,
         site_map: {
           seen: sizes.seen,
@@ -404,6 +411,7 @@ export class Explorer {
             id: entry.id,
             status: 'untested',
             rationale: 'never reached within budget',
+            evidence_event_ids: [],
           });
         }
       }
@@ -463,11 +471,21 @@ export class Explorer {
     id: string;
     status: GoalStatus;
     rationale: string;
+    evidence_event_ids?: string[];
   }): Promise<MetaToolResult> {
+    const evidenceEventIds = args.evidence_event_ids ?? [];
+    if (args.status === 'verified' && evidenceEventIds.length === 0) {
+      return {
+        ok: false,
+        error:
+          'verified goal_status requires evidence_event_ids with a post-action observation/screenshot/vision_describe event id',
+      };
+    }
     await this.emit('goal_status', 'explorer', {
       id: args.id,
       status: args.status,
       rationale: args.rationale,
+      evidence_event_ids: evidenceEventIds,
       auto_cutover: false,
     });
     if (this.goalTracker) {
@@ -485,7 +503,14 @@ export class Explorer {
     if (!this.goalTracker) return '';
     const cur = this.goalTracker.current();
     if (cur.phase === 'goal') {
-      return `Current goal — ${cur.id} (${cur.turnsLeft} turns left): "${cur.description}"\nWhen this goal is done (verified, partial, blocked, or skipped), call goal_status({id: "${cur.id}", status: ..., rationale: ...}) and move to the next goal.`;
+      const nearCutover =
+        cur.turnsSpent !== undefined &&
+        cur.cutoverTurns !== undefined &&
+        cur.turnsSpent >= Math.ceil(cur.cutoverTurns * 0.8);
+      const cutoverWarning = nearCutover
+        ? `\nWarning: this goal is nearing auto-cutover (${cur.turnsSpent}/${cur.cutoverTurns} turns). If progress is blocked or you found a related distinct surface, mark this goal partial/blocked or propose that surface now instead of waiting for auto-cutover.`
+        : '';
+      return `Current goal — ${cur.id} (${cur.turnsLeft} turns left): "${cur.description}"${cutoverWarning}\nWhen this goal is done (verified, partial, blocked, or skipped), call goal_status({id: "${cur.id}", status: ..., rationale: ..., evidence_event_ids: [...]}) and move to the next goal. For verified, evidence_event_ids must cite the post-action observation/screenshot/vision_describe event id that shows the outcome.`;
     }
     if (cur.phase === 'free') {
       return `All spec goals attempted. You have ${cur.turnsLeft} free-exploration turns — use them to find anything the spec missed, or call done().`;
@@ -593,7 +618,14 @@ export class Explorer {
       case 'step_done':
         return meta.step_done(w, s, u as StepDoneArgs, ulid, step, tk);
       case 'goal_status':
-        return this.handleGoalStatus(u as { id: string; status: GoalStatus; rationale: string });
+        return this.handleGoalStatus(
+          u as {
+            id: string;
+            status: GoalStatus;
+            rationale: string;
+            evidence_event_ids?: string[];
+          },
+        );
       case 'push_subgoal':
         return meta.push_subgoal(w, s, u as PushSubgoalArgs, ulid, step, tk);
       case 'propose_goal':

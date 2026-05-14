@@ -1,376 +1,245 @@
 ---
 name: evaluating-products-as-real-user
 description: |
-  Use when evaluating a software product end-to-end by driving its UI as a real
-  user would — exercising features, verifying outcomes, and producing a
-  trustworthy quality report. Covers automated UI testing with an LLM agent
-  in the driver's seat (browser, eventually CLI/API). Triggers: any task that
-  involves "use this app and tell me what works/doesn't," running an agent
-  against a real product, building or operating an end-to-end evaluator, or
-  reviewing whether a report from such an evaluator is honest. This is the
-  durable knowledge Iris's Explorer and Judge consult every run.
+  Explorer-only guidance for evaluating a software product end-to-end by
+  driving its UI as a real user would: exercise primary flows, verify
+  user-visible outcomes, distinguish uncertainty from product defects, and
+  preserve honest coverage. Applies to Iris Explorer runs only.
+when_to_use: "Always loaded for Explorer; do not modify per-run."
 ---
 
 # Evaluating products as a real user
 
-Automated end-to-end testing with an LLM driving the UI. Same goal as a human
-QA reviewer with limited time: form a hypothesis about what the product does,
-exercise the primary flows, verify the user-visible outcomes, and report what
-worked, what didn't, and what wasn't tested. The bar is **"a careful human
-reviewer using the same product for the same time would broadly agree with the
-report."** Not detail-perfect — but no claim materially wrong in either
-direction.
+Automated end-to-end evaluation should resemble a careful human reviewer with
+limited time. The Explorer's report is trustworthy only when a human using the
+same product for the same time would broadly agree with what was verified, what
+failed, and what remained uncertain.
 
-This skill is the discipline that gets you to that bar. The rules are not
-arbitrary; each one fixes a class of failure that real evaluators (Iris
-included) keep producing.
+The goal is not to exercise implementation details. The goal is to test what a
+real user can see and do.
 
 ---
 
-## The first instinct: be a user, not a script
+## Core Rule
 
-A real user is curious, observant, and committed to actually finishing
-things. They:
+Act like a curious first-time user, not a scripted selector runner.
 
-- Try the obvious primary feature first ("this is a TODO list — let me add a
-  todo"). Goal-test happy paths before edge cases.
-- Use what they see. If the page has a `+ New` button visible, they click it.
-  They do not enumerate selectors hoping one matches a hidden affordance.
-- Trust what's on screen. If they typed "hello" and the screen shows "hello",
-  the typing worked. They do not wait for a separate confirmation modal.
-- Move on when stuck. If a button doesn't respond after two attempts, they
-  try a different path or note "I expected this to work, it didn't" — they
-  don't grind on the same interaction.
+Start with the primary happy path. If the page looks like a TODO app, add a
+todo and verify it appears. If it looks like a search engine, search for a real
+query and inspect results. If it looks like an editor, create or edit content
+and verify the visible document changed.
 
-Internalize this before reading anything else below. The rules that follow
-prevent agent-specific failures, but the foundation is the user mindset.
+Use the UI that is actually visible:
 
----
+- Click obvious buttons, links, menus, tabs, and fields before inventing hidden
+  selectors.
+- Prefer accessible-name and role-shaped targets when choosing elements.
+- Use realistic data. Empty, invalid, and weird inputs are useful after the
+  happy path, not before it.
+- Move on only when further attempts would repeat the same failure mode with no
+  new visible state. Before abandoning a core user path, try a materially
+  different visible strategy. If still no progress, mark partial or untested
+  with the evidence gap noted.
+- Treat agent limitations as limitations. If a required primitive is missing,
+  say so; do not convert that into a product defect.
 
-## Real-user interactions, real coverage
-
-Real users do more than click and type. An agent missing these primitives
-will fail on products that need them — and worse, will often blame the
-product rather than admit the missing capability.
-
-**Always-needed:** click, type, press (single key), navigate, scroll, hover.
-
-**Needed for any non-trivial app:**
-
-- **drag** / **click-drag** — canvas drawing, sliders, drag-and-drop
-  reordering, range pickers. A single click does NOT draw a shape, set a
-  slider, or move an item.
-- **key chord** (Cmd+Z, Ctrl+A, Cmd+Enter) — undo, select-all, command
-  palette, shortcut-based submission. Most productivity apps require these.
-- **paste** — rich-text editors (ProseMirror, Lexical, Slate) handle paste
-  events differently from keystroke-by-keystroke typing.
-- **right-click** — context menus (file managers, IDEs, kanban boards).
-- **double-click** — rename-in-place, open-in-list.
-- **upload** — file input flows; without this you can't test image-upload,
-  CSV-import, profile-photo, etc.
-- **hover-and-wait** — tooltips, hover-revealed menus, popovers gated by
-  intent timers.
-
-If a goal requires a primitive the agent doesn't have, mark the goal
-`untested` with a caveat that names the missing primitive. Do not invent a
-"product is broken" finding from the agent's missing capability.
+Primary flows matter most, but real users also explore. After the primary path
+has evidence, inspect each visible top-level or user-relevant secondary surface
+unless doing so would prevent verification of a higher-priority active goal. If
+skipping, record it as unexplored with the reason in step state. The interesting
+failures often sit just past the first obvious button.
 
 ---
 
-## Verify what the user sees, not what fired
+## Evidence Rule
 
-The single largest source of fake passes is mistaking **side-effects** for
-**outcomes**. They look similar in a trace but mean very different things.
+Verify what the user sees, not what fired.
 
-| Side-effect (NOT proof of success) | Outcome (proof of success) |
-|---|---|
-| Properties panel appeared when tool was selected | The drawn shape visible on the canvas |
-| The dialog/modal opened | The action the dialog offered actually happened |
-| Request returned 200 | A follow-up read confirms the resource exists |
-| Focus moved to the field | The text the user wanted is in that field |
-| Toast appeared | The toast specifically says the operation succeeded |
+A goal is `verified` only when cited evidence contains the user-visible
+outcome. The action event, a successful click, a focused field, an open dialog,
+or a 200 response is not enough by itself.
 
-When verifying a goal as `verified`, cite evidence that contains the
-user-visible artifact. Not the action you took — the *result* on the page.
+Good verification evidence:
 
-In a trace this means: cite the OBSERVATION event AFTER the interaction whose
-summary visibly contains the artifact, or a vision_describe quote that names
-it, or a screenshot. Not the action event. Not your own goal_status event.
-Not "the request fired."
+- A post-action observation whose summary contains the result.
+- RICH CONTENT showing text in textarea, input, contenteditable,
+  CodeMirror/Monaco/ACE, or similar editor state.
+- A vision_describe quote naming the required visual artifact when DOM cannot
+  represent it.
+- A screenshot action_result taken after the interaction when the screenshot is
+  the artifact available in trace.
 
-The same principle applies to other modalities when this skill is used
-beyond the browser:
-- **CLI**: outcome = stdout content or filesystem diff matching what the user
-  asked for. Side-effect = the command exited cleanly.
-- **API**: outcome = the response body plus a follow-up GET confirming the
-  write persisted. Side-effect = the action endpoint returned 200.
+Side-effects are not outcomes:
 
----
+- Tool selected is not a drawn shape.
+- Panel opened is not a completed edit.
+- Dialog opened is not the action inside the dialog succeeding.
+- Focus moved is not text entered.
+- Request returned 200 is not persistence unless a follow-up read proves it.
+- Toast appeared is only evidence if the toast text says the relevant action
+  succeeded.
 
-## Selectors: accessible name first, CSS last
+Before calling `goal_status` with `verified`, cite the existing post-action
+observation or rich_content that proves the outcome. Use vision_describe only
+when DOM cannot represent the required artifact: canvas drawings, custom
+graphics, layout-only outcomes, or spatial relationships. It is not required
+for forms, tables, lists, navigations, or DOM-representable text.
 
-This is established Playwright / Cypress / Testing Library wisdom and it
-applies fully:
+Use `note_finding` when the trace contains concrete evidence of a user-facing
+problem. Cite the event id that proves what a user saw or what the product
+emitted:
 
-1. **`role=` queries first** (`role=button[name="Sign in"]`). Survives
-   layout shifts and CSS changes. Enforces accessibility.
-2. **`getByLabel` / accessible-name** for form fields.
-3. **Visible text** (`getByText("Save")`) when role isn't enough.
-4. **`data-testid`** if the product cooperates.
-5. **CSS selectors** as last resort.
+- An overlay, modal, banner, sticky panel, or other layer obscures or blocks
+  user-visible content; cite the observation, screenshot, or vision_describe
+  event that names the obstruction.
+- A console error happens during normal user interaction; cite the probe_result
+  or trace event that captured it.
+- An axe probe reports an accessibility violation on the exercised surface; cite
+  the probe_result event.
+- A promised user-facing outcome is wrong or missing after an action; cite the
+  post-action observation event.
+- Visible accessibility or layout issues appear: unreadable contrast, missing
+  labels, unreadable text size, clipped text, or content cut off; cite the
+  screenshot, observation, or vision_describe event.
+- Confusing UX is visible: contradictory state, missing feedback after an
+  action, a broken link destination, no error message, no response, or no
+  feedback where the surface promises one; cite the observation or probe event.
 
-Don't trust framework-specific CSS classes (`.CodeMirror`, `.cm-editor`) as
-identifying selectors — products migrate (Dillinger moved CodeMirror →
-Monaco) and the agent's stale framework guess becomes the source of fake
-"X is broken" findings.
+Do not use `note_finding` for automation evidence or speculation:
 
-When typing into a complex editor (CodeMirror, Monaco, ACE) the right
-strategy is:
-1. Click the editor area (vision_click is fine if accessible-name isn't
-   available).
-2. Type using the keyboard — the editor's hidden textarea will receive it.
-3. Verify the typed content via the RICH CONTENT section of the next
-   observation (which captures editor framework content invisible to
-   `body.innerText`).
+- Selector misses, click timeouts, locator failures, tool failures, or other
+  agent mechanics unless separate user-visible evidence proves the product is
+  inaccessible.
+- Your own uncertainty about whether a feature works; use `goal_status`
+  partial/untested with a rationale.
+- Iris infrastructure issues such as browser timeouts, vision_describe failures,
+  missing primitives, or thin observations.
+- Speculation without trace evidence.
 
----
+Heuristic: if an observation or vision_describe event says the UI "obscures,"
+"blocks," "covers," is "confusing" or "broken," is "missing" expected feedback,
+shows "no error message," "no feedback," "no response," or otherwise describes a
+plain user-visible problem, file a `note_finding` and cite that event. The Judge
+and validator filter false positives; with concrete visible evidence, default to
+filing rather than suppressing.
 
-## When the trace is thin, say "untested" — not "broken"
+Examples:
 
-If the agent attempted a goal but the observations don't visibly reflect the
-result, there are three possibilities and you cannot distinguish them from
-the trace alone:
-
-1. The product genuinely failed (real bug).
-2. The agent's interaction missed the target (selector mistake, coord wrong).
-3. The observation snapshot couldn't see the result (instrumentation gap —
-   transient toast that already faded, content in a shadow DOM, etc.).
-
-**Default verdict when undistinguishable**: goal status `untested`, with a
-caveat naming the gap. Do NOT emit a "the feature doesn't work" finding on
-this evidence alone.
-
-A real product-failure finding needs **positive** evidence of failure:
-- A visible error message on the page
-- A pageerror or console.error (NOT a "Failed to load resource: net::ERR_..."
-  network noise — that's blocked trackers, not bugs)
-- A failed first-party network request (4xx/5xx on the app's own API)
-- A vision_describe quote explicitly naming a broken state
-
-Without one of those, the conclusion is "I couldn't tell," not "it's broken."
-
----
-
-## Detect confirmation with the right tool
-
-Most apps signal success via transient UI: toasts, snackbars, aria-live
-regions, banners. They appear briefly then fade. Vision_describe at a guessed
-region ("the browser download bar") will miss them.
-
-For any "did this action confirm?" check, use a probe that sweeps:
-- `[aria-live]` regions (polite/assertive)
-- `[role="alert"]`, `[role="status"]`
-- Toast framework classes: `.Toastify__toast`, `.MuiSnackbar-root`,
-  `.chakra-toast`, `.ant-notification`, `.ant-message`, `[class*="Toast"]`,
-  `[class*="Snackbar"]`, `[class*="notification"]`
-- Fixed-position corner elements with short text (custom toasts)
-
-In Iris this is the `notifications_visible` probe. If the probe returns >0
-notifications after an action, that's confirmation evidence. If it ran and
-returned nothing, that's a real "no confirmation" finding — but not before
-the probe ran.
-
-A "no confirmation" finding without a probe that specifically checked is
-almost always a fake produced by guessing wrong about where confirmation
-would appear.
+- `vision_describe` event `V-42` says "modal obscures the lower row of links" →
+  file a finding citing `V-42`.
+- `probe_result` event `P-17` records `console.error` after pressing Save → file
+  a finding citing `P-17`.
+- Post-action observation `OBS-9` still shows no toast, status text, or saved
+  item after Submit → file a finding citing `OBS-9`.
 
 ---
 
-## Tell agent confusion apart from product defects
+## Uncertainty Rule
 
-The single most-recurring fake-finding pattern: the agent tried a selector,
-it didn't work, and the Judge wrote up "the X control is not reachable" as a
-product bug. This is the agent's confusion, not the product's defect.
+When the trace is thin, say "untested" or "unclear" instead of "broken."
 
-**Phrasings that mean "the agent was confused"**:
-- "not reachable / actionable / focusable / clickable / targetable via [...]"
-- "could not be focused / located / found / targeted"
-- "selector failed / timed out / not found"
-- "ARIA selector / accessible-name locator click timed out"
-- "X has poor selector targeting / accessible name"
-- "X is not exposed as a button to assistive tech" *(unless backed by axe)*
-- "lacks proper accessible textbox role / semantics" *(unless backed by axe)*
+If the Explorer attempted a goal but observations do not visibly reflect the
+result, three explanations are possible:
 
-These titles describe **automation strategy**, not user experience. Real
-product findings describe what the user sees:
-- "Submit button is invisible at mobile width"
-- "Clicking Save shows 'Error 500'"
-- "Login form accepts invalid email format silently"
+1. The product genuinely failed.
+2. The interaction missed the target.
+3. Iris could not observe the result.
 
-If a finding sounds like agent-strategy, treat it as one. Drop it unless
-you have positive evidence of user-visible failure.
+Do not claim a product failure unless the trace contains positive failure
+evidence:
 
----
+- A visible error message on the page.
+- A pageerror or console.error from the app during the interaction.
+- A failed first-party network request.
+- An axe violation tied to the interacted surface.
+- A vision_describe quote naming a broken state.
 
-## When you have no spec, discover one
+Selector failure is automation evidence unless trace evidence shows the visible
+UI has no accessible, user, or keyboard path. After a selector miss, try an
+alternative user path: different visible element, keyboard alternative, or
+vision-driven action. Only report a product defect when user-visible behavior is
+confirmed inaccessible across multiple paths.
 
-A real user lands on a page and forms a hypothesis: "This looks like a TODO
-list — I should try adding a todo." Discovery does the same:
-
-1. Capture an initial observation: URL, DOM outline, visible page text, one
-   screenshot.
-2. Ask: what is this product? Who is it for? What would a normal user do
-   first? List 8–12 testable goals in user-likelihood order.
-3. Mark goals `must` (core to the product's purpose) or `should`/`could`
-   (likely a user would try, secondary).
-4. Treat these as the spec for the rest of the run.
-
-Don't invent features you can't see evidence for. If the page shows a search
-bar, propose "use the search." If there's no visible Sign-In, don't propose
-"create an account."
-
-**Mid-run discovery is real too.** When you exercise the product and find a
-surface the seed goals didn't cover (Settings panel, Library, Share dialog),
-propose a new goal at that point. The agent should add high-signal goals
-sparingly — a cap of ~6 expansion goals per run prevents runaway scope.
+When a goal cannot be verified because the trace lacks enough outcome evidence,
+mark it `partial` if there is some progress and `untested` if the outcome is
+not observable. Explain the gap plainly, for example: "outcome not visible in
+trace; cannot distinguish product failure from instrumentation gap."
 
 ---
 
-## Coverage is part of the verdict
+## Iris Gotchas
 
-A high score on a barely-tested product is misleading. A "passes threshold"
-verdict requires:
+**RICH CONTENT.** Iris observations include DOM outline, body text, and RICH
+CONTENT for textarea/input values, contenteditable, CodeMirror, Monaco, ACE, and
+similar editors. Check RICH CONTENT before concluding typing failed. If it shows
+the expected text, the input worked even when body text looks unchanged.
 
-- Score meets the bar
-- **At least 50% of discovered goals were actually attempted** (verified /
-  partial / blocked), not all-untested
-- Zero blocker findings
+**Drag and canvas.** Canvas drawing, diagramming, sliders, drag-and-drop
+reordering, and range pickers require drag/click-drag style primitives. A single
+click does not draw a shape, move a slider, or reorder a row. For canvas or
+"create a shape/figure/diagram" goals, use drag or vision_drag and verify the
+result with vision_describe only if the DOM cannot expose the artifact.
 
-If only 3 of 12 goals were attempted, the report says "threshold not met
-(coverage)," not "passed." This protects readers from the failure mode
-where 4/12 verified looks pass-able but isn't.
+**Notifications.** Save, export, submit, delete, send, and publish actions often
+confirm via transient toasts, snackbars, aria-live regions, banners, or fixed
+corner messages. Use `notifications_visible` after the action. A "no
+confirmation" finding is valid only when that probe ran after the relevant
+action and returned no matching notification.
 
-The corollary: be honest about budget. If the agent runs out of cost or time
-before attempting all goals, surface that as a run-meta caveat, don't
-silently leave goals as `untested` without explanation.
+**Third-party noise.** Separate app errors from environmental resource noise.
+Blocked trackers, analytics pixels, ad scripts, and third-party
+`net::ERR_*` failures usually are not product bugs. Product evidence is a real
+JavaScript exception, console.error from app code, or 4xx/5xx on the app's own
+first-party endpoint.
 
----
+**Primitive gaps.** If a flow needs upload, paste, key chord, right-click,
+double-click, hover-and-wait, mobile viewport, or another unavailable primitive,
+call that out as an evaluation gap. Do not report the product as broken because
+the Explorer lacked a tool.
 
-## Common failure patterns to recognize
-
-Drawn from running this exact discipline against Excalidraw, TodoMVC,
-Dillinger, Desmos, Wikipedia, and across phases of Iris dogfood. When you
-see these in a trace or finding, act on them.
-
-### F1 — "I typed but nothing happened" but the editor is a custom framework
-
-**Symptom**: post-action observation looks identical to pre-action. Agent
-concludes typing failed. Reality: the editor (CodeMirror / Monaco / ACE)
-renders text in its own DOM that `body.innerText` cannot see.
-
-**Action**: read the RICH CONTENT section of the observation, which captures
-editor framework content. If RICH CONTENT shows the typed text, the action
-worked — verify the goal. If it doesn't, the editor may genuinely have
-rejected input.
-
-### F2 — "Export gives no confirmation" when the app shows a toast
-
-**Symptom**: agent clicked Export → HTML, ran vision_describe asking about
-"browser chrome / download bar," got "nothing visible," concluded no
-confirmation. Reality: an in-app toast ("Exported as HTML") appeared in the
-bottom-right corner.
-
-**Action**: run the notifications_visible probe AFTER any action that should
-trigger a confirmation. Cite its output. Never claim "no confirmation"
-without it.
-
-### F3 — "Console errors during normal use" when they're all `net::ERR_...`
-
-**Symptom**: console probe reports 15 errors, agent treats as product bug.
-Reality: all 15 are "Failed to load resource: net::ERR_CONNECTION_CLOSED"
-on third-party trackers blocked by adblock or unreachable from a headless
-context.
-
-**Action**: separate resource_error from app_error. Only app_error (real
-JavaScript exceptions, console.error calls from the app's own code) counts
-as a product bug. Resource errors are noise unless they're 4xx/5xx on the
-app's own first-party endpoints.
-
-### F4 — Single-goal grind eats the budget
-
-**Symptom**: agent spends 30+ turns trying to focus an editor. None of the
-other 11 goals get attempted. Run looks like a total failure.
-
-**Action**: per-goal cutover. After ~1.5× the per-goal budget on one goal
-without calling `goal_status`, force-advance with `goal_status(partial,
-auto_cutover=true)`. The remaining goals get their fair shot.
-
-### F5 — Fake verified from side-effect citation
-
-**Symptom**: goal verified, but evidence cites only the action event or a
-"panel opened" vision_describe. Screenshot at that moment shows the user-
-visible artifact is NOT present.
-
-**Action**: goal-claim validator. For every `verified` claim, require that
-the evidence array cites a post-interaction outcome artifact (observation
-containing the artifact in its summary or rich content, or a vision_describe
-quote naming it). Downgrade `verified → partial` when only side-effects are
-cited.
+**Auth and blocks.** Classify as access-blocked only when trace shows a real
+auth, captcha, rate-limit, geofence, or paywall boundary. Report a product
+defect when the public or auth flow visibly errors, loops, or otherwise prevents
+normal user progress, such as signup submitting successfully but landing on a
+broken page, or a login page never accepting valid credentials.
 
 ---
 
-## Things to avoid
+## Coverage Rule
 
-- **Reading the page for many turns before acting.** ONE observe, then act.
-  Agents that hesitate produce thin coverage.
-- **Calling probes before any interaction.** Probes catch issues that arise
-  during use; running axe on a static page before exercising any feature is
-  premature.
-- **Trying many alternate selectors after the first failed.** After one
-  selector miss, switch strategy (different element, different action, or
-  note "I expected X but couldn't find it" and move on). Selector grinding
-  produces fake findings.
-- **Spending more than per-goal budget on one goal.** The auto-cutover is a
-  safety net — better to declare `partial` yourself and move on.
-- **Claiming "X is broken" without positive failure evidence.** Default to
-  `untested`/`unclear` instead.
-- **Treating each automation hiccup as a product complaint.** When you're
-  unsure, the answer is to lower confidence, not invent a finding.
+Coverage is part of truthfulness. A high score from a barely tested product is
+misleading.
 
----
+Maintain a live surface inventory. Prefer breadth while primary or top-level
+surfaces remain unseen, then choose depth based on user impact and uncovered
+outcomes.
 
-## The handoff to the Judge
+Use this coverage ladder:
 
-When you're scoring after a run, your job is to be a skeptical reader of the
-trace, not a credulous reporter:
+- Exercise the primary happy path.
+- Open top-level navigation and secondary surfaces.
+- Try search with a real query, empty query, and unusual query when search
+  exists.
+- Submit major forms correctly, empty, and with clearly invalid input.
+- Inspect empty states before creating data when possible.
+- Trigger destructive confirmations without confirming the destructive action.
+- Run keyboard-only traversal on each distinct primary surface whose interaction
+  model could differ under keyboard input.
+- Run a 375px-width pass on each surface whose layout might break responsively.
+- Apply browser Back on each multi-step flow.
+- Stop expanding a modality check when it first exposes no new behavior on the
+  surfaces tested.
 
-- The agent's self-reported `verified` is a *claim*, not proof. Require an
-  outcome artifact.
-- The agent's selector-miss errors are *not* product findings. Drop those
-  titles wholesale.
-- The agent's "no confirmation visible" is suspect unless a notifications
-  sweep confirms it.
-- Console errors need triage (app vs resource).
-- The score must not exceed honest coverage. Low coverage = caveat in the
-  headline, not buried.
+When a newly observed surface has a distinct user outcome not covered by
+existing goals, propose it. Let priority and budget decide whether it is
+attempted; suppression is a regression. Verify proposed goals with the same
+evidence standard as seed goals.
 
-When in doubt, **the trustworthy report under-claims rather than over-claims**.
-A reader can act on "uncertain — needs human follow-up." A reader cannot
-act on "verified" that turns out to be fake.
+Track what was seen and what remains unexplored. If budget runs out, leave
+explicit caveats. Goals left untested should stay untested; do not silently
+inflate coverage or invent low-value goals to make the run look complete.
 
----
-
-## When this skill is wrong, update it
-
-The principles above were learned from real failures. New apps will produce
-new failures we don't have rules for yet. When the audit finds a divergence
-between the report and reality:
-
-1. Classify the failure (Class A: fake failure / Class B: fake pass / Class
-   C: coverage gap / Class D: misleading score).
-2. Identify the structural cause (instrumentation, prompt, validator,
-   scoring).
-3. Fix the cause AND add the lesson to this skill.
-
-The skill is a living artifact. The codebase enforces what the skill
-teaches. They evolve together.
+A pass verdict requires every must goal verified, partial, or blocked and every
+visible primary surface attempted at least once. Visible secondary surfaces left
+unexplored must appear in confidence_caveats. Low coverage belongs in the
+headline caveat, not hidden in details.

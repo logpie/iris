@@ -1,0 +1,61 @@
+{
+  "name": "todomvc-vanilla",
+  "description": "Vendored TodoMVC vanilla JS. Functional reference implementation for core CRUD/filter/persistence flows, with known legacy accessibility and static-resource issues Iris should surface.",
+  "mode": "free",
+  "spec": "Standard TodoMVC contract: add, edit, delete, and complete todos; filter by All, Active, and Completed; clear completed items; persist todos across reload.",
+  "expected_findings": [
+    {
+      "match": {
+        "category": "a11y",
+        "severity": ["major", "blocker"],
+        "title_contains": ["button-name", "discernible", "accessible name", "axe"]
+      },
+      "must_find": true
+    },
+    {
+      "match": {
+        "category": "a11y",
+        "severity": ["minor", "major"],
+        "title_contains": ["hover", "keyboard", "delete", "destroy"]
+      },
+      "must_find": true
+    },
+    {
+      "match": {
+        "category": "bug",
+        "severity": ["minor", "nit"],
+        "title_contains": ["resource", "404", "load"]
+      },
+      "must_find": true
+    }
+  ],
+  "expected_to_NOT_find": [
+    {
+      "match": {
+        "title_contains": ["broken", "data loss", "missing feature"]
+      },
+      "reason": "TodoMVC implements its spec correctly; flagging these would be a false positive."
+    },
+    {
+      "match": {
+        "title_contains": ["cannot add", "cannot edit", "cannot delete", "cannot complete"]
+      },
+      "reason": "The reference app supports the core TodoMVC CRUD and completion flows."
+    },
+    {
+      "match": {
+        "title_contains": ["filter broken", "active filter", "completed filter", "all filter"]
+      },
+      "reason": "All, Active, and Completed filters are part of the reference app contract."
+    },
+    {
+      "match": {
+        "title_contains": ["persistence broken", "does not persist", "reload loses"]
+      },
+      "reason": "This vendored vanilla fixture uses localStorage and should preserve todos across reload."
+    }
+  ],
+  "expected_score_range": {
+    "overall": [7, 10]
+  }
+}

@@ -20,6 +20,11 @@ describe('EXPLORER_CORE', () => {
   it('contains "unfamiliar product"', () => {
     expect(EXPLORER_CORE).toContain('unfamiliar product');
   });
+
+  it('requires outcome evidence ids for verified goals', () => {
+    expect(EXPLORER_CORE).toContain('evidence_event_ids');
+    expect(EXPLORER_CORE).toContain('post-action observation');
+  });
 });
 
 describe('targetKindSuffix', () => {

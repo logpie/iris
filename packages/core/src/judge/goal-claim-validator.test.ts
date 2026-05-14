@@ -67,6 +67,29 @@ describe('sliceGoalWindows', () => {
     expect(windows.get('G2')?.map((e) => e.id)).toEqual(['D', 'E']);
   });
 
+  it('windows interleaved parallel traces by session_id', () => {
+    const trace: TraceEvent[] = [
+      ev('A1', 'action_result', { tool: 'press', ok: true, session_id: 'session-0' }),
+      ev('A2', 'observation', { session_id: 'session-0' }),
+      ev('B1', 'action_result', { tool: 'click', ok: true, session_id: 'session-1' }),
+      ev('B2', 'observation', { session_id: 'session-1' }),
+      ev('B3', 'goal_status', { id: 'G2', status: 'verified', session_id: 'session-1' }),
+      ev('A3', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['A2'],
+        session_id: 'session-0',
+      }),
+    ];
+    const goals = [
+      { id: 'G1', description: '', status: 'verified' as const, evidence: ['A2'] },
+      { id: 'G2', description: '', status: 'verified' as const, evidence: ['B2'] },
+    ];
+    const windows = sliceGoalWindows(trace, goals);
+    expect(windows.get('G1')?.map((e) => e.id)).toEqual(['A1', 'A2', 'A3']);
+    expect(windows.get('G2')?.map((e) => e.id)).toEqual(['B1', 'B2', 'B3']);
+  });
+
   it('gives empty window to goals with no goal_status event', () => {
     const trace: TraceEvent[] = [ev('A', 'observation')];
     const goals = [{ id: 'G1', description: '', status: 'untested' as const, evidence: [] }];

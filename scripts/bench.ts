@@ -44,11 +44,19 @@ interface FixtureMeta {
   expected_exit_code?: number;
   preflight_timeout_s?: number;
   expected_findings?: Array<{
-    match: { category?: string | string[]; severity?: string[]; title_contains?: string[] };
+    match: FindingMatch;
     must_find: boolean;
   }>;
   expected_score_range?: { overall?: [number, number] };
-  expected_to_NOT_find?: Array<{ category?: string; severity?: string }>;
+  expected_to_NOT_find?: Array<
+    (FindingMatch & { reason?: string }) | { match: FindingMatch; reason?: string }
+  >;
+}
+
+interface FindingMatch {
+  category?: string | string[];
+  severity?: string | string[];
+  title_contains?: string[];
 }
 
 interface BenchResult {
@@ -235,13 +243,11 @@ for (const fixture of fixtures) {
 
     // expected_to_NOT_find checks
     for (const ntf of meta.expected_to_NOT_find ?? []) {
-      const matched = findings.some(
-        (f) =>
-          (!ntf.category || f.category === ntf.category) &&
-          (!ntf.severity || f.severity === ntf.severity),
-      );
+      const match = 'match' in ntf && ntf.match ? ntf.match : ntf;
+      const matched = findings.some((f) => matchesFinding(f, match));
       if (matched) {
-        failures.push(`unexpected finding present: ${JSON.stringify(ntf)}`);
+        const reason = 'reason' in ntf && ntf.reason ? ` (${ntf.reason})` : '';
+        failures.push(`unexpected finding present: ${JSON.stringify(match)}${reason}`);
       }
     }
   }
@@ -408,13 +414,16 @@ function startCustomServer(serverPath: string): Promise<ServerHandle> {
 
 function matchesFinding(
   f: { category: string; severity: string; title: string },
-  m: { category?: string | string[]; severity?: string[]; title_contains?: string[] },
+  m: FindingMatch,
 ): boolean {
   if (m.category) {
     const cats = Array.isArray(m.category) ? m.category : [m.category];
     if (!cats.includes(f.category)) return false;
   }
-  if (m.severity && !m.severity.includes(f.severity)) return false;
+  if (m.severity) {
+    const severities = Array.isArray(m.severity) ? m.severity : [m.severity];
+    if (!severities.includes(f.severity)) return false;
+  }
   if (m.title_contains && m.title_contains.length > 0) {
     const lower = f.title.toLowerCase();
     if (!m.title_contains.some((kw) => lower.includes(kw.toLowerCase()))) return false;
