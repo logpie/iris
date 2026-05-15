@@ -19,12 +19,9 @@ describe('lighthouse probe', () => {
         const page = await browser.newPage();
         await page.goto('https://example.com');
         const r = await runLighthouse(page);
-        // Lighthouse can fail in test environments; accept either ok+summary or error.
-        if (r.ok) {
-          expect(r.summary).toBeDefined();
-        } else {
-          expect(r.error).toBeDefined();
-        }
+        expect(r.ok).toBe(true);
+        if (!r.ok) throw new Error(r.error);
+        expect(r.summary).toBeDefined();
       } finally {
         await browser.close();
       }

@@ -82,7 +82,9 @@ describe('WebTargetAdapter (end-to-end against fixture)', () => {
     if (!r.ok) return;
     expect(r.summary.activeElement).toMatchObject({ id: 'email' });
     expect(r.summary.selectors_found).toBe(3);
-    expect((r.data as { selectors: Array<{ selector: string; found: boolean }> }).selectors).toEqual(
+    expect(
+      (r.data as { selectors: Array<{ selector: string; found: boolean }> }).selectors,
+    ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ selector: '#email', found: true }),
         expect.objectContaining({ selector: 'button:has-text("Sign in")', found: true }),
@@ -145,9 +147,7 @@ describe('WebTargetAdapter (end-to-end against fixture)', () => {
       ]),
     );
     expect(payload.links).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ label: 'Settings', same_origin: true }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ label: 'Settings', same_origin: true })]),
     );
 
     const after = await adapter.runProbe('ui_state', { selectors: ['#menu-panel'] });

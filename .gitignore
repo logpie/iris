@@ -9,6 +9,7 @@ coverage/
 iris-runs/
 .playwright-cli/
 output/
+audits/
 .superpowers/
 *.tsbuildinfo
 .claude/scheduled_tasks.lock

@@ -1,4 +1,5 @@
 import { type Browser, type BrowserContext, type Page, chromium } from 'playwright';
+import { CURSOR_OVERLAY_INIT_SCRIPT } from './recording/cursor-overlay.js';
 
 export interface WebLifecycleOptions {
   headless?: boolean;
@@ -13,23 +14,33 @@ export class WebLifecycle {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private tracingStarted = false;
 
   constructor(private readonly opts: WebLifecycleOptions = {}) {}
 
   async start(): Promise<void> {
     if (this.browser) return;
-    this.browser = await chromium.launch({ headless: this.opts.headless ?? true });
-    const contextOpts: Parameters<Browser['newContext']>[0] = {};
-    if (this.opts.viewport) contextOpts.viewport = this.opts.viewport;
-    if (this.opts.user_agent) contextOpts.userAgent = this.opts.user_agent;
-    if (this.opts.storage_state_path) contextOpts.storageState = this.opts.storage_state_path;
-    if (this.opts.record_video_dir) contextOpts.recordVideo = { dir: this.opts.record_video_dir };
-    this.context = await this.browser.newContext(contextOpts);
-    if (this.opts.trace_out_path) {
-      await this.context.tracing.start({ snapshots: true, screenshots: true, sources: true });
+    try {
+      this.browser = await chromium.launch({ headless: this.opts.headless ?? true });
+      const contextOpts: Parameters<Browser['newContext']>[0] = {};
+      if (this.opts.viewport) contextOpts.viewport = this.opts.viewport;
+      if (this.opts.user_agent) contextOpts.userAgent = this.opts.user_agent;
+      if (this.opts.storage_state_path) contextOpts.storageState = this.opts.storage_state_path;
+      if (this.opts.record_video_dir) contextOpts.recordVideo = { dir: this.opts.record_video_dir };
+      this.context = await this.browser.newContext(contextOpts);
+      if (this.opts.record_video_dir) {
+        await this.context.addInitScript(CURSOR_OVERLAY_INIT_SCRIPT);
+      }
+      if (this.opts.trace_out_path) {
+        await this.context.tracing.start({ snapshots: true, screenshots: true, sources: true });
+        this.tracingStarted = true;
+      }
+      this.context.on('page', (page) => this.activatePage(page));
+      this.activatePage(await this.context.newPage());
+    } catch (err) {
+      await this.stop().catch(() => undefined);
+      throw err;
     }
-    this.context.on('page', (page) => this.activatePage(page));
-    this.activatePage(await this.context.newPage());
   }
 
   getPage(): Page {
@@ -52,13 +63,41 @@ export class WebLifecycle {
   }
 
   async stop(): Promise<void> {
-    if (this.context && this.opts.trace_out_path) {
-      await this.context.tracing.stop({ path: this.opts.trace_out_path });
-    }
-    if (this.context) await this.context.close();
-    if (this.browser) await this.browser.close();
+    const context = this.context;
+    const browser = this.browser;
+    const shouldStopTracing = this.tracingStarted && !!this.opts.trace_out_path;
     this.browser = null;
     this.context = null;
     this.page = null;
+    this.tracingStarted = false;
+
+    const errors: unknown[] = [];
+    if (context && shouldStopTracing) {
+      try {
+        await context.tracing.stop({ path: this.opts.trace_out_path as string });
+      } catch (err) {
+        errors.push(err);
+      }
+    }
+    if (context) {
+      try {
+        await context.close();
+      } catch (err) {
+        errors.push(err);
+      }
+    }
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (err) {
+        errors.push(err);
+      }
+    }
+    if (errors.length > 0) {
+      const detail = errors
+        .map((err) => (err instanceof Error ? err.message : String(err)))
+        .join('; ');
+      throw new Error(`WebLifecycle stop failed: ${detail}`);
+    }
   }
 }

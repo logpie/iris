@@ -1,11 +1,14 @@
-import type { TargetAdapter } from '@iris/adapter-types';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { TargetAdapter } from '@iris/adapter-types';
 import { describe, expect, it } from 'vitest';
 import type { JudgeOutput } from '../judge/judge.js';
 import type { TraceEvent } from '../trace/schema.js';
 import { collectClaimEvidenceArtifacts, collectTraceEvidenceArtifacts } from './evidence-clips.js';
+
+const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
 
 describe('collectClaimEvidenceArtifacts', () => {
   it('slices evidence for findings and goal claims, resolving goal_status pointers', async () => {
@@ -127,7 +130,7 @@ describe('collectClaimEvidenceArtifacts', () => {
 
     const result = await collectClaimEvidenceArtifacts({ adapter, judge, trace, runDir });
 
-    if (result.files.length === 0) return;
+    if (!expectStoryboardOutput(result.files)) return;
     expect(adapterRefs).toEqual([]);
     expect(result.clips.G1).toMatch(/story-G1\.webm$/);
     expect(existsSync(result.clips.G1 ?? '')).toBe(true);
@@ -168,7 +171,7 @@ describe('collectClaimEvidenceArtifacts', () => {
 
     const result = await collectTraceEvidenceArtifacts({ judge, trace, runDir });
 
-    if (result.files.length === 0) return;
+    if (!expectStoryboardOutput(result.files)) return;
     expect(result.clips.G1).toMatch(/story-G1\.webm$/);
     expect(existsSync(result.clips.G1 ?? '')).toBe(true);
   });
@@ -214,7 +217,7 @@ describe('collectClaimEvidenceArtifacts', () => {
 
     const result = await collectTraceEvidenceArtifacts({ judge, trace, runDir });
 
-    if (result.files.length === 0) return;
+    if (!expectStoryboardOutput(result.files)) return;
     expect(result.clips.G1).toMatch(/story-G1\.webm$/);
     expect(result.clips.G2).toMatch(/story-G2\.webm$/);
     expect(result.clips.G1).not.toBe(result.clips.G2);
@@ -240,4 +243,13 @@ function writeTinyPng(path: string): void {
       'base64',
     ),
   );
+}
+
+function expectStoryboardOutput(files: unknown[]): boolean {
+  if (!hasFfmpeg) {
+    expect(files).toEqual([]);
+    return false;
+  }
+  expect(files.length).toBeGreaterThan(0);
+  return true;
 }

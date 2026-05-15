@@ -13,6 +13,13 @@ import {
 } from './codex-app-server-runner.js';
 
 const tempDirs: string[] = [];
+const clients: CodexAppServerClient[] = [];
+
+function makeClient(options?: ConstructorParameters<typeof CodexAppServerClient>[0]) {
+  const client = new CodexAppServerClient(options);
+  clients.push(client);
+  return client;
+}
 
 function fakeServerPath(source: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'iris-codex-appserver-test-'));
@@ -22,7 +29,8 @@ function fakeServerPath(source: string): string {
   return path;
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.allSettled(clients.splice(0).map((client) => client.close()));
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -55,7 +63,7 @@ describe('CodexAppServerClient', () => {
         }
       });
     `);
-    const client = new CodexAppServerClient({
+    const client = makeClient({
       command: process.execPath,
       args: [server],
       requestTimeoutMs: 1_000,
@@ -92,7 +100,7 @@ describe('CodexAppServerClient', () => {
         }) + '\\n');
       });
     `);
-    const client = new CodexAppServerClient({
+    const client = makeClient({
       command: process.execPath,
       args: [server],
       requestTimeoutMs: 1_000,
@@ -179,7 +187,7 @@ describe('CodexAppServerClient', () => {
         }
       });
     `);
-    const client = new CodexAppServerClient({
+    const client = makeClient({
       command: process.execPath,
       args: [server],
       requestTimeoutMs: 1_000,
@@ -290,7 +298,7 @@ describe('runCodexAppServerSingleShot', () => {
         }
       });
     `);
-    const client = new CodexAppServerClient({
+    const client = makeClient({
       command: process.execPath,
       args: [server],
       requestTimeoutMs: 1_000,
@@ -347,7 +355,7 @@ describe('runCodexAppServerSingleShot', () => {
         }
       });
     `);
-    const client = new CodexAppServerClient({
+    const client = makeClient({
       command: process.execPath,
       args: [server],
       requestTimeoutMs: 1_000,
@@ -399,7 +407,7 @@ describe('runCodexAppServerSingleShot', () => {
         }
       });
     `);
-    const client = new CodexAppServerClient({
+    const client = makeClient({
       command: process.execPath,
       args: [server],
       requestTimeoutMs: 1_000,
@@ -501,7 +509,7 @@ describe('runCodexAppServerExplorer', () => {
         }
       });
     `);
-    const client = new CodexAppServerClient({
+    const client = makeClient({
       command: process.execPath,
       args: [server],
       requestTimeoutMs: 1_000,
@@ -634,7 +642,7 @@ describe('runCodexAppServerExplorer', () => {
         }
       });
     `);
-    const client = new CodexAppServerClient({
+    const client = makeClient({
       command: process.execPath,
       args: [server],
       requestTimeoutMs: 1_000,
@@ -761,7 +769,7 @@ describe('runCodexAppServerExplorer', () => {
         }
       });
     `);
-    const client = new CodexAppServerClient({
+    const client = makeClient({
       command: process.execPath,
       args: [server],
       requestTimeoutMs: 1_000,

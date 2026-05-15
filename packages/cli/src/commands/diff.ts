@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { diff as diffMod, type report as reportMod } from '@iris/core';
 import { Command } from 'commander';
@@ -43,6 +43,7 @@ export function diffCommand(): Command {
 
       const result = diffMod.computeDiff(prev, curr);
       const outDir = resolve(opts.out as string);
+      mkdirSync(outDir, { recursive: true });
       writeFileSync(join(outDir, 'diff.json'), `${JSON.stringify(result, null, 2)}\n`);
       writeFileSync(join(outDir, 'diff.md'), diffMod.buildDiffMd(result));
       if (opts.html !== false) {

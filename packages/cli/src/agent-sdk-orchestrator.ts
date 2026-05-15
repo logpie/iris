@@ -1,11 +1,4 @@
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  writeFileSync,
-} from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type { TargetAdapter } from '@iris/adapter-types';
 import {
@@ -563,7 +556,9 @@ export async function runIrisViaSdk(
               goals: out.goals,
               surfaces: out.surfaces,
               journeys: out.journeys,
-              ...(out.product_use_contract ? { product_use_contract: out.product_use_contract } : {}),
+              ...(out.product_use_contract
+                ? { product_use_contract: out.product_use_contract }
+                : {}),
               ...(out.coverage_plan ? { coverage_plan: out.coverage_plan } : {}),
               focus_areas: out.focus_areas,
               hints: out.hints,

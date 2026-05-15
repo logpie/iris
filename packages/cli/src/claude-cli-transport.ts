@@ -78,7 +78,7 @@ function spawnClaudeCli(
 ): Promise<{ result: string; cost_usd: number; usage_in: number; usage_out: number }> {
   return new Promise((resolve, reject) => {
     const args = ['-p', prompt, '--output-format', 'json'];
-    if (model && model !== 'claude-opus-4-7') {
+    if (model) {
       args.push('--model', model);
     }
     const proc = spawn('claude', args, { stdio: ['ignore', 'pipe', 'pipe'] });

@@ -31,8 +31,12 @@ export function judgeCommand(): Command {
         `./iris-runs/judge-${new Date().toISOString().replace(/[:]/g, '-')}`;
 
       let specText: string | undefined;
-      if (specPath && existsSync(resolve(specPath))) {
-        specText = readFileSync(resolve(specPath), 'utf8');
+      if (specPath) {
+        const resolvedSpecPath = resolve(specPath);
+        if (!existsSync(resolvedSpecPath)) {
+          throw new Error(`iris judge: --spec file not found: ${resolvedSpecPath}`);
+        }
+        specText = readFileSync(resolvedSpecPath, 'utf8');
       }
 
       const judgeClient = buildLlmClient();

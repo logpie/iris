@@ -1,15 +1,21 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebLifecycle } from './lifecycle.js';
 
 describe('WebLifecycle', () => {
   let lc: WebLifecycle;
+  let outDir: string;
 
   beforeEach(() => {
+    outDir = mkdtempSync(join(tmpdir(), 'iris-lifecycle-'));
     lc = new WebLifecycle({ headless: true });
   });
 
   afterEach(async () => {
     await lc.stop();
+    rmSync(outDir, { recursive: true, force: true });
   });
 
   it('start launches Chromium and exposes a Page', async () => {
@@ -43,5 +49,40 @@ describe('WebLifecycle', () => {
 
     expect(lc.getPage()).toBe(newPage);
     expect(await lc.getPage().title()).toBe('Store');
+  });
+
+  it('shows an Iris cursor overlay when video recording is enabled', async () => {
+    await lc.stop();
+    const videoDir = join(outDir, 'videos');
+    mkdirSync(videoDir, { recursive: true });
+    lc = new WebLifecycle({ headless: true, record_video_dir: videoDir });
+    await lc.start();
+
+    const page = lc.getPage();
+    await page.goto('data:text/html,<main style="height:200px">record me</main>');
+    await page.mouse.move(120, 80);
+    await page.waitForFunction(() => {
+      const el = document.querySelector('[data-iris-recording-cursor="true"]');
+      return el ? getComputedStyle(el).opacity === '1' : false;
+    });
+
+    const cursor = await page.locator('[data-iris-recording-cursor="true"]').evaluate((el) => ({
+      opacity: getComputedStyle(el).opacity,
+      transform: getComputedStyle(el).transform,
+      pointerEvents: getComputedStyle(el).pointerEvents,
+    }));
+
+    expect(cursor.opacity).toBe('1');
+    expect(cursor.pointerEvents).toBe('none');
+    expect(cursor.transform).not.toBe('none');
+  });
+
+  it('does not inject the cursor overlay when video recording is disabled', async () => {
+    await lc.start();
+    const page = lc.getPage();
+    await page.goto('data:text/html,<main>not recorded</main>');
+    await page.mouse.move(120, 80);
+
+    expect(await page.locator('[data-iris-recording-cursor="true"]').count()).toBe(0);
   });
 });

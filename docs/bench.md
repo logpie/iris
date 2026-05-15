@@ -10,7 +10,7 @@ Run it nightly + on release branches.
 
 ## Cost
 
-Roughly **$4–5** per full bench run via the Agent SDK transport (8 fixtures × ~$0.50 each at `--max-cost-usd 0.75`). About **12 minutes** wall time. Empirical: 2026-05-10 ran 4 iterations at ~$4.45 each.
+Roughly **$4–5** per full bench run via the Agent SDK transport. About **12 minutes** wall time. Empirical: 2026-05-10 ran 4 iterations at ~$4.45 each. Cost budgeting was removed from `iris eval`; use `--timeout` to bound wall time.
 
 Raw Anthropic API would be 2–3× faster but costs the same per-token. `claude -p` subprocess transport works but is ~6× slower (~75 min full bench) — only use as fallback.
 
@@ -30,8 +30,8 @@ pnpm bench
 # Single fixture
 pnpm bench -- --filter empty-form
 
-# Lower per-fixture cost cap
-pnpm bench -- --max-cost 0.50
+# Lower per-fixture wall-time cap
+pnpm bench -- --timeout 600
 ```
 
 ## What gets asserted

@@ -51,12 +51,15 @@ export function runAdapterConformance(cfg: ConformanceConfig): void {
     it('start → observe → stop roundtrips and observe returns a valid Observation', async () => {
       const a = cfg.makeAdapter();
       await a.start(resolveConfig(cfg));
-      const obs = await a.observe();
-      expect(typeof obs.observation_ref).toBe('string');
-      expect(obs.observation_ref.length).toBeGreaterThan(0);
-      expect(typeof obs.summary).toBe('string');
-      const artifacts = await a.stop();
-      expect(typeof artifacts.evidence_dir).toBe('string');
+      try {
+        const obs = await a.observe();
+        expect(typeof obs.observation_ref).toBe('string');
+        expect(obs.observation_ref.length).toBeGreaterThan(0);
+        expect(typeof obs.summary).toBe('string');
+      } finally {
+        const artifacts = await a.stop();
+        expect(typeof artifacts.evidence_dir).toBe('string');
+      }
     });
 
     if (cfg.smokeTool) {
@@ -90,10 +93,13 @@ export function runAdapterConformance(cfg: ConformanceConfig): void {
     it('sliceEvidence on empty input returns an empty array', async () => {
       const a = cfg.makeAdapter();
       await a.start(resolveConfig(cfg));
-      const out = await a.sliceEvidence([]);
-      expect(Array.isArray(out)).toBe(true);
-      expect(out).toHaveLength(0);
-      await a.stop();
+      try {
+        const out = await a.sliceEvidence([]);
+        expect(Array.isArray(out)).toBe(true);
+        expect(out).toHaveLength(0);
+      } finally {
+        await a.stop();
+      }
     });
   });
 }

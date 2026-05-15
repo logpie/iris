@@ -23,8 +23,8 @@ pnpm bench
 # Single fixture
 pnpm bench -- --filter empty-form
 
-# Lower cost cap per fixture
-pnpm bench -- --max-cost 0.50
+# Lower wall-time cap per fixture
+pnpm bench -- --timeout 600
 ```
 
 **What it asserts per fixture:**

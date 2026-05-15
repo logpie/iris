@@ -7,18 +7,18 @@ import { Explorer, type ExplorerResult } from '../explorer/explorer.js';
 import type { PersonaName } from '../explorer/personas/index.js';
 import { judgeWithEnsemble } from '../judge/ensemble.js';
 import { validateFindings } from '../judge/evidence-validator.js';
-import { ensureRubricScoreCoverage } from '../judge/score-coverage.js';
 import {
   applyGoalClaimValidationToJudgeOutput,
   validateGoalClaims,
 } from '../judge/goal-claim-validator.js';
 import { Judge, type JudgeOutput } from '../judge/judge.js';
+import { ensureRubricScoreCoverage } from '../judge/score-coverage.js';
 import type { LlmClient } from '../llm/client.js';
 import { runPreflight } from '../preflight/preflight.js';
+import { collectClaimEvidenceArtifacts } from '../report/evidence-clips.js';
 import { buildReportHtml } from '../report/report-html.js';
 import { type ReportJson, buildReportJson } from '../report/report-json.js';
 import { buildReportMd } from '../report/report-md.js';
-import { collectClaimEvidenceArtifacts } from '../report/evidence-clips.js';
 import { type InterpretedSpec, interpretSpec } from '../spec-interpreter/interpreter.js';
 import { readTraceArray } from '../trace/reader.js';
 import { TraceWriter } from '../trace/writer.js';
@@ -164,7 +164,6 @@ export class Orchestrator {
         // Block — skip Explorer and Judge entirely.
         await traceWriter.close();
         const artifacts = await this.deps.adapter.stop();
-        const failedReasons = preflightResult.checks.filter((c) => !c.ok).map((c) => c.name);
         const blockedReport = this.buildBlockedReport({
           config,
           startedAt,

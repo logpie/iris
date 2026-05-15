@@ -1,5 +1,5 @@
-import type { Page } from 'playwright';
 import type { ProbeResult } from '@iris/adapter-types';
+import type { Page } from 'playwright';
 
 interface UiStateArgs {
   selectors?: string[];
@@ -42,7 +42,9 @@ export async function runUiState(page: Page, args: UiStateArgs = {}): Promise<Pr
         },
       };
     });
-    const selectorStates = await Promise.all(selectors.map((selector) => selectorState(page, selector)));
+    const selectorStates = await Promise.all(
+      selectors.map((selector) => selectorState(page, selector)),
+    );
     const data = { ...base, selectors: selectorStates };
     const found = data.selectors.filter((item) => item.found).length;
     return {

@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { WebTargetAdapter } from '@iris/adapter-web';
-import { ModeSchema, type PersonaName, orchestrator } from '@iris/core';
+import { EngineSchema, ModeSchema, type PersonaName, orchestrator } from '@iris/core';
 import { Command } from 'commander';
 import { runIrisViaSdk } from '../agent-sdk-orchestrator.js';
-import { parseCodexReasoningEffort } from '../codex-app-server-runner.js';
 import { runIrisViaCodexAppServer } from '../codex-app-server-orchestrator.js';
+import { parseCodexReasoningEffort } from '../codex-app-server-runner.js';
 import { inferMode } from '../flags.js';
 import { buildLlmClient } from '../llm-factory.js';
 import { loadRubricsByNames } from '../load-rubrics.js';
@@ -29,7 +29,7 @@ export function evalCommand(): Command {
     )
     .option(
       '--steps-per-goal <n>',
-      'per-goal turn budget. When set with a spec, max_steps is recomputed as goals × steps_per_goal + free_exploration_steps (capped by --max-steps). Also drives per-goal auto-cutover threshold (1.5× this).',
+      'per-goal turn budget for Explorer auto-cutover. --max-steps remains the hard run cap.',
       (s) => Number.parseInt(s, 10),
       10,
     )
@@ -93,9 +93,12 @@ export function evalCommand(): Command {
       Number.parseFloat(s),
     )
     .option('--print-summary', 'print one-line JSON summary to stdout')
-    .option('--dry-run', 'run spec interpreter only, print plan, exit')
-    .option('--verbose', 'stream trace events to stderr as they happen')
-    .option('--json-logs', 'structured logs to stderr (skill consumers)')
+    .option('--dry-run', 'validate inputs, print the run plan, and exit before browser/LLM work')
+    .option('--verbose', 'reserved for trace streaming; currently accepted for compatibility')
+    .option(
+      '--json-logs',
+      'reserved for structured progress logs; currently accepted for compatibility',
+    )
     .option(
       '--persona <name>',
       'persona for the Explorer (default | power_user | novice | adversarial | keyboard_only)',
@@ -117,6 +120,11 @@ export function evalCommand(): Command {
         ...(tasksPath !== undefined ? { tasks_path: tasksPath } : {}),
       });
       ModeSchema.parse(mode); // sanity
+      const engineResult = EngineSchema.safeParse(opts.engine);
+      if (!engineResult.success) {
+        throw new Error(`invalid --engine ${String(opts.engine)}; expected dom, vision, or hybrid`);
+      }
+      const engine = engineResult.data;
 
       const outDir =
         (opts.out as string | undefined) ??
@@ -131,13 +139,13 @@ export function evalCommand(): Command {
       const rubricProfiles = await loadRubricsByNames(rubricNames);
 
       let specText: string | undefined;
-      if (specPath && existsSync(resolve(specPath))) {
-        specText = readFileSync(resolve(specPath), 'utf8');
+      if (specPath) {
+        specText = readRequiredInputFile(specPath, '--spec');
       }
 
       const initialTasks = (tasks as string[]).slice();
-      if (tasksPath && existsSync(resolve(tasksPath))) {
-        const lines = readFileSync(resolve(tasksPath), 'utf8')
+      if (tasksPath) {
+        const lines = readRequiredInputFile(tasksPath, '--tasks')
           .split(/\r?\n/)
           .filter((s) => s.trim().length > 0);
         initialTasks.push(...lines);
@@ -155,32 +163,74 @@ export function evalCommand(): Command {
       }
       process.stderr.write(`iris: transport=${transport}\n`);
 
+      if (opts.dryRun) {
+        process.stdout.write(
+          `${JSON.stringify(
+            {
+              dry_run: true,
+              target: { kind: 'web', url: target },
+              mode,
+              out_dir: outDir,
+              transport,
+              engine,
+              ...(specPath ? { spec_path: resolve(specPath) } : {}),
+              tasks: initialTasks,
+              rubrics: rubricNames ?? 'default',
+              max_steps: opts.maxSteps as number,
+              steps_per_goal: opts.stepsPerGoal as number,
+              free_exploration_steps: opts.freeExplorationSteps as number,
+              timeout_s: opts.timeout as number,
+              discover: opts.discover !== false,
+              expand_goals: opts.expand !== false,
+              parallel: opts.parallel as number,
+            },
+            null,
+            2,
+          )}\n`,
+        );
+        return;
+      }
+
+      let sdkVisionDescribe:
+        | ((input: {
+            systemPrompt: string;
+            imagePath: string;
+            textPrompt: string;
+            model?: string;
+          }) => Promise<{ text: string; cost_usd: number }>)
+        | undefined;
+      if (transport === 'sdk') {
+        ({ visionDescribeViaSdk: sdkVisionDescribe } = await import('../agent-sdk-runner.js'));
+      }
+      const attachSdkVisionDescriber = (a: WebTargetAdapter) => {
+        const describe = sdkVisionDescribe;
+        if (!describe) return;
+        (
+          a as unknown as {
+            opts: {
+              vision_describer?: (i: {
+                imagePath: string;
+                prompt: string;
+                model?: string;
+              }) => Promise<{ text: string }>;
+            };
+          }
+        ).opts.vision_describer = async (i) =>
+          describe({
+            systemPrompt: '',
+            imagePath: i.imagePath,
+            textPrompt: i.prompt,
+            ...(i.model ? { model: i.model } : {}),
+          });
+      };
+
       // Phase 16: build an adapter factory so the SDK orchestrator can
       // create as many adapters as it needs (1 for single-session, N for
       // --parallel N). Each adapter has its own browser + own vision_describer
       // wiring.
       const buildAdapter = async () => {
         const a = new WebTargetAdapter({ headless: true });
-        if (transport === 'sdk') {
-          const { visionDescribeViaSdk } = await import('../agent-sdk-runner.js');
-          (
-            a as unknown as {
-              opts: {
-                vision_describer?: (i: {
-                  imagePath: string;
-                  prompt: string;
-                  model?: string;
-                }) => Promise<{ text: string }>;
-              };
-            }
-          ).opts.vision_describer = async (i) =>
-            visionDescribeViaSdk({
-              systemPrompt: '',
-              imagePath: i.imagePath,
-              textPrompt: i.prompt,
-              ...(i.model ? { model: i.model } : {}),
-            });
-        }
+        attachSdkVisionDescriber(a);
         return a;
       };
       // Pre-build the first adapter for the api/cli transports + for
@@ -211,33 +261,7 @@ export function evalCommand(): Command {
             ? { storage_state_path: factoryOpts.storage_state_path }
             : {}),
         });
-        // SDK-transport sessions need vision_describer too. The async import
-        // above already resolved; replicate the wiring synchronously by
-        // requiring (in an ESM-safe way) — we reuse the same closure form.
-        // For simplicity, accept that parallel-mode vision_describe goes
-        // through the orchestrator's primary adapter binding; subsequent
-        // sessions get the same module-level callback.
-        if (transport === 'sdk') {
-          import('../agent-sdk-runner.js').then(({ visionDescribeViaSdk }) => {
-            (
-              a as unknown as {
-                opts: {
-                  vision_describer?: (i: {
-                    imagePath: string;
-                    prompt: string;
-                    model?: string;
-                  }) => Promise<{ text: string }>;
-                };
-              }
-            ).opts.vision_describer = async (i) =>
-              visionDescribeViaSdk({
-                systemPrompt: '',
-                imagePath: i.imagePath,
-                textPrompt: i.prompt,
-                ...(i.model ? { model: i.model } : {}),
-              });
-          });
-        }
+        attachSdkVisionDescriber(a);
         return a;
       };
 
@@ -420,4 +444,12 @@ export function evalCommand(): Command {
 
 function collect(value: string, previous: string[]): string[] {
   return previous.concat([value]);
+}
+
+function readRequiredInputFile(path: string, flag: string): string {
+  const resolved = resolve(path);
+  if (!existsSync(resolved)) {
+    throw new Error(`iris eval: ${flag} file not found: ${resolved}`);
+  }
+  return readFileSync(resolved, 'utf8');
 }

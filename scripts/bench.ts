@@ -9,7 +9,7 @@
  * Requires ANTHROPIC_API_KEY in env. Cost: ~$5-15 per full run depending on
  * exploration depth.
  *
- * Usage: pnpm bench [--filter <fixture-name>] [--max-cost <usd>]
+ * Usage: pnpm bench [--filter <fixture-name>] [--timeout <seconds>]
  */
 import { execSync, spawn } from 'node:child_process';
 import {
@@ -71,7 +71,7 @@ interface BenchResult {
 
 const args = process.argv.slice(2);
 const filter = pickArg(args, '--filter');
-const maxCost = pickArg(args, '--max-cost');
+const timeout = pickArg(args, '--timeout');
 const keepDirs = args.includes('--keep');
 
 const HAS_API_KEY = !!process.env.ANTHROPIC_API_KEY;
@@ -157,7 +157,7 @@ for (const fixture of fixtures) {
       target: `${server.url}${targetPath}`,
       out_dir: outDir,
       spec: specPath,
-      max_cost: maxCost ?? '1',
+      timeout_s: timeout ?? '900',
       ...(meta.preflight_timeout_s !== undefined
         ? { preflight_timeout_s: String(meta.preflight_timeout_s) }
         : {}),
@@ -345,7 +345,7 @@ interface IrisRunArgs {
   target: string;
   out_dir: string;
   spec: string;
-  max_cost: string;
+  timeout_s: string;
   preflight_timeout_s?: string;
 }
 
@@ -368,8 +368,8 @@ function runIris(args: IrisRunArgs): Promise<number> {
       '--no-clips',
       '--max-steps',
       '20',
-      '--max-cost-usd',
-      args.max_cost,
+      '--timeout',
+      args.timeout_s,
       '--transport',
       HAS_API_KEY ? 'api' : 'sdk',
       ...(ENSEMBLE ? ['--judge-ensemble'] : []),
@@ -392,10 +392,11 @@ function startCustomServer(serverPath: string): Promise<ServerHandle> {
       const lines = buf.split('\n');
       for (const line of lines) {
         const m = line.match(/(https?:\/\/[^\s]+)/);
-        if (m) {
+        const url = m?.[1];
+        if (url) {
           proc.stdout?.off('data', onData);
           resolveSrv({
-            url: m[1]!,
+            url,
             close: () =>
               new Promise<void>((r) => {
                 proc.kill('SIGTERM');
