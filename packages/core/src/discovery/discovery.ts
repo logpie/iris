@@ -7,12 +7,23 @@ import { z } from 'zod';
 import type { LlmClient } from '../llm/client.js';
 import { DISCOVERY_SYSTEM, DISCOVERY_USER_TEMPLATE } from './prompts.js';
 
+export const DiscoveryGoalClassSchema = z.enum([
+  'core',
+  'secondary_workflow',
+  'setup',
+  'sample',
+  'peripheral',
+  'diagnostic',
+]);
+export type DiscoveryGoalClass = z.infer<typeof DiscoveryGoalClassSchema>;
+
 export const DiscoveryGoalSchema = z.object({
   id: z.string().min(1),
   description: z.string().min(1),
   priority: z.enum(['must', 'should']),
   journey_id: z.string().min(1).optional(),
   surface_ids: z.array(z.string()).default([]),
+  goal_class: DiscoveryGoalClassSchema.optional(),
 });
 export type DiscoveryGoal = z.infer<typeof DiscoveryGoalSchema>;
 
@@ -69,6 +80,7 @@ export const DiscoveryJourneySchema = z.object({
   sample_input: z.string().optional(),
   expected_evidence: z.array(z.string()).default([]),
   risk: z.enum(['high', 'medium', 'low']).default('medium'),
+  goal_class: DiscoveryGoalClassSchema.optional(),
 });
 export type DiscoveryJourney = z.infer<typeof DiscoveryJourneySchema>;
 
@@ -169,23 +181,57 @@ function normalizeDiscoveryOutput(
   const surfaces = normalizeDiscoverySurfaces(
     out.surfaces.length > 0 ? out.surfaces : surveySurfaces,
   );
-  const journeys = attachPageContextSurfaces(
+  const rawJourneys = attachPageContextSurfaces(
     normalizeDiscoveryJourneys(
       out.journeys.length > 0 ? out.journeys : synthesizeJourneysFromGoals(out.goals, surfaces),
       surfaces,
     ),
     surfaces,
   );
-  const coveragePlan = normalizeDiscoveryCoveragePlan(out.coverage_plan, journeys, surfaces);
-  const productUseContract = normalizeProductUseContract(out.product_use_contract, journeys);
+  const productUseContract = normalizeProductUseContract(out.product_use_contract, rawJourneys);
+  const journeys = normalizeJourneyMateriality(rawJourneys, surfaces, productUseContract);
+  const coveragePlan = normalizeDiscoveryCoveragePlan(
+    out.coverage_plan,
+    journeys,
+    surfaces,
+    productUseContract,
+  );
   const goals: DiscoveryGoal[] = [];
   const seenDescriptions = new Set<string>();
+  const selectedJourneyIds = new Set(coveragePlan?.selected_journey_ids ?? []);
+  const structured = journeys.length > 0;
 
   for (const goal of out.goals) {
     const key = discoveryGoalKey(goal);
     if (seenDescriptions.has(key)) continue;
     seenDescriptions.add(key);
-    goals.push(attachDiscoveryGoalRefs(goal, journeys, coveragePlan));
+    const attached = attachDiscoveryGoalRefs(goal, journeys, coveragePlan);
+    const journey = attached.journey_id
+      ? journeys.find((candidate) => candidate.id === attached.journey_id)
+      : undefined;
+    const goalClass =
+      attached.goal_class ?? journey?.goal_class ?? classifyStandaloneGoal(attached, surfaces);
+    if (structured) {
+      if (attached.journey_id && !selectedJourneyIds.has(attached.journey_id)) continue;
+      if (!isSeedGoalClass(goalClass)) continue;
+    }
+    goals.push({ ...attached, goal_class: goalClass });
+  }
+
+  if (structured) {
+    for (const journey of journeys) {
+      if (!selectedJourneyIds.has(journey.id)) continue;
+      if (!isSeedGoalClass(journey.goal_class ?? 'peripheral')) continue;
+      if (goals.some((goal) => goal.journey_id === journey.id)) continue;
+      goals.push({
+        id: `synth-${journey.id}`,
+        description: journey.suggested_goal,
+        priority: journey.priority === 'must' ? 'must' : 'should',
+        journey_id: journey.id,
+        surface_ids: journey.surface_ids,
+        goal_class: journey.goal_class,
+      });
+    }
   }
 
   // Legacy v1 Discovery only had prose, so these supplements protected against
@@ -330,25 +376,53 @@ function normalizeDiscoveryCoveragePlan(
   plan: DiscoveryCoveragePlan | undefined,
   journeys: DiscoveryJourney[],
   surfaces: DiscoverySurface[],
+  productUseContract: ProductUseContract | undefined,
 ): DiscoveryCoveragePlan | undefined {
   if (!plan && journeys.length === 0 && surfaces.length === 0) return undefined;
   const journeyIds = new Set(journeys.map((journey) => journey.id));
   const surfaceIds = new Set(surfaces.map((surface) => surface.id));
+  const contractJourneyIds = new Set(
+    productUseContract?.user_jobs
+      .map((job) => job.journey_id)
+      .filter((id): id is string => Boolean(id)) ?? [],
+  );
   const selected = plan?.selected_journey_ids.filter((id) => journeyIds.has(id)) ?? [];
-  const selected_journey_ids =
+  const requestedSelection =
     selected.length > 0
       ? selected
       : journeys.filter((j) => j.priority !== 'could').map((j) => j.id);
+  const requiredSelection = journeys
+    .filter((journey) => journey.priority !== 'could')
+    .filter((journey) => journey.goal_class === 'core' || contractJourneyIds.has(journey.id))
+    .map((journey) => journey.id);
+  let selected_journey_ids = [...new Set([...requiredSelection, ...requestedSelection])].filter(
+    (id) => {
+      const journey = journeys.find((candidate) => candidate.id === id);
+      return journey ? isSeedGoalClass(journey.goal_class ?? 'peripheral') : false;
+    },
+  );
+  if (selected_journey_ids.length === 0) {
+    selected_journey_ids = journeys
+      .filter((journey) => isSeedGoalClass(journey.goal_class ?? 'peripheral'))
+      .map((journey) => journey.id);
+  }
   const selectedSurfaceIds = new Set(
     journeys
       .filter((journey) => selected_journey_ids.includes(journey.id))
       .flatMap((journey) => journey.surface_ids),
   );
-  const deferred = (
-    plan?.deferred_surface_ids.length
-      ? plan.deferred_surface_ids.filter((id) => surfaceIds.has(id))
-      : surfaces.filter((surface) => surface.value === 'peripheral').map((surface) => surface.id)
-  ).filter((id) => !selectedSurfaceIds.has(id));
+  const unselectedMaterialitySurfaceIds = journeys
+    .filter((journey) => !selected_journey_ids.includes(journey.id))
+    .filter((journey) => !isSeedGoalClass(journey.goal_class ?? 'peripheral'))
+    .flatMap((journey) => journey.surface_ids);
+  const requestedDeferred = plan?.deferred_surface_ids.filter((id) => surfaceIds.has(id)) ?? [];
+  const defaultDeferred = [
+    ...surfaces.filter((surface) => surface.value === 'peripheral').map((surface) => surface.id),
+    ...unselectedMaterialitySurfaceIds,
+  ];
+  const deferred = [...new Set([...requestedDeferred, ...defaultDeferred])].filter(
+    (id) => !selectedSurfaceIds.has(id),
+  );
   return {
     selected_journey_ids,
     deferred_surface_ids: deferred,
@@ -379,10 +453,9 @@ function attachDiscoveryGoalRefs(
   const matchingJourney =
     journeys.find(
       (journey) =>
-        selected.has(journey.id) &&
-        (normalizedGoal.includes(journey.title.toLowerCase()) ||
-          journey.suggested_goal.toLowerCase().includes(normalizedGoal.slice(0, 60)) ||
-          normalizedGoal.includes(journey.suggested_goal.toLowerCase().slice(0, 60))),
+        normalizedGoal.includes(journey.title.toLowerCase()) ||
+        journey.suggested_goal.toLowerCase().includes(normalizedGoal.slice(0, 60)) ||
+        normalizedGoal.includes(journey.suggested_goal.toLowerCase().slice(0, 60)),
     ) ?? journeys.find((journey) => selected.has(journey.id));
   if (!matchingJourney) return goal;
   return {
@@ -672,6 +745,197 @@ export async function runDiscovery(inputs: DiscoveryRunInputs): Promise<Discover
   } catch {
     return null;
   }
+}
+
+function normalizeJourneyMateriality(
+  journeys: DiscoveryJourney[],
+  surfaces: DiscoverySurface[],
+  productUseContract: ProductUseContract | undefined,
+): DiscoveryJourney[] {
+  const byId = new Map(surfaces.map((surface) => [surface.id, surface]));
+  return journeys.map((journey) => {
+    const selectedSurfaces = journey.surface_ids
+      .map((id) => byId.get(id))
+      .filter((surface): surface is DiscoverySurface => Boolean(surface));
+    return {
+      ...journey,
+      goal_class: classifyJourneyMateriality(journey, selectedSurfaces, productUseContract),
+    };
+  });
+}
+
+function classifyStandaloneGoal(
+  goal: DiscoveryGoal,
+  surfaces: DiscoverySurface[],
+): DiscoveryGoalClass {
+  const selected = surfaces.filter((surface) => goal.surface_ids.includes(surface.id));
+  return classifyMateriality({
+    priority: goal.priority,
+    risk: goal.priority === 'must' ? 'high' : 'medium',
+    title: titleFromGoal(goal.description),
+    text: goal.description,
+    surfaces: selected,
+    productKinds: [],
+  });
+}
+
+function classifyJourneyMateriality(
+  journey: DiscoveryJourney,
+  surfaces: DiscoverySurface[],
+  productUseContract: ProductUseContract | undefined,
+): DiscoveryGoalClass {
+  const productKinds = productUseContract?.product_kinds ?? [];
+  const contractBacked =
+    productUseContract?.user_jobs.some((job) => job.journey_id === journey.id) ?? false;
+  const computed = classifyMateriality({
+    priority: journey.priority,
+    risk: journey.risk,
+    title: journey.title,
+    text: [
+      journey.title,
+      journey.user_intent,
+      journey.suggested_goal,
+      ...journey.expected_evidence,
+    ].join(' '),
+    surfaces,
+    productKinds,
+  });
+  if (!journey.goal_class) return computed;
+  if (contractBacked && isSeedGoalClass(computed)) return computed;
+  if (computed === 'setup' || computed === 'peripheral' || computed === 'diagnostic')
+    return computed;
+  if (journey.goal_class === 'setup' || journey.goal_class === 'peripheral')
+    return journey.goal_class;
+  return computed;
+}
+
+function classifyMateriality(input: {
+  priority: 'must' | 'should' | 'could';
+  risk: 'high' | 'medium' | 'low';
+  title: string;
+  text: string;
+  surfaces: DiscoverySurface[];
+  productKinds: ProductKind[];
+}): DiscoveryGoalClass {
+  const surfaceText = input.surfaces
+    .map((surface) => `${surface.kind} ${surface.value} ${surface.label} ${surface.url}`)
+    .join(' ');
+  const text = `${input.title} ${input.text} ${surfaceText}`.toLowerCase();
+  const hasCoreSurface = input.surfaces.some((surface) => surface.value === 'core');
+  const hasSecondarySurface = input.surfaces.some(
+    (surface) => surface.value === 'important_secondary',
+  );
+  const allPeripheral =
+    input.surfaces.length > 0 && input.surfaces.every((surface) => surface.value === 'peripheral');
+  const hasSetupSurface = input.surfaces.some(
+    (surface) => surface.kind === 'banner' || surface.kind === 'modal',
+  );
+
+  if (isPeripheralText(text) || allPeripheral)
+    return text.includes('sample') ? 'sample' : 'peripheral';
+  if (isSetupText(text) || (hasSetupSurface && isDismissalText(text))) return 'setup';
+  if (isDiagnosticText(text)) return 'diagnostic';
+
+  const productJobScore = productJobTerms(input.productKinds).filter((term) =>
+    term.test(text),
+  ).length;
+  const actionScore = materialActionTerms.filter((term) => term.test(text)).length;
+  const evidenceScore = materialEvidenceTerms.filter((term) => term.test(text)).length;
+
+  if (
+    input.priority === 'must' ||
+    input.risk === 'high' ||
+    hasCoreSurface ||
+    productJobScore >= 2 ||
+    (actionScore > 0 && evidenceScore > 0)
+  ) {
+    return 'core';
+  }
+  if (hasSecondarySurface || productJobScore > 0 || actionScore > 0) return 'secondary_workflow';
+  return 'sample';
+}
+
+function isSeedGoalClass(goalClass: DiscoveryGoalClass): boolean {
+  return goalClass === 'core' || goalClass === 'secondary_workflow';
+}
+
+function isPeripheralText(text: string): boolean {
+  return /\b(privacy|terms|legal|license|copyright|creative commons|cookie|cookies|app store|google play|mobile app|ios app|android app|sister[- ]project|footer link|policy|sdk documentation|developer docs|user manual|send feedback|help center|support page)\b/.test(
+    text,
+  );
+}
+
+function isSetupText(text: string): boolean {
+  return /\b(dismiss|close|clear|hide|accept|reject|consent|obstruct|blocks?|banner|modal|popup|pop-up|overlay|promo|promotion|newsletter|donation prompt|fundraiser prompt)\b/.test(
+    text,
+  );
+}
+
+function isDismissalText(text: string): boolean {
+  return /\b(dismiss|close|clear|hide|accept|reject|no thanks|skip)\b/.test(text);
+}
+
+function isDiagnosticText(text: string): boolean {
+  return (
+    /\b(diagnostic|smoke|baseline|health check)\b/.test(text) ||
+    /\b(check|confirm|verify)\b.*\b(layout|accessibility|axe|console|error state)\b/.test(text)
+  );
+}
+
+const materialActionTerms = [
+  /\b(create|add|write|type|draw|place|insert|upload|import|export|download|save|publish|submit)\b/,
+  /\b(edit|modify|format|style|resize|move|duplicate|delete|undo|redo|filter|sort|search|open and read)\b/,
+  /\b(share|collaborate|checkout|cart|sign[- ]?in|sign[- ]?up|configure|apply)\b/,
+];
+
+const materialEvidenceTerms = [
+  /\b(artifact|document|diagram|canvas|board|shape|text|paragraph|note|record|row|item|result|article|table|chart|file|download|state change|updated|appears|visible)\b/,
+];
+
+function productJobTerms(productKinds: ProductKind[]): RegExp[] {
+  const terms: RegExp[] = [];
+  for (const kind of productKinds) {
+    switch (kind) {
+      case 'canvas_editor':
+        terms.push(
+          /\b(canvas|whiteboard|diagram|draw|shape|arrow|connector|text|note|style|resize|move|export|share)\b/,
+        );
+        break;
+      case 'document_editor':
+        terms.push(/\b(document|paragraph|heading|bold|italic|format|save|export|publish)\b/);
+        break;
+      case 'search_content':
+      case 'content_site':
+        terms.push(
+          /\b(search|query|result|article|read|section|contents|reference|citation|language|history|edit|talk)\b/,
+        );
+        break;
+      case 'crud_workflow':
+        terms.push(/\b(create|record|row|item|edit|update|delete|save|submit|list)\b/);
+        break;
+      case 'dashboard_filtering':
+        terms.push(/\b(filter|sort|drill|chart|table|metric|dashboard|data)\b/);
+        break;
+      case 'commerce_checkout':
+        terms.push(/\b(product|cart|checkout|item|quantity|shipping|payment)\b/);
+        break;
+      case 'auth_account':
+        terms.push(/\b(account|auth|sign[- ]?in|sign[- ]?up|login|share|collaborat|permission)\b/);
+        break;
+      case 'media_tool':
+        terms.push(/\b(upload|media|image|video|transform|process|export|download)\b/);
+        break;
+      case 'communication_tool':
+        terms.push(/\b(message|send|reply|thread|channel|conversation|notification)\b/);
+        break;
+      case 'developer_tool':
+        terms.push(/\b(api|sdk|docs|key|code|example|integration|deploy|build)\b/);
+        break;
+      default:
+        break;
+    }
+  }
+  return terms;
 }
 
 const DISCOVERY_SURFACE_KINDS = new Set([

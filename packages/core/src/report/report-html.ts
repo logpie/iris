@@ -59,7 +59,15 @@ export function buildReportHtml(report: ReportJson, opts: BuildReportHtmlOptions
     const goalFindingLinks = buildGoalFindingLinks(report, eventIndex);
     parts.push(renderTLDR(report, eventIndex));
     parts.push(renderAccessBlocks(report));
-    parts.push(renderGoalEvidenceSection(report, eventIndex, screenshotForEvent, clipPaths, goalFindingLinks));
+    parts.push(
+      renderGoalEvidenceSection(
+        report,
+        eventIndex,
+        screenshotForEvent,
+        clipPaths,
+        goalFindingLinks,
+      ),
+    );
     parts.push(
       renderFindingsSection(
         report.findings,
@@ -280,15 +288,25 @@ const STYLES = `
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
+    align-items: center;
   }
   .integrity-strip span {
-    font-family: var(--mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     background: var(--bg-soft);
     border: 1px solid var(--rule-light);
     border-radius: 999px;
     padding: 3px 8px;
+  }
+  .integrity-strip .integrity-label {
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    background: transparent;
+    border: none;
+    padding-left: 0;
   }
   .score-warning {
     margin-top: 12px;
@@ -761,22 +779,115 @@ const STYLES = `
     margin-top: 28px;
   }
   .goal-review .section-head {
-    margin-bottom: 10px;
+    margin-bottom: 14px;
+  }
+  .goal-review-overview {
+    border: 1px solid var(--rule-light);
+    border-radius: 6px;
+    background: #fff;
+    padding: 14px;
+  }
+  .goal-review-topline {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    align-items: flex-start;
+  }
+  .goal-review-topline h2 {
+    margin: 0;
+  }
+  .goal-review-topline p {
+    max-width: 720px;
+    margin: 4px 0 0;
+    color: var(--text-dim);
+    font-size: 13px;
   }
   .goal-review-stats {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-    margin-top: 8px;
+    justify-content: flex-end;
+    min-width: 210px;
   }
-  .goal-review-stats span {
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
     font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-dim);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    line-height: 1.35;
+    text-transform: uppercase;
     border: 1px solid var(--rule-light);
     background: var(--bg-soft);
+    color: var(--text-dim);
     padding: 2px 7px;
     border-radius: 999px;
+  }
+  .status-pill.status-verified {
+    color: var(--status-pass);
+    background: #dafbe1;
+    border-color: #aceebb;
+  }
+  .status-pill.status-partial {
+    color: var(--status-partial);
+    background: #fff8c5;
+    border-color: #eed888;
+  }
+  .status-pill.status-broken {
+    color: var(--status-fail);
+    background: #ffebe9;
+    border-color: #ffcecb;
+  }
+  .status-pill.status-untested,
+  .status-pill.status-skipped,
+  .status-pill.status-mixed,
+  .status-pill.status-neutral {
+    color: var(--text-dim);
+    background: var(--bg-soft);
+    border-color: var(--rule-light);
+  }
+  .goal-review-facts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .goal-review-fact {
+    border: 1px solid var(--rule-light);
+    background: var(--bg-soft);
+    border-radius: 5px;
+    padding: 8px 10px;
+    min-width: 0;
+  }
+  .goal-review-fact span {
+    display: block;
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .goal-review-fact strong {
+    display: block;
+    margin-top: 2px;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.35;
+  }
+  @media (max-width: 760px) {
+    .goal-review-topline {
+      display: block;
+    }
+    .goal-review-stats {
+      justify-content: flex-start;
+      margin-top: 10px;
+      min-width: 0;
+    }
+    .goal-review-facts {
+      grid-template-columns: 1fr;
+    }
   }
   .goal-proof-groups {
     display: grid;
@@ -792,16 +903,36 @@ const STYLES = `
     display: flex;
     justify-content: space-between;
     gap: 12px;
-    align-items: baseline;
-    padding: 10px 12px;
+    align-items: center;
+    padding: 13px 14px;
     background: var(--bg-soft);
     border-bottom: 1px solid var(--rule-light);
   }
   .goal-proof-group-head h3 {
     margin: 0;
-    font-size: 15px;
+    font-size: 17px;
+    line-height: 1.35;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    flex-wrap: wrap;
   }
-  .goal-proof-group-head span {
+  .goal-id-badge {
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .goal-proof-group-meta {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .goal-proof-group-count {
     font-family: var(--mono);
     font-size: 11px;
     color: var(--text-faint);
@@ -814,14 +945,30 @@ const STYLES = `
     display: grid;
     grid-template-columns: minmax(300px, 42%) minmax(0, 1fr);
     gap: 16px;
-    padding: 14px;
+    padding: 16px;
     border-top: 1px solid var(--rule-light);
     align-items: start;
   }
   .goal-proof-row:first-child { border-top: none; }
+  .goal-proof-row.status-partial {
+    background: #fffdf2;
+  }
+  .goal-proof-row.status-broken {
+    background: #fff8f7;
+  }
+  .goal-proof-row.status-untested,
+  .goal-proof-row.status-skipped {
+    background: var(--bg-soft);
+  }
   .goal-proof-row.no-frame {
     display: block;
     background: var(--bg-soft);
+  }
+  .goal-proof-row.no-frame.status-partial {
+    background: #fffdf2;
+  }
+  .goal-proof-row.no-frame.status-broken {
+    background: #fff8f7;
   }
   .goal-proof-media {
     min-width: 0;
@@ -861,34 +1008,24 @@ const STYLES = `
     min-width: 0;
     padding-top: 1px;
   }
-  .goal-proof-kicker {
+  .goal-proof-card-heading {
     display: flex;
     gap: 8px;
     align-items: baseline;
     flex-wrap: wrap;
-    margin-bottom: 4px;
-  }
-  .goal-proof-kicker .claim {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-faint);
-  }
-  .goal-proof-kicker .status {
-    font-family: var(--mono);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--status-pass);
+    margin-bottom: 8px;
   }
   .goal-proof-title {
     font-weight: 600;
-    font-size: 14px;
+    font-size: 16px;
     line-height: 1.35;
+    flex: 1 1 240px;
   }
   .goal-proof-context {
-    margin-top: 4px;
+    margin-top: 2px;
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: 14px;
+    line-height: 1.5;
   }
   .goal-linked-findings {
     margin-top: 9px;
@@ -914,19 +1051,19 @@ const STYLES = `
   .goal-proof-context .label,
   .goal-proof-scope .label {
     display: inline-block;
-    min-width: 62px;
+    min-width: 76px;
     font-family: var(--mono);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-faint);
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    margin-right: 6px;
+    margin-right: 8px;
   }
   .goal-proof-scope {
-    margin-top: 7px;
+    margin-top: 8px;
     color: var(--text-dim);
-    font-size: 12px;
-    line-height: 1.45;
+    font-size: 14px;
+    line-height: 1.5;
   }
   .goal-proof-scope ul {
     display: inline-block;
@@ -935,9 +1072,20 @@ const STYLES = `
     vertical-align: top;
   }
   .goal-proof-origin {
-    margin-top: 8px;
+    margin-top: 12px;
     color: var(--text-dim);
-    font-size: 12px;
+    font-size: 13px;
+  }
+  .goal-proof-origin > summary {
+    cursor: pointer;
+    color: var(--link);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .goal-proof-origin-body {
+    display: grid;
+    gap: 4px;
+    margin-top: 6px;
   }
   .goal-proof-origin-row {
     display: flex;
@@ -947,9 +1095,9 @@ const STYLES = `
     margin-top: 4px;
   }
   .goal-proof-origin-row .label {
-    min-width: 62px;
+    min-width: 76px;
     font-family: var(--mono);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-faint);
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -961,13 +1109,29 @@ const STYLES = `
     vertical-align: middle;
   }
   .discovery-summary {
-    margin-top: 10px;
-    padding: 10px;
+    margin-top: 18px;
     border: 1px solid var(--rule-light);
     border-radius: 6px;
     background: var(--bg-soft);
     color: var(--text-dim);
     font-size: 12px;
+    overflow: hidden;
+  }
+  .discovery-summary > summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    cursor: pointer;
+    list-style: none;
+    padding: 11px 12px;
+  }
+  .discovery-summary > summary::-webkit-details-marker {
+    display: none;
+  }
+  .discovery-summary-body {
+    border-top: 1px solid var(--rule-light);
+    padding: 10px 12px 12px;
   }
   .discovery-summary-title {
     color: var(--text);
@@ -978,6 +1142,7 @@ const STYLES = `
     color: var(--text-faint);
     font-family: var(--mono);
     font-size: 11px;
+    text-align: right;
   }
   .discovery-summary-grid {
     display: grid;
@@ -1018,11 +1183,11 @@ const STYLES = `
     margin-right: 4px;
   }
   .product-use-contract {
-    margin-top: 9px;
+    margin-top: 12px;
     border: 1px solid var(--rule-light);
     border-radius: 5px;
-    background: #fff;
-    padding: 8px;
+    background: var(--bg-soft);
+    padding: 9px 10px;
   }
   .product-use-title {
     color: var(--text-faint);
@@ -1035,6 +1200,16 @@ const STYLES = `
     margin-top: 4px;
     color: var(--text);
     font-weight: 600;
+    max-width: 900px;
+  }
+  .product-use-details {
+    margin-top: 6px;
+  }
+  .product-use-details > summary {
+    cursor: pointer;
+    color: var(--link);
+    font-family: var(--mono);
+    font-size: 11px;
   }
   .product-use-meta {
     margin-top: 4px;
@@ -1054,6 +1229,15 @@ const STYLES = `
     gap: 6px;
     margin-top: 8px;
   }
+  .product-use-jobs-details {
+    margin-top: 8px;
+  }
+  .product-use-jobs-details > summary {
+    cursor: pointer;
+    color: var(--link);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
   .product-use-job {
     border-top: 1px solid var(--rule-light);
     padding-top: 6px;
@@ -1061,6 +1245,12 @@ const STYLES = `
   .product-use-job:first-child {
     border-top: none;
     padding-top: 0;
+  }
+  .product-use-job > div:first-child {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
   }
   .product-use-job strong {
     color: var(--text);
@@ -1074,7 +1264,7 @@ const STYLES = `
     margin-right: 5px;
   }
   .discovery-map {
-    margin-top: 9px;
+    margin-top: 0;
     border: 1px solid var(--rule-light);
     border-radius: 5px;
     background: #fff;
@@ -1381,6 +1571,106 @@ const STYLES = `
     font-size: 14px;
   }
   .profile-score.is-missing { background: var(--bg-soft); }
+  .score-value {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    border: 1px solid var(--rule-light);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-family: var(--mono);
+    font-weight: 700;
+    line-height: 1.35;
+  }
+  .score-value.score-high {
+    color: var(--status-pass);
+    background: #dafbe1;
+    border-color: #aceebb;
+  }
+  .score-value.score-mid {
+    color: var(--status-partial);
+    background: #fff8c5;
+    border-color: #eed888;
+  }
+  .score-value.score-low {
+    color: var(--status-fail);
+    background: #ffebe9;
+    border-color: #ffcecb;
+  }
+  .score-value.score-none {
+    color: var(--text-faint);
+    background: var(--bg-soft);
+    border-color: var(--rule-light);
+  }
+  .score-profile-grid {
+    display: grid;
+    gap: 12px;
+  }
+  .score-profile-card {
+    border: 1px solid var(--rule-light);
+    border-radius: 6px;
+    background: #fff;
+    overflow: hidden;
+  }
+  .score-profile-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--bg-soft);
+    border-bottom: 1px solid var(--rule-light);
+  }
+  .score-profile-head h3 {
+    margin: 0;
+    font-size: 15px;
+    text-transform: capitalize;
+  }
+  .score-profile-head strong {
+    font-family: var(--mono);
+    font-size: 16px;
+  }
+  .score-dimension-list {
+    display: grid;
+  }
+  .score-dimension {
+    display: grid;
+    grid-template-columns: minmax(160px, 0.55fr) minmax(0, 1fr);
+    gap: 12px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--rule-light);
+  }
+  .score-dimension:first-child {
+    border-top: none;
+  }
+  .score-dimension.is-missing {
+    background: #fbfcfd;
+  }
+  .score-dimension-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+  }
+  .score-dimension-title span {
+    font-weight: 600;
+  }
+  .score-dimension-title strong,
+  .score-dimension-title .score-na {
+    font-family: var(--mono);
+    white-space: nowrap;
+  }
+  .score-dimension-rationale {
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  @media (max-width: 760px) {
+    .score-dimension {
+      grid-template-columns: 1fr;
+    }
+  }
   .matrix-wrap {
     overflow-x: auto;
     border: 1px solid var(--rule-light);
@@ -1435,6 +1725,18 @@ const STYLES = `
   }
   .matrix-evidence {
     margin-top: 5px;
+  }
+  .matrix-evidence > summary {
+    cursor: pointer;
+    color: var(--link);
+    font-family: var(--mono);
+    font-size: 10px;
+  }
+  .matrix-evidence-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
   }
 
   /* Caveats */
@@ -1570,6 +1872,53 @@ const STYLES = `
     .audit-section > summary, .debug-panel > summary { display: none; }
     video { display: none; }
   }
+
+  @media (max-width: 760px) {
+    .section-head {
+      display: block;
+    }
+    .overall-mini {
+      margin-top: 8px;
+    }
+    .goal-proof-group-head {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .goal-proof-group-meta {
+      justify-content: flex-start;
+    }
+    .goal-proof-row {
+      grid-template-columns: 1fr;
+      gap: 12px;
+      padding: 12px;
+    }
+    .goal-proof-media {
+      width: 100%;
+    }
+    .goal-proof-media img,
+    .goal-proof-media video {
+      max-height: 260px;
+    }
+    .score-dimension {
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
+    .score-profile-head {
+      align-items: flex-start;
+    }
+    .profile-strip {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 440px) {
+    .profile-strip {
+      grid-template-columns: 1fr;
+    }
+    .goal-proof-title {
+      flex-basis: 100%;
+    }
+  }
 `;
 
 const REPORT_SCRIPT = `<script>
@@ -1604,11 +1953,11 @@ function renderHeader(report: ReportJson): string {
     <h1>${escapeHtml(targetDisplay(report.run.target.url))}</h1>
     <div class="meta-strip">
       <span>${escapeHtml(new Date(report.run.started_at).toLocaleString())}</span>
-      <span>${escapeHtml(report.run.mode)}</span>
+      <span>${escapeHtml(report.run.mode)} mode</span>
       <span>${formatDuration(report.run.duration_s)}</span>
       ${cost}
-      <span>${report.run.step_count} steps</span>
-      <span>termination: ${escapeHtml(report.run.termination)}</span>
+      <span>${report.run.step_count} recorded steps</span>
+      <span>ended: ${escapeHtml(report.run.termination)}</span>
     </div>
     <div class="target">→ <a href="${escapeAttr(report.run.target.url)}" target="_blank" rel="noopener">${escapeHtml(report.run.target.url)}</a></div>
   </header>`;
@@ -1654,11 +2003,11 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
       </div>
     </div>
     <div class="metric-grid">
-      ${renderMetric('Goals', counts.total > 0 ? `${counts.sat}/${counts.total}` : 'n/a', counts.total > 0 ? goalMetricCaption(counts) : 'no scenario goals')}
+      ${renderMetric('Tested goals', counts.total > 0 ? `${counts.sat}/${counts.total}` : 'n/a', counts.total > 0 ? goalMetricCaption(counts) : 'no scenario goals')}
       ${renderMetric('Findings', totalFindings === 0 ? '0' : String(totalFindings), findingsMetricCaption(report))}
-      ${renderMetric('Runtime', formatDuration(report.run.duration_s), `${report.run.step_count} steps`)}
+      ${renderMetric('Runtime', formatDuration(report.run.duration_s), `${report.run.step_count} recorded steps`)}
       ${renderMetric('Rubric', `${scoreCompleteness.scoredProfiles}/${scoreCompleteness.requestedProfiles}`, scoreCompleteness.caption)}
-      ${renderMetric('Termination', report.run.termination, report.run.mode)}
+      ${renderMetric('Run ended', report.run.termination, report.run.mode)}
       ${
         usage
           ? renderMetric(
@@ -1668,7 +2017,6 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
             )
           : ''
       }
-      ${report.run.cost_usd > 0.005 ? renderMetric('Cost', `$${report.run.cost_usd.toFixed(2)}`, 'provider reported') : ''}
     </div>
     ${renderRunMetadata(report)}
     ${scoreWarning}
@@ -1678,27 +2026,32 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
 
 function renderRunMetadata(report: ReportJson): string {
   const transport = report.run.transport ?? 'not recorded';
-  const phaseRows: Array<{ label: string; model: string | undefined; effort: string | undefined }> = [
-    {
-      label: 'Discovery',
-      model: report.run.models.discovery ?? report.run.models.explorer,
-      effort: report.run.reasoning_efforts?.discovery,
-    },
-    {
-      label: 'Explorer',
-      model: report.run.models.explorer,
-      effort: report.run.reasoning_efforts?.explorer,
-    },
-    {
-      label: 'Judge',
-      model: report.run.models.judge,
-      effort: report.run.reasoning_efforts?.judge,
-    },
-  ];
+  const phaseRows: Array<{ label: string; model: string | undefined; effort: string | undefined }> =
+    [
+      {
+        label: 'Discovery',
+        model: report.run.models.discovery ?? report.run.models.explorer,
+        effort: report.run.reasoning_efforts?.discovery,
+      },
+      {
+        label: 'Explorer',
+        model: report.run.models.explorer,
+        effort: report.run.reasoning_efforts?.explorer,
+      },
+      {
+        label: 'Judge',
+        model: report.run.models.judge,
+        effort: report.run.reasoning_efforts?.judge,
+      },
+    ];
   const items = [
     renderRunMetaItem('Transport', transport, report.run.mode),
     ...phaseRows.map((phase) =>
-      renderRunMetaItem(phase.label, phase.model ?? 'not recorded', `effort ${phase.effort ?? 'not recorded'}`),
+      renderRunMetaItem(
+        phase.label,
+        phase.model ?? 'not recorded',
+        `effort ${phase.effort ?? 'not recorded'}`,
+      ),
     ),
   ];
   return `<div class="run-meta-panel" aria-label="Run metadata">
@@ -1883,25 +2236,24 @@ function renderEvidenceIntegrity(report: ReportJson): string {
   if (ev && ev.verified + ev.downgraded + ev.discarded > 0) {
     const kept = ev.verified + ev.downgraded;
     if (kept === 0) {
-      lines.push(
-        `${kept} product findings kept${ev.discarded > 0 ? `; ${ev.discarded} discarded as unsupported` : ''}`,
-      );
+      if (ev.discarded > 0) lines.push(`${ev.discarded} unsupported finding drafts discarded`);
     } else {
-      const parts = [`${ev.verified}/${kept} kept findings evidence-backed`];
+      const parts = [`${ev.verified} evidence-backed finding${ev.verified === 1 ? '' : 's'}`];
       if (ev.downgraded > 0) parts.push(`${ev.downgraded} downgraded`);
-      if (ev.discarded > 0) parts.push(`${ev.discarded} discarded as unsupported`);
+      if (ev.discarded > 0) parts.push(`${ev.discarded} unsupported drafts discarded`);
       lines.push(parts.join(', '));
     }
   }
   const gcv = report.spec_compliance?.goal_claim_validation;
   if (gcv && gcv.verified_kept + gcv.downgraded > 0) {
-    const total = gcv.verified_kept + gcv.downgraded;
-    const parts = [`${gcv.verified_kept}/${total} goal claims kept verified`];
+    const parts = [
+      `${gcv.verified_kept} goal-evidence claim${gcv.verified_kept === 1 ? '' : 's'} verified`,
+    ];
     if (gcv.downgraded > 0) parts.push(`${gcv.downgraded} downgraded`);
     lines.push(parts.join(', '));
   }
   if (lines.length === 0) return '';
-  return `<div class="integrity-strip">${lines.map((line) => `<span>${escapeHtml(line)}</span>`).join('')}</div>`;
+  return `<div class="integrity-strip"><span class="integrity-label">Evidence audit</span>${lines.map((line) => `<span>${escapeHtml(line)}</span>`).join('')}</div>`;
 }
 
 function renderAccessBlocks(report: ReportJson): string {
@@ -1970,6 +2322,30 @@ function goalStatusLabel(status: string): string {
     default:
       return 'untested';
   }
+}
+
+function goalStatusClass(status: string): string {
+  if (status === 'mixed') return 'status-mixed';
+  if (status === 'neutral') return 'status-neutral';
+  switch (goalStatusLabel(status)) {
+    case 'verified':
+      return 'status-verified';
+    case 'partial':
+      return 'status-partial';
+    case 'broken':
+      return 'status-broken';
+    case 'skipped':
+      return 'status-skipped';
+    case 'untested':
+      return 'status-untested';
+    default:
+      return status === 'mixed' ? 'status-mixed' : 'status-neutral';
+  }
+}
+
+function renderStatusPill(status: string, label = goalStatusLabel(status)): string {
+  const displayLabel = status === 'mixed' && label === goalStatusLabel(status) ? 'mixed' : label;
+  return `<span class="status-pill ${escapeAttr(goalStatusClass(status))}">${escapeHtml(displayLabel)}</span>`;
 }
 
 // Normalizes goal status across the Judge's pre- and post-Phase-5 enums, and
@@ -2118,26 +2494,59 @@ function renderGoalEvidenceSection(
   );
   if (cards.length === 0) return '';
   const groups = groupGoalEvidenceCards(cards);
-  const deduped = cards.length === counts.total ? '' : `${cards.length} proof rows after dedupe`;
   return `<section class="goal-review">
     <div class="section-head">
-      <div>
-        <h2>Tested goals &amp; evidence</h2>
-        <p>Goal results are grouped by product surface and paired with the proof that supports them. These are scenario checks; the rubric matrix below scores cross-cutting dimensions over the same evidence.</p>
-        <div class="goal-review-stats">
-          <span>${escapeHtml(`${counts.sat}/${counts.total} verified`)}</span>
-          ${deduped ? `<span>${escapeHtml(deduped)}</span>` : ''}
-          ${counts.par > 0 ? `<span>${escapeHtml(`${counts.par} partial`)}</span>` : ''}
-          ${counts.neg > 0 ? `<span>${escapeHtml(`${counts.neg} broken`)}</span>` : ''}
-          ${counts.untested > 0 ? `<span>${escapeHtml(`${counts.untested} untested`)}</span>` : ''}
+      <div class="goal-review-overview">
+        <div class="goal-review-topline">
+          <div>
+            <h2>Tested goals &amp; evidence</h2>
+            <p>Each card pairs a real-use goal with the screenshot or clip Iris used to verify it.</p>
+          </div>
+          ${renderGoalReviewStats(counts, cards.length)}
         </div>
-        ${renderDiscoveryCoverageSummary(report)}
+        ${renderGoalReviewFacts(report, counts)}
+        ${renderProductUseContract(report)}
       </div>
     </div>
     <div class="goal-proof-groups">
       ${groups.map((group) => renderGoalEvidenceGroup(group)).join('')}
     </div>
+    ${renderDiscoveryCoverageSummary(report)}
   </section>`;
+}
+
+function renderGoalReviewStats(counts: GoalCounts, proofRowCount: number): string {
+  const chips = [
+    renderStatusPill('verified', `${counts.sat}/${counts.total} verified`),
+    counts.par > 0 ? renderStatusPill('partial', `${counts.par} partial`) : '',
+    counts.neg > 0 ? renderStatusPill('blocked', `${counts.neg} broken`) : '',
+    counts.untested > 0 ? renderStatusPill('untested', `${counts.untested} untested`) : '',
+    counts.skipped > 0 ? renderStatusPill('skipped', `${counts.skipped} skipped`) : '',
+    proofRowCount === counts.total
+      ? ''
+      : renderStatusPill('neutral', `${proofRowCount} proof rows after dedupe`),
+  ].filter(Boolean);
+  return `<div class="goal-review-stats">${chips.join('')}</div>`;
+}
+
+function renderGoalReviewFacts(report: ReportJson, counts: GoalCounts): string {
+  const discovery = report.discovery;
+  const surfaceCount = discovery?.surfaces?.length ?? 0;
+  const journeyCount = discovery?.journeys?.length ?? 0;
+  const coveragePlan = discovery?.coverage_plan;
+  const risk = coveragePlan?.coverage_risk ?? 'not recorded';
+  const deferredCount = coveragePlan?.deferred_surface_ids.length ?? 0;
+  const coverageText =
+    surfaceCount > 0 && journeyCount > 0
+      ? `${surfaceCount} surfaces, ${journeyCount} journeys`
+      : surfaceCount > 0
+        ? `${surfaceCount} surfaces`
+        : 'not recorded';
+  return `<div class="goal-review-facts">
+    <div class="goal-review-fact"><span>Goal outcome</span><strong>${escapeHtml(`${counts.sat}/${counts.total} verified${counts.par > 0 ? `, ${counts.par} partial` : ''}`)}</strong></div>
+    <div class="goal-review-fact"><span>Discovery coverage</span><strong>${escapeHtml(coverageText)}</strong></div>
+    <div class="goal-review-fact"><span>Coverage risk</span><strong>${escapeHtml(`${risk}${deferredCount > 0 ? `, ${deferredCount} deferred` : ''}`)}</strong></div>
+  </div>`;
 }
 
 function renderDiscoveryCoverageSummary(report: ReportJson): string {
@@ -2181,10 +2590,12 @@ function renderDiscoveryCoverageSummary(report: ReportJson): string {
     discovery.surfaces ?? [],
     Number.POSITIVE_INFINITY,
   );
-  return `<div class="discovery-summary">
-    <div class="discovery-summary-title">Discovery v2 coverage plan</div>
-    <div class="discovery-summary-meta">${escapeHtml(parts.join(' · '))}</div>
-    ${renderProductUseContract(report)}
+  return `<details class="discovery-summary">
+    <summary>
+      <span class="discovery-summary-title">Discovery v2 coverage plan</span>
+      <span class="discovery-summary-meta">${escapeHtml(parts.join(' · '))}</span>
+    </summary>
+    <div class="discovery-summary-body">
     ${renderDiscoveryCoverageMap(report, selectedJourneyIds, selected)}
     <div class="discovery-deferred">
       <span class="discovery-deferred-label">Deferred surfaces</span>
@@ -2196,7 +2607,8 @@ function renderDiscoveryCoverageSummary(report: ReportJson): string {
         ? `<details class="discovery-inventory"><summary>${escapeHtml(`Surface inventory (${surfaceInventory.length})`)}</summary>${renderDiscoveryChips(surfaceInventory)}</details>`
         : ''
     }
-  </div>`;
+    </div>
+  </details>`;
 }
 
 function renderProductUseContract(report: ReportJson): string {
@@ -2219,31 +2631,48 @@ function renderProductUseContract(report: ReportJson): string {
       if (status) statuses.push(status);
     }
     const status = statuses.length > 0 ? summarizeStatuses(statuses) : 'not mapped';
-    const required = job.required_actions.length > 0 ? job.required_actions.join(', ') : 'normal user actions';
-    const weak = job.weak_evidence.length > 0 ? job.weak_evidence.join('; ') : 'activation-only proof';
+    const statusPill =
+      status === 'not mapped'
+        ? renderStatusPill('neutral', 'not mapped')
+        : renderStatusPill(status);
+    const required =
+      job.required_actions.length > 0 ? job.required_actions.join(', ') : 'normal user actions';
+    const weak =
+      job.weak_evidence.length > 0 ? job.weak_evidence.join('; ') : 'activation-only proof';
     return `<div class="product-use-job">
-      <div><strong>${escapeHtml(job.title)}</strong> <span>${escapeHtml(status)}</span></div>
+      <div><strong>${escapeHtml(job.title)}</strong> ${statusPill}</div>
       <div class="product-use-meta"><span>Needs</span>${escapeHtml(required)}</div>
       <div class="product-use-meta"><span>Proof</span>${escapeHtml(job.expected_artifact || 'visible artifact or state change')}</div>
       <div class="product-use-meta"><span>Weak</span>${escapeHtml(weak)}</div>
     </div>`;
   });
   const kinds = contract.product_kinds.length > 0 ? contract.product_kinds.join(', ') : 'unknown';
-  const artifacts = contract.core_artifacts.length > 0 ? contract.core_artifacts.join('; ') : 'visible value-producing artifact or state change';
+  const artifacts =
+    contract.core_artifacts.length > 0
+      ? contract.core_artifacts.join('; ')
+      : 'visible value-producing artifact or state change';
   return `<div class="product-use-contract">
     <div class="product-use-title">Real-use contract</div>
     <div class="product-use-loop">${escapeHtml(contract.primary_value_loop || 'Primary value loop not recorded')}</div>
-    <div class="product-use-meta"><span>Kind</span>${escapeHtml(kinds)}</div>
-    <div class="product-use-meta"><span>Artifact</span>${escapeHtml(artifacts)}</div>
-    ${jobs.length > 0 ? `<div class="product-use-jobs">${jobs.join('')}</div>` : ''}
+    <details class="product-use-details"><summary>Expected artifacts and checks</summary>
+      <div class="product-use-meta"><span>Kind</span>${escapeHtml(kinds)}</div>
+      <div class="product-use-meta"><span>Artifact</span>${escapeHtml(artifacts)}</div>
+      ${
+        jobs.length > 0
+          ? `<details class="product-use-jobs-details"><summary>${escapeHtml(`Acceptance checks (${jobs.length})`)}</summary><div class="product-use-jobs">${jobs.join('')}</div></details>`
+          : ''
+      }
+    </details>
   </div>`;
 }
 
 function summarizeStatuses(statuses: string[]): string {
-  if (statuses.some((status) => status === 'blocked' || status === 'not_satisfied')) return 'blocked';
+  if (statuses.some((status) => status === 'blocked' || status === 'not_satisfied'))
+    return 'blocked';
   if (statuses.some((status) => status === 'partial')) return 'partial';
   if (statuses.some((status) => status === 'untested')) return 'untested';
-  if (statuses.every((status) => status === 'verified' || status === 'satisfied')) return 'verified';
+  if (statuses.every((status) => status === 'verified' || status === 'satisfied'))
+    return 'verified';
   return statuses[0] ?? 'unknown';
 }
 
@@ -2280,10 +2709,14 @@ function renderDiscoveryCoverageMap(
         goals.length > 0
           ? uniqueStrings(goals.flatMap((goal) => goal.surface_ids ?? []))
           : (journey?.surface_ids ?? []);
-      const surfaceRefs = surfaceIds.map((id) => {
+      const allSurfaceRefs = surfaceIds.map((id) => {
         const surface = surfaceById.get(id);
-        return { id, label: surface?.label ?? id };
+        return { id, label: surface?.label ?? id, kind: surface?.kind };
       });
+      const surfaceRefs =
+        allSurfaceRefs.length > 1
+          ? allSurfaceRefs.filter((surface) => surface.kind !== 'page')
+          : allSurfaceRefs;
       const journeyRef = {
         id: journeyId,
         label: journey?.title ?? fallbackJourney?.label ?? journeyId,
@@ -2394,7 +2827,7 @@ function buildGoalEvidenceCards(
     const path = withScreenshot ? screenshotForEvent.get(withScreenshot) : undefined;
     const event = withScreenshot ? eventIndex.get(withScreenshot) : undefined;
     const origin = discoveryOriginForGoal(goal.id, discovery);
-    const title = event ? eventTitle(event) : goal.description;
+    const title = goalEvidenceTitle(goal, origin, event);
     const effectiveStatus = effectiveGoalStatus(goal, eventIndex);
     const linkedFindings = goalFindingLinks.byGoalId.get(goal.id) ?? [];
     const grouping = origin?.journey
@@ -2448,15 +2881,25 @@ function buildGoalEvidenceCards(
   return cards.slice(0, 48);
 }
 
+function goalEvidenceTitle(
+  goal: ReportJson['spec_compliance']['goals'][number],
+  origin: DiscoveryGoalOrigin | undefined,
+  event: TraceEvent | undefined,
+): string {
+  if (goal.description.trim()) return goal.description.trim();
+  if (origin?.journey?.label) return origin.journey.label;
+  return event ? eventTitle(event) : 'Goal evidence';
+}
+
 interface DiscoveryIndex {
   goals: Map<string, { id: string; journey_id?: string | undefined; surface_ids?: string[] }>;
   journeys: Map<string, { id: string; title: string }>;
-  surfaces: Map<string, { id: string; label: string }>;
+  surfaces: Map<string, { id: string; label: string; kind?: string }>;
 }
 
 interface DiscoveryGoalOrigin {
   journey?: { id: string; label: string };
-  surfaces: Array<{ id: string; label: string }>;
+  surfaces: Array<{ id: string; label: string; kind?: string }>;
 }
 
 function buildDiscoveryIndex(report: ReportJson): DiscoveryIndex {
@@ -2510,9 +2953,11 @@ function discoveryOriginForGoal(
   const goal = discovery.goals.get(goalId);
   if (!goal) return undefined;
   const journey = goal.journey_id ? discovery.journeys.get(goal.journey_id) : undefined;
-  const surfaces = (goal.surface_ids ?? [])
+  const allSurfaces = (goal.surface_ids ?? [])
     .map((id) => discovery.surfaces.get(id))
-    .filter((surface): surface is { id: string; label: string } => Boolean(surface));
+    .filter((surface): surface is { id: string; label: string; kind?: string } => Boolean(surface));
+  const surfaces =
+    allSurfaces.length > 1 ? allSurfaces.filter((surface) => surface.kind !== 'page') : allSurfaces;
   if (!journey && surfaces.length === 0) return undefined;
   return {
     ...(journey ? { journey: { id: journey.id, label: journey.title } } : {}),
@@ -2526,27 +2971,42 @@ function renderGoalEvidenceGroup(group: {
   cards: VisualEvidenceCard[];
 }): string {
   const goalCount = group.cards.reduce((sum, card) => sum + card.goalCount, 0);
+  const groupStatus = summarizeStatuses(group.cards.map((card) => card.status ?? 'untested'));
+  const singleJourneyCard =
+    group.cards.length === 1 && group.cards[0]?.origin?.journey ? group.cards[0] : undefined;
+  const heading = singleJourneyCard?.title ?? group.label;
   return `<section class="goal-proof-group" data-group="${escapeAttr(group.key)}">
     <div class="goal-proof-group-head">
-      <h3>${escapeHtml(group.label)}</h3>
-      <span>${escapeHtml(`${goalCount} goal${goalCount === 1 ? '' : 's'}`)}</span>
+      <h3>${singleJourneyCard ? renderGoalHeadingTitle(singleJourneyCard.claim, heading) : escapeHtml(heading)}</h3>
+      <div class="goal-proof-group-meta">
+        ${renderStatusPill(groupStatus)}
+        ${goalCount > 1 ? `<span class="goal-proof-group-count">${escapeHtml(`${goalCount} goals`)}</span>` : ''}
+      </div>
     </div>
     <div class="goal-proof-list">
-      ${group.cards.map((card) => renderGoalEvidenceCard(card)).join('')}
+      ${group.cards
+        .map((card) =>
+          renderGoalEvidenceCard(card, { suppressTitle: card.key === singleJourneyCard?.key }),
+        )
+        .join('')}
     </div>
   </section>`;
 }
 
-function renderGoalEvidenceCard(card: VisualEvidenceCard): string {
+function renderGoalEvidenceCard(
+  card: VisualEvidenceCard,
+  opts: { suppressTitle?: boolean } = {},
+): string {
   const idAttr = ` id="${escapeAttr(goalAnchorId(card.primaryGoalId))}"`;
+  const statusClass = card.status ? ` ${goalStatusClass(card.status)}` : '';
+  const statusPill = card.status ? renderStatusPill(card.status) : '';
+  const headingHtml = opts.suppressTitle
+    ? ''
+    : `<div class="goal-proof-card-heading">${renderGoalHeadingTitle(card.claim, card.title)}${statusPill}</div>`;
   if (!card.screenshotPath && !card.clipPath) {
-    return `<div${idAttr} class="goal-proof-row no-frame">
-      <div class="goal-proof-kicker">
-        <span class="claim">${escapeHtml(card.claim)}</span>
-        ${card.status ? `<span class="status">${escapeHtml(card.status)}</span>` : ''}
-      </div>
-      <div class="goal-proof-title">${escapeHtml(card.title)} needs better visual evidence</div>
-      ${renderGoalScope(card)}
+    return `<div${idAttr} class="goal-proof-row no-frame${statusClass}">
+      ${headingHtml || `<div class="goal-proof-card-heading">${renderGoalHeadingTitle(card.claim, 'Needs better visual evidence')}</div>`}
+      ${renderGoalScope(card, opts.suppressTitle === true)}
       ${renderGoalObservedResult(card)}
       ${renderGoalLinkedFindings(card.linkedFindings)}
       ${renderGoalOrigin(card)}
@@ -2560,21 +3020,21 @@ function renderGoalEvidenceCard(card: VisualEvidenceCard): string {
       : card.clipPath
         ? escapeAttr(card.clipPath)
         : undefined;
-  return `<div${idAttr} class="goal-proof-row">
+  return `<div${idAttr} class="goal-proof-row${statusClass}">
     ${renderGoalProofMedia(card)}
     <div class="goal-proof-copy">
-      <div class="goal-proof-kicker">
-        <span class="claim">${escapeHtml(card.claim)}</span>
-        ${card.status ? `<span class="status">${escapeHtml(card.status)}</span>` : ''}
-      </div>
-      <div class="goal-proof-title">${escapeHtml(card.title)}</div>
-      ${renderGoalScope(card)}
+      ${headingHtml}
+      ${renderGoalScope(card, opts.suppressTitle === true)}
       ${renderGoalObservedResult(card)}
       ${renderGoalLinkedFindings(card.linkedFindings)}
       ${renderGoalOrigin(card)}
       ${renderGoalEvidenceActions(card, evidenceLink)}
     </div>
   </div>`;
+}
+
+function renderGoalHeadingTitle(claim: string, title: string): string {
+  return `<span class="goal-id-badge">${escapeHtml(claim)}</span><span class="goal-proof-title">${escapeHtml(title)}</span>`;
 }
 
 function goalAnchorId(goalId: string): string {
@@ -2626,11 +3086,25 @@ function renderGoalOrigin(card: VisualEvidenceCard): string {
     card.origin.surfaces.length > 0
       ? `<div class="goal-proof-origin-row"><span class="label">Surfaces</span>${renderDiscoveryChips(card.origin.surfaces)}</div>`
       : '';
-  return `<div class="goal-proof-origin">${journey}${surfaces}</div>`;
+  const parts: string[] = [];
+  if (card.origin.journey) parts.push(card.origin.journey.id);
+  if (card.origin.surfaces.length > 0) {
+    parts.push(
+      `${card.origin.surfaces.length} surface${card.origin.surfaces.length === 1 ? '' : 's'}`,
+    );
+  }
+  return `<details class="goal-proof-origin">
+    <summary>Coverage: ${escapeHtml(parts.join(' · '))}</summary>
+    <div class="goal-proof-origin-body">${journey}${surfaces}</div>
+  </details>`;
 }
 
-function renderGoalScope(card: VisualEvidenceCard): string {
-  const details = card.details ?? [];
+function renderGoalScope(card: VisualEvidenceCard, suppressDuplicateDetails = false): string {
+  const details = suppressDuplicateDetails
+    ? (card.details ?? []).filter(
+        (detail) => normalizeGoalDetail(detail) !== normalizeGoalDetail(card.title),
+      )
+    : (card.details ?? []);
   if (details.length === 0) return '';
   const content =
     details.length === 1
@@ -2639,16 +3113,26 @@ function renderGoalScope(card: VisualEvidenceCard): string {
   return `<div class="goal-proof-scope"><span class="label">Scope</span>${content}</div>`;
 }
 
+function normalizeGoalDetail(value: string): string {
+  return value
+    .replace(/^[A-Z]\d+:\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 function renderGoalObservedResult(card: VisualEvidenceCard): string {
   if (!card.context) return '';
   return `<div class="goal-proof-context"><span class="label">Observed</span>${escapeHtml(card.context)}</div>`;
 }
 
 function renderGoalEvidenceActions(card: VisualEvidenceCard, evidenceLink?: string): string {
-  const sourceLabel = card.eventId ? 'source event' : card.screenshotPath ? 'source image' : 'source clip';
-  const source = evidenceLink
-    ? `<a class="ev-chip" href="${evidenceLink}">${sourceLabel}</a>`
-    : '';
+  const sourceLabel = card.eventId
+    ? 'source event'
+    : card.screenshotPath
+      ? 'source image'
+      : 'source clip';
+  const source = evidenceLink ? `<a class="ev-chip" href="${evidenceLink}">${sourceLabel}</a>` : '';
   if (!source) return '';
   return `<div class="goal-proof-actions">${source}</div>`;
 }
@@ -2784,10 +3268,9 @@ function resolveEvidenceEventIds(
   const seen = new Set<string>();
   const add = (id: string) => {
     const resolvedId = resolveTraceRefTypo(id, trace) ?? id;
-    id = resolvedId;
-    if (seen.has(id)) return;
-    seen.add(id);
-    out.push(id);
+    if (seen.has(resolvedId)) return;
+    seen.add(resolvedId);
+    out.push(resolvedId);
   };
   for (const id of evidenceIds) {
     const event = eventIndex.get(id);
@@ -2989,23 +3472,28 @@ function axeViolationForFinding(
   for (const evidenceId of finding.evidence) {
     const event = eventIndex.get(evidenceId);
     if (!event || event.kind !== 'probe_result') continue;
-    const payload = event.payload as Record<string, any>;
+    const payload = event.payload as Record<string, unknown>;
     if (String(payload.probe ?? '') !== 'axe') continue;
-    const violations = Array.isArray(payload.data?.violations) ? payload.data.violations : [];
+    const data = payload.data as Record<string, unknown> | undefined;
+    const violations = Array.isArray(data?.violations)
+      ? (data.violations as Record<string, unknown>[])
+      : [];
     const rawViolation =
-      violations.find((v: Record<string, any>) =>
+      violations.find((v: Record<string, unknown>) =>
         haystack.includes(String(v.id ?? '').toLowerCase()),
       ) ?? violations[0];
     if (!rawViolation) continue;
-    const nodes = Array.isArray(rawViolation.nodes) ? rawViolation.nodes : [];
-    const firstNode = nodes[0] as Record<string, any> | undefined;
+    const nodes = Array.isArray(rawViolation.nodes)
+      ? (rawViolation.nodes as Record<string, unknown>[])
+      : [];
+    const firstNode = nodes[0] as Record<string, unknown> | undefined;
     return {
       id: String(rawViolation.id ?? 'violation'),
       ...(rawViolation.impact ? { impact: String(rawViolation.impact) } : {}),
       help: String(rawViolation.help ?? rawViolation.description ?? 'Accessibility rule failed'),
       ...(rawViolation.description ? { description: String(rawViolation.description) } : {}),
       ...(rawViolation.help_url ? { helpUrl: String(rawViolation.help_url) } : {}),
-      targets: nodes.flatMap((node: Record<string, any>) =>
+      targets: nodes.flatMap((node: Record<string, unknown>) =>
         Array.isArray(node.target) ? node.target.map(String) : [],
       ),
       ...(firstNode?.html ? { html: String(firstNode.html) } : {}),
@@ -3046,7 +3534,7 @@ function renderProbeEvidenceDetails(
   for (const evidenceId of finding.evidence) {
     const event = eventIndex.get(evidenceId);
     if (!event || event.kind !== 'probe_result') continue;
-    const payload = event.payload as Record<string, any>;
+    const payload = event.payload as Record<string, unknown>;
     const probe = String(payload.probe ?? 'probe');
     if (probe === 'axe') {
       const violation = axeViolationForFinding(finding, eventIndex);
@@ -3285,29 +3773,27 @@ function renderScoreMatrixSection(
   const profileStrip = entries
     .map(({ name, profile }) => {
       const score = profile ? rubricProfileScoreLabel(profile) : 'missing';
-      const cls = score === 'missing' || score === 'n/a' ? 'is-missing' : '';
+      const numericScore = profile ? rubricProfileNumericScore(profile) : null;
+      const cls = numericScore === null ? 'is-missing' : '';
       return `<div class="profile-score ${cls}">
         <span>${escapeHtml(displayName(name))}</span>
-        <strong>${escapeHtml(score)}</strong>
+        <strong class="score-value ${scoreToneClass(numericScore)}">${escapeHtml(score)}</strong>
       </div>`;
     })
     .join('');
-  const rows = entries.flatMap(({ name, profile }) => scoreMatrixRows(name, profile, eventIndex));
+  const profileCards = entries
+    .map(({ name, profile }) => renderScoreProfileCard(name, profile, eventIndex))
+    .join('');
   return `<section class="score-section">
     <div class="section-head">
       <div>
         <h2>Score matrix</h2>
-        <p>Dimension-level rubric scores. Rubrics are cross-cutting dimensions, not parent buckets for the goal list. Missing or untestable dimensions are shown as such instead of being folded into the overall score.</p>
+        <p>Cross-cutting rubric scores over the same evidence above. These are not parent buckets for the tested goals.</p>
       </div>
       <div class="overall-mini">${scores.overall.score.toFixed(1)}<span>/10</span></div>
     </div>
     <div class="profile-strip">${profileStrip}</div>
-    <div class="matrix-wrap">
-      <table class="score-matrix">
-        <thead><tr><th>Profile</th><th>Dimension</th><th>Score</th><th>Rationale</th></tr></thead>
-        <tbody>${rows.join('')}</tbody>
-      </table>
-    </div>
+    <div class="score-profile-grid">${profileCards}</div>
   </section>`;
 }
 
@@ -3325,48 +3811,89 @@ function scoreProfileEntries(
   return entries;
 }
 
-function scoreMatrixRows(
+function renderScoreProfileCard(
   profileName: string,
   profile: JudgeOutput['scores']['profiles'][string] | null,
   eventIndex: Map<string, TraceEvent>,
-): string[] {
+): string {
+  const profileLabel = displayName(profileName);
   if (!profile) {
-    return [
-      `<tr class="score-row missing"><td>${escapeHtml(displayName(profileName))}</td><td>profile</td><td><span class="score-na">missing</span></td><td>Listed in weighted_from but absent from scores.profiles.</td></tr>`,
-    ];
+    return `<section class="score-profile-card">
+      <div class="score-profile-head"><h3>${escapeHtml(profileLabel)}</h3><strong>missing</strong></div>
+      <div class="score-dimension-list">
+        <div class="score-dimension is-missing">
+          <div class="score-dimension-title"><span>Profile</span><span class="score-value score-none">missing</span></div>
+          <div class="score-dimension-rationale">Listed in weighted_from but absent from scores.profiles.</div>
+        </div>
+      </div>
+    </section>`;
   }
   const dimensions = Object.entries(profile.dimensions);
-  if (dimensions.length === 0) {
-    return [
-      `<tr class="score-row missing"><td>${escapeHtml(displayName(profileName))}</td><td>profile</td><td>${escapeHtml(rubricProfileScoreLabel(profile))}</td><td>No dimension scores returned.</td></tr>`,
-    ];
-  }
-  return dimensions.map(([dimensionName, dimension], index) => {
-    const displayDimension = scoreDimensionWithRunEvidence(
-      profileName,
-      dimensionName,
-      dimension,
-      eventIndex.size > 0 ? eventIndex.values() : undefined,
-    );
-    const evidence =
-      displayDimension.evidence.length > 0
-        ? `<div class="matrix-evidence">${displayDimension.evidence.map((id) => renderEvidenceChip(id, eventIndex)).join('')}</div>`
-        : '';
-    return `<tr class="score-row ${displayDimension.score === null ? 'missing' : ''}">
-      <td>${index === 0 ? escapeHtml(displayName(profileName)) : ''}</td>
-      <td>${escapeHtml(displayName(dimensionName))}</td>
-      <td>${displayDimension.score === null ? '<span class="score-na">n/a</span>' : escapeHtml(displayDimension.score.toFixed(1))}</td>
-      <td>${escapeHtml(displayDimension.rationale)}${evidence}</td>
-    </tr>`;
-  });
+  const body =
+    dimensions.length > 0
+      ? dimensions
+          .map(([dimensionName, dimension]) => {
+            const displayDimension = scoreDimensionWithRunEvidence(
+              profileName,
+              dimensionName,
+              dimension,
+              eventIndex.size > 0 ? eventIndex.values() : undefined,
+            );
+            const evidence = renderScoreEvidenceDetails(displayDimension.evidence, eventIndex);
+            return `<div class="score-dimension ${displayDimension.score === null ? 'is-missing' : ''}">
+              <div class="score-dimension-title">
+                <span>${escapeHtml(displayName(dimensionName))}</span>
+                ${
+                  displayDimension.score === null
+                    ? '<span class="score-value score-none">n/a</span>'
+                    : `<strong class="score-value ${scoreToneClass(displayDimension.score)}">${escapeHtml(displayDimension.score.toFixed(1))}</strong>`
+                }
+              </div>
+              <div class="score-dimension-rationale">${escapeHtml(displayDimension.rationale)}${evidence}</div>
+            </div>`;
+          })
+          .join('')
+      : `<div class="score-dimension is-missing">
+          <div class="score-dimension-title"><span>Profile</span><span class="score-value score-none">n/a</span></div>
+          <div class="score-dimension-rationale">No dimension scores returned.</div>
+        </div>`;
+  return `<section class="score-profile-card">
+    <div class="score-profile-head"><h3>${escapeHtml(profileLabel)}</h3><strong class="score-value ${scoreToneClass(rubricProfileNumericScore(profile))}">${escapeHtml(rubricProfileScoreLabel(profile))}</strong></div>
+    <div class="score-dimension-list">${body}</div>
+  </section>`;
+}
+
+function renderScoreEvidenceDetails(
+  evidence: string[],
+  eventIndex: Map<string, TraceEvent>,
+): string {
+  if (evidence.length === 0) return '';
+  return `<details class="matrix-evidence">
+    <summary>${escapeHtml(`${evidence.length} evidence ref${evidence.length === 1 ? '' : 's'}`)}</summary>
+    <div class="matrix-evidence-list">${evidence.map((id) => renderEvidenceChip(id, eventIndex)).join('')}</div>
+  </details>`;
 }
 
 function rubricProfileScoreLabel(profile: JudgeOutput['scores']['profiles'][string]): string {
+  const score = rubricProfileNumericScore(profile);
+  return score === null ? 'n/a' : score.toFixed(1);
+}
+
+function rubricProfileNumericScore(
+  profile: JudgeOutput['scores']['profiles'][string],
+): number | null {
   const dimensions = Object.values(profile.dimensions);
   if (dimensions.length > 0 && dimensions.every((dimension) => dimension.score === null)) {
-    return 'n/a';
+    return null;
   }
-  return profile.score.toFixed(1);
+  return profile.score;
+}
+
+function scoreToneClass(score: number | null): string {
+  if (score === null || !Number.isFinite(score)) return 'score-none';
+  if (score >= 8) return 'score-high';
+  if (score >= 6) return 'score-mid';
+  return 'score-low';
 }
 
 // Caveats

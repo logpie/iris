@@ -88,6 +88,8 @@ const AGENT_PERSPECTIVE_TITLE_PATTERNS: RegExp[] = [
   /\b(locator|click|focus|fill|type)\s+(via|using|on|by)\s+(role=|css=|data-testid|accessible(\s+name)?|aria(\s+selector)?)\b/i,
   /\bclick\s+via\s+\w+\s+selector\s+times?\s+out\b/i,
   /\bdoes\s+not\s+respond\s+to\s+clicks?\b/i,
+  /\bcould\s+not\s+(be\s+)?(open|opened|expand|expanded|reveal|revealed|expose|exposed)\b/i,
+  /\bcannot\s+(be\s+)?(open|opened|expand|expanded|reveal|revealed|expose|exposed)\b/i,
   /\b(lacks?|missing)\b.*\b(accessible|proper)\b.*\b(textbox\s+role|name|role|semantics)\b/i,
   /\b(role=\w+|css=|data-testid)\b.*\b(timed?\s+out|times?\s+out|failed|not\s+found)\b/i,
   // Any title that mentions a known automation-tool concept as the subject
@@ -113,17 +115,11 @@ function looksLikeToolFrictionFinding(f: JudgeFinding): boolean {
   );
 }
 
-function citesOnlyActionResults(
-  validIds: string[],
-  eventById: Map<string, TraceEvent>,
-): boolean {
+function citesOnlyActionResults(validIds: string[], eventById: Map<string, TraceEvent>): boolean {
   return validIds.length > 0 && validIds.every((id) => eventById.get(id)?.kind === 'action_result');
 }
 
-function citesOnlyActionEvents(
-  validIds: string[],
-  eventById: Map<string, TraceEvent>,
-): boolean {
+function citesOnlyActionEvents(validIds: string[], eventById: Map<string, TraceEvent>): boolean {
   return (
     validIds.length > 0 &&
     validIds.every((id) => {

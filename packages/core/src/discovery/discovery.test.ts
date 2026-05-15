@@ -8,6 +8,14 @@ describe('DISCOVERY_SYSTEM', () => {
     expect(DISCOVERY_SYSTEM).toContain('draw/place + label/type + style/move/resize');
     expect(DISCOVERY_SYSTEM).toContain('single trivial object');
   });
+
+  it('asks discovery to synthesize material scenarios instead of surface goals', () => {
+    expect(DISCOVERY_SYSTEM).toContain('surfaces are not automatically goals');
+    expect(DISCOVERY_SYSTEM).toContain('goal_class');
+    expect(DISCOVERY_SYSTEM).toContain('Only "core" and selected "secondary_workflow"');
+    expect(DISCOVERY_SYSTEM).toContain('A word editor should type a real paragraph');
+    expect(DISCOVERY_SYSTEM).toContain('normally perform as setup before a material goal');
+  });
 });
 
 describe('runDiscovery', () => {
@@ -292,8 +300,11 @@ describe('runDiscovery', () => {
     expect(result?.output.product_use_contract?.user_jobs[0]?.required_actions).toContain(
       'drag on canvas',
     );
-    expect(formatDiscoveryExplorerContext(result!.output)).toContain('PRODUCT USE CONTRACT');
-    expect(formatDiscoveryExplorerContext(result!.output)).toContain('weak evidence that must NOT verify');
+    expect(result).not.toBeNull();
+    if (!result) throw new Error('expected discovery result');
+    const explorerContext = formatDiscoveryExplorerContext(result.output);
+    expect(explorerContext).toContain('PRODUCT USE CONTRACT');
+    expect(explorerContext).toContain('weak evidence that must NOT verify');
   });
 
   it('attaches page-container surfaces to same-page journeys and goals', async () => {
@@ -470,17 +481,17 @@ describe('runDiscovery', () => {
       'S005',
     ]);
     expect(result?.output.journeys).toHaveLength(3);
-    expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1', 'J2', 'J3']);
-    expect(result?.output.coverage_plan?.deferred_surface_ids).toEqual(['S005']);
+    expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1', 'J2']);
+    expect(result?.output.coverage_plan?.deferred_surface_ids).toEqual(['S004', 'S005']);
     expect(
       result?.output.goals.every((goal) => goal.journey_id && goal.surface_ids.length > 0),
     ).toBe(true);
     expect(result?.output.goals[0]?.surface_ids).toContain('S002');
     expect(result?.output.goals[1]?.surface_ids).toContain('S003');
-    expect(result?.output.goals[2]?.surface_ids).toContain('S004');
+    expect(result?.output.goals).toHaveLength(2);
   });
 
-  it('does not report selected journey surfaces as deferred', async () => {
+  it('does not report selected material journey surfaces as deferred', async () => {
     const result = await runDiscovery({
       url: 'https://example.com',
       observation_summary: 'initial viewport',
@@ -503,11 +514,11 @@ describe('runDiscovery', () => {
             },
             {
               id: 'S002',
-              label: 'Privacy',
-              kind: 'footer',
-              url: 'https://example.com/privacy',
+              label: 'Settings',
+              kind: 'settings',
+              url: 'https://example.com/settings',
               source: 'scroll',
-              value: 'peripheral',
+              value: 'important_secondary',
               confidence: 0.8,
               evidence: [],
             },
@@ -525,12 +536,12 @@ describe('runDiscovery', () => {
             },
             {
               id: 'J2',
-              title: 'Open privacy',
+              title: 'Configure settings',
               priority: 'should',
               surface_ids: ['S002'],
-              user_intent: 'Review legal info',
-              suggested_goal: 'Open Privacy and verify the legal page loads.',
-              expected_evidence: ['Privacy heading'],
+              user_intent: 'Change a preference',
+              suggested_goal: 'Open Settings and verify a configurable preference panel appears.',
+              expected_evidence: ['Settings panel'],
               risk: 'low',
             },
           ],
@@ -550,7 +561,7 @@ describe('runDiscovery', () => {
             },
             {
               id: 'G2',
-              description: 'Open Privacy and verify the legal page loads.',
+              description: 'Open Settings and verify a configurable preference panel appears.',
               priority: 'should',
               journey_id: 'J2',
               surface_ids: ['S002'],
@@ -566,6 +577,341 @@ describe('runDiscovery', () => {
 
     expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1', 'J2']);
     expect(result?.output.coverage_plan?.deferred_surface_ids).toEqual([]);
+  });
+
+  it('demotes selected setup/banner journeys instead of making them seed goals', async () => {
+    const result = await runDiscovery({
+      url: 'https://draw.example',
+      observation_summary: 'Canvas editor with a promo banner and drawing tools.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A browser whiteboard editor.',
+          product_use_contract: {
+            product_kinds: ['canvas_editor'],
+            primary_value_loop: 'Create a visible diagram on the canvas.',
+            core_artifacts: ['styled shape plus text on the canvas'],
+            user_jobs: [],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Canvas and creation toolbar',
+              kind: 'content',
+              url: 'https://draw.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+              evidence: [],
+            },
+            {
+              id: 'S2',
+              label: 'SDK promo banner dismissal',
+              kind: 'banner',
+              url: 'https://draw.example',
+              source: 'initial',
+              value: 'important_secondary',
+              confidence: 0.9,
+              evidence: [],
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Create a diagram',
+              priority: 'must',
+              surface_ids: ['S1'],
+              user_intent: 'Make useful board content',
+              suggested_goal:
+                'Create a small diagram with a rectangle, a label, and a visible style change.',
+              expected_evidence: ['visible styled diagram artifact'],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Dismiss the SDK promo',
+              priority: 'should',
+              surface_ids: ['S2'],
+              user_intent: 'Clear a promotional banner',
+              suggested_goal: 'Dismiss the SDK promo and verify it no longer obstructs the canvas.',
+              expected_evidence: ['promo banner disappears'],
+              risk: 'low',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1', 'J2'],
+            deferred_surface_ids: [],
+            rationale: 'Selected core diagramming and banner dismissal.',
+            coverage_risk: 'low',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description:
+                'Create a small diagram with a rectangle, a label, and a visible style change.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+            },
+            {
+              id: 'G2',
+              description: 'Dismiss the SDK promo and verify it no longer obstructs the canvas.',
+              priority: 'should',
+              journey_id: 'J2',
+              surface_ids: ['S2'],
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    expect(result?.output.journeys.find((journey) => journey.id === 'J2')?.goal_class).toBe(
+      'setup',
+    );
+    expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1']);
+    expect(result?.output.coverage_plan?.deferred_surface_ids).toContain('S2');
+    expect(result?.output.goals.map((goal) => goal.description).join('\n')).not.toMatch(
+      /SDK promo|Dismiss/,
+    );
+  });
+
+  it('keeps content-site legal/footer samples out of seed goals when core content remains selected', async () => {
+    const result = await runDiscovery({
+      url: 'https://content.example',
+      observation_summary:
+        'Content site with search, article, account link, and footer legal links.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A searchable content site.',
+          product_use_contract: {
+            product_kinds: ['content_site', 'search_content'],
+            primary_value_loop: 'Search for and consume article content.',
+            core_artifacts: ['loaded article or result page'],
+            user_jobs: [],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Search',
+              kind: 'search',
+              url: 'https://content.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+              evidence: [],
+            },
+            {
+              id: 'S2',
+              label: 'Article page with contents and references',
+              kind: 'content',
+              url: 'https://content.example/article',
+              source: 'primary_journey',
+              value: 'core',
+              confidence: 0.9,
+              evidence: [],
+            },
+            {
+              id: 'S3',
+              label: 'Privacy and Terms footer links',
+              kind: 'footer',
+              url: 'https://content.example/privacy',
+              source: 'scroll',
+              value: 'peripheral',
+              confidence: 0.8,
+              evidence: [],
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Search and read article',
+              priority: 'must',
+              surface_ids: ['S1', 'S2'],
+              user_intent: 'Find and consume content',
+              suggested_goal:
+                'Search for OpenAI and verify an article page loads with readable content.',
+              expected_evidence: ['article title and body content'],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Sample footer legal links',
+              priority: 'should',
+              surface_ids: ['S3'],
+              user_intent: 'Review legal info',
+              suggested_goal: 'Sample footer legal links and verify a policy page opens.',
+              expected_evidence: ['policy heading'],
+              risk: 'low',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1', 'J2'],
+            deferred_surface_ids: [],
+            rationale: 'Selected core content and representative footer.',
+            coverage_risk: 'low',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description:
+                'Search for OpenAI and verify an article page loads with readable content.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1', 'S2'],
+            },
+            {
+              id: 'G2',
+              description: 'Sample footer legal links and verify a policy page opens.',
+              priority: 'should',
+              journey_id: 'J2',
+              surface_ids: ['S3'],
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1']);
+    expect(result?.output.coverage_plan?.deferred_surface_ids).toContain('S3');
+    expect(result?.output.goals).toHaveLength(1);
+    expect(result?.output.goals[0]?.description).toContain('Search for OpenAI');
+  });
+
+  it('keeps non-could core and contract-backed journeys selected when coverage under-selects', async () => {
+    const result = await runDiscovery({
+      url: 'https://draw.example',
+      observation_summary: 'Canvas editor with shape, text, export, and share controls.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A browser whiteboard editor.',
+          product_use_contract: {
+            product_kinds: ['canvas_editor', 'auth_account'],
+            primary_value_loop: 'Create and share a visible board artifact.',
+            core_artifacts: ['styled board objects', 'share/auth surface for the board'],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Enter sharing flow',
+                journey_id: 'J3',
+                required_actions: ['click Share'],
+                expected_artifact: 'share or sign-in surface tied to the board',
+                acceptable_evidence: ['share/auth surface opens'],
+                weak_evidence: ['Share button focused only'],
+                risk: 'medium',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Canvas and creation toolbar',
+              kind: 'content',
+              url: 'https://draw.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+              evidence: [],
+            },
+            {
+              id: 'S2',
+              label: 'Expanded shape palette',
+              kind: 'menu',
+              url: 'https://draw.example',
+              source: 'menu_peek',
+              value: 'core',
+              confidence: 0.9,
+              evidence: [],
+            },
+            {
+              id: 'S3',
+              label: 'Share',
+              kind: 'account',
+              url: 'https://draw.example',
+              source: 'initial',
+              value: 'important_secondary',
+              confidence: 0.9,
+              evidence: [],
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Create a diagram',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Make useful board content',
+              suggested_goal: 'Create a diagram with a rectangle and label.',
+              expected_evidence: ['visible diagram artifact'],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Add a non-default shape',
+              priority: 'should',
+              goal_class: 'core',
+              surface_ids: ['S1', 'S2'],
+              user_intent: 'Use richer creation tools',
+              suggested_goal: 'Add a non-default shape such as a cloud or star.',
+              expected_evidence: ['non-default shape appears on the board'],
+              risk: 'medium',
+            },
+            {
+              id: 'J3',
+              title: 'Enter sharing flow',
+              priority: 'should',
+              goal_class: 'setup',
+              surface_ids: ['S3'],
+              user_intent: 'Share the board with another person',
+              suggested_goal: 'Click Share and verify a share or sign-in surface opens.',
+              expected_evidence: ['share or sign-in surface opens for the board'],
+              risk: 'medium',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Under-selected only the first journey.',
+            coverage_risk: 'medium',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Create a diagram with a rectangle and label.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    expect(['core', 'secondary_workflow']).toContain(
+      result?.output.journeys.find((journey) => journey.id === 'J3')?.goal_class,
+    );
+    expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1', 'J2', 'J3']);
+    expect(result?.output.goals.map((goal) => goal.journey_id)).toEqual(['J1', 'J2', 'J3']);
   });
 
   it('tells discovery to include downstream primary-journey product surfaces', async () => {
@@ -602,7 +948,7 @@ describe('runDiscovery', () => {
     expect(systemPrompt).toContain('downstream pages from a primary journey');
     expect(systemPrompt).toContain('article section navigation');
     expect(systemPrompt).toContain('history/edit/talk affordances');
-    expect(systemPrompt).toContain('fewer than seven goals usually means you compressed');
+    expect(systemPrompt).toContain('fewer than several material scenarios');
   });
 
   it('supplements high-value article and account surfaces when discovery over-compresses', async () => {

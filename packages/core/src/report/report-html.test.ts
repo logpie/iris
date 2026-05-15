@@ -46,7 +46,8 @@ describe('buildReportHtml', () => {
     expect(html).toContain('quality');
     expect(html).toContain('correctness');
     expect(html).toContain('usability');
-    expect(html).toMatch(/<table class="score-matrix"/);
+    expect(html).toContain('class="score-profile-grid"');
+    expect(html).toContain('class="score-profile-card"');
   });
 
   it('renders unscored rubric profiles as n/a instead of zero', () => {
@@ -149,6 +150,8 @@ describe('buildReportHtml', () => {
     expect(html).toContain('G1');
     expect(html).toContain('Goal G1, Goal G2');
     expect(html).not.toContain('<span class="claim">Goal G2</span>');
+    expect(html).toContain('<span class="goal-proof-title">load article</span>');
+    expect(html).not.toContain('<span class="goal-proof-title">OpenAI - Wikipedia</span>');
     expect(html).toContain('evidence/screenshots/step-0001.png');
     expect(html).toContain('evidence/clips/clip-001.webm');
     expect(html).toContain('poster="evidence/screenshots/step-0001.png"');
@@ -166,6 +169,24 @@ describe('buildReportHtml', () => {
     expect(html).toContain('raw-video-scroll');
     expect(html).toContain('page-a.webm');
     expect(html).toContain('page-b.webm');
+  });
+
+  it('uses status-specific pills for partial goal evidence', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.spec_compliance.goals = [
+      {
+        id: 'G1',
+        description: 'Place a hidden shape on the canvas.',
+        status: 'partial',
+        evidence: [],
+        notes: 'Only the default shape tool appeared.',
+      },
+    ];
+    const html = buildReportHtml(buildReportJson({ judge, run: fakeRun() }));
+    expect(html).toContain('class="status-pill status-partial">partial</span>');
+    expect(html).toContain('class="goal-proof-row no-frame status-partial"');
+    expect(html).not.toContain('class="status">partial</span>');
   });
 
   it('marks reused clips as shared windows instead of implying unique per-goal clips', () => {
@@ -298,7 +319,9 @@ describe('buildReportHtml', () => {
     expect(html).toContain('#goal-G3');
     expect(html).toContain('#finding-F-001');
     expect(html).toContain('Evidence is shown with');
-    expect(html).not.toContain('<video controls preload="metadata" src="evidence/clips/finding.webm"></video>');
+    expect(html).not.toContain(
+      '<video controls preload="metadata" src="evidence/clips/finding.webm"></video>',
+    );
   });
 
   it('rewrites repo-relative run artifact clip paths for reports served from runDir', () => {
@@ -430,9 +453,16 @@ describe('buildReportHtml', () => {
       const page = await browser.newPage({ viewport: { width: 900, height: 720 } });
       await page.setContent(html, { waitUntil: 'domcontentloaded' });
       const metrics = await page.evaluate(() => {
-        const doc = (globalThis as unknown as { document: any }).document;
-        const mediaCards = Array.from(doc.querySelectorAll('.goal-proof-media')) as any[];
-        const videos = Array.from(doc.querySelectorAll('.goal-proof-media video')) as any[];
+        type BrowserElement = {
+          getBoundingClientRect(): { width: number };
+          getAttribute(name: string): string | null;
+        };
+        type BrowserDocument = {
+          querySelectorAll(selector: string): ArrayLike<BrowserElement>;
+        };
+        const doc = (globalThis as unknown as { document: BrowserDocument }).document;
+        const mediaCards = Array.from(doc.querySelectorAll('.goal-proof-media'));
+        const videos = Array.from(doc.querySelectorAll('.goal-proof-media video'));
         return {
           mediaCount: mediaCards.length,
           mediaMinWidth: Math.min(...mediaCards.map((card) => card.getBoundingClientRect().width)),
@@ -658,6 +688,16 @@ describe('buildReportHtml', () => {
     expect(html).toContain('Find and read content');
     expect(html).toContain('enter query, open result');
     expect(html).toContain('search box visible');
+    expect(html).toContain('<span class="goal-id-badge">Goal G1</span>');
+    expect(html).toContain(
+      '<span class="goal-proof-title">Search for OpenAI and verify content loads.</span>',
+    );
+    expect(html).not.toContain(
+      '<div class="goal-proof-title">Search for OpenAI and verify content loads.</div>',
+    );
+    expect(html).not.toContain(
+      '<div class="goal-proof-scope"><span class="label">Scope</span>G1: Search for OpenAI and verify content loads.</div>',
+    );
     expect(html).toContain('<code>J1</code>Search content');
     expect(html).toContain('<code>G1</code>Search for OpenAI and verify content loads.');
     expect(html).toContain('<code>S1</code>Search');
@@ -792,7 +832,7 @@ describe('buildReportHtml', () => {
     const html = buildReportHtml(r);
     expect(html).toContain('class="report-hero tldr');
     expect(html).toContain('Verdict');
-    expect(html).toContain('Goals');
+    expect(html).toContain('Tested goals');
     expect(html).toContain('Findings');
   });
 });

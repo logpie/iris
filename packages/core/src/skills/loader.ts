@@ -1,13 +1,12 @@
 // Phase 13: load project-level skills at module-load time so Iris's Explorer
 // and Judge prompts can consult the skill body as durable evaluator
-// discipline. The skill source-of-truth lives at
-// `.claude/skills/<name>/SKILL.md` in the project root, following the
-// Anthropic skills convention.
+// discipline. Provider-neutral skills live under `packages/core/src/skills`;
+// legacy `.claude/skills/<name>/SKILL.md` files remain as a compatibility
+// fallback for older checkouts.
 //
 // The skill body (frontmatter stripped) is prepended to the system prompts.
-// Anthropic's prompt cache makes the per-turn cost amortize after the first
-// turn — the principles get encoded into the agent's behavior without
-// recurring expense.
+// Transport-specific prompt caching is handled by the caller; this loader keeps
+// evaluator methodology shared across Claude, Codex, and other providers.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -50,13 +49,19 @@ export function loadProjectSkill(name: string): string {
     .filter((r): r is string => r !== null);
 
   for (const root of roots) {
-    const path = join(root, '.claude', 'skills', name, 'SKILL.md');
-    if (!existsSync(path)) continue;
-    try {
-      const content = readFileSync(path, 'utf8');
-      return stripFrontmatter(content).trim();
-    } catch {
-      // fall through to next candidate
+    const paths = [
+      join(root, 'packages', 'core', 'src', 'skills', `${name}.md`),
+      join(root, 'packages', 'core', 'dist', 'skills', `${name}.md`),
+      join(root, '.claude', 'skills', name, 'SKILL.md'),
+    ];
+    for (const path of paths) {
+      if (!existsSync(path)) continue;
+      try {
+        const content = readFileSync(path, 'utf8');
+        return stripFrontmatter(content).trim();
+      } catch {
+        // fall through to next candidate
+      }
     }
   }
   return '';

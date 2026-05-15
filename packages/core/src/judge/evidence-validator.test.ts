@@ -595,6 +595,42 @@ describe('validateFindings', () => {
     expect(out.kept).toHaveLength(0);
   });
 
+  it('discards palette-opening findings when evidence is only Explorer tool failure', () => {
+    const trace = [
+      ev('E1', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error:
+          "locator.click: strict mode violation: locator('text=Rectangle') resolved to 2 elements",
+      }),
+      ev('E2', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error: 'locator.click: Timeout 5000ms exceeded.',
+      }),
+      ev('E3', 'goal_status', {
+        id: 'G2',
+        status: 'partial',
+        rationale: 'Could not expose a visible extended shape palette before budget ran out.',
+        evidence_event_ids: ['E1', 'E2'],
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Hidden non-default shape palette could not be opened',
+          category: 'bug',
+          severity: 'major',
+          evidence: ['E1', 'E2', 'E3'],
+          rationale: 'Repeated clicks and hovers did not reveal the shape palette during the run.',
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe('agent_perspective_title_no_user_visible_failure');
+  });
+
   it('KEEPS an agent-phrased finding if there is real user-visible failure evidence', () => {
     // A finding whose title looks agent-phrased but the cited evidence
     // includes a console error or a probe failure should still be kept —

@@ -34,6 +34,12 @@ describe('EXPLORER_CORE', () => {
     expect(EXPLORER_CORE).toContain('minimally meaningful');
     expect(EXPLORER_CORE).toContain('draw/place plus label/type plus style/move/resize');
   });
+
+  it('keeps setup and peripheral surfaces out of dynamic goal expansion', () => {
+    expect(EXPLORER_CORE).toContain('material product outcome');
+    expect(EXPLORER_CORE).toContain('Inventory modals, banners, footer links');
+    expect(EXPLORER_CORE).toContain('do not promote them to goals');
+  });
 });
 
 describe('targetKindSuffix', () => {
