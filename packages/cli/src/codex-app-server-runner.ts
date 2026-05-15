@@ -12,6 +12,7 @@ export interface CodexSingleShotInput {
   userPrompt: string;
   imagePath?: string;
   model?: string;
+  reasoningEffort?: CodexReasoningEffort;
   timeoutS?: number;
   outputSchema?: unknown;
   cwd?: string;
@@ -87,7 +88,16 @@ export function codexModelName(model?: string): string {
   return model && !model.startsWith('claude-') ? model : 'gpt-5.4-mini';
 }
 
-export const CODEX_APP_SERVER_REASONING_EFFORT = 'low';
+export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
+export const CODEX_APP_SERVER_REASONING_EFFORT: CodexReasoningEffort = 'low';
+
+export function parseCodexReasoningEffort(input: string): CodexReasoningEffort {
+  if (input === 'low' || input === 'medium' || input === 'high' || input === 'xhigh') {
+    return input;
+  }
+  throw new Error(`invalid Codex reasoning effort "${input}" (expected low, medium, high, or xhigh)`);
+}
 
 function normalizeUsage(usage?: TokenUsageBreakdown): CodexTokenUsage | undefined {
   if (!usage) return undefined;
@@ -211,7 +221,7 @@ export async function runCodexAppServerSingleShot(
       input,
       approvalPolicy: 'never',
       model: codexModelName(opts.model),
-      effort: CODEX_APP_SERVER_REASONING_EFFORT,
+      effort: opts.reasoningEffort ?? CODEX_APP_SERVER_REASONING_EFFORT,
       ...(opts.outputSchema ? { outputSchema: opts.outputSchema } : {}),
     },
     30_000,
@@ -239,6 +249,7 @@ export interface CodexExplorerConfig {
   maxSteps: number;
   timeoutS: number;
   model?: string;
+  reasoningEffort?: CodexReasoningEffort;
   goals?: Array<{ id: string; description: string }>;
   maxExpansionGoals?: number;
   stepsPerGoal?: number;
@@ -349,7 +360,7 @@ export async function runCodexAppServerExplorer(
   await emit('run_start', 'system', {
     transport: 'codex-appserver',
     model: codexModelName(config.model),
-    reasoning_effort: CODEX_APP_SERVER_REASONING_EFFORT,
+    reasoning_effort: config.reasoningEffort ?? CODEX_APP_SERVER_REASONING_EFFORT,
     max_steps: config.maxSteps,
   });
 
@@ -801,7 +812,7 @@ ${config.initialUserPrompt}`),
         ],
         approvalPolicy: 'never',
         model: codexModelName(config.model),
-        effort: CODEX_APP_SERVER_REASONING_EFFORT,
+        effort: config.reasoningEffort ?? CODEX_APP_SERVER_REASONING_EFFORT,
       },
       30_000,
     )) as { turn?: { id?: string } };

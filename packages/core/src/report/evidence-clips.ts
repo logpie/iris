@@ -174,23 +174,17 @@ async function sliceTraceEvidenceStoryboards(
   mkdirSync(outDir, { recursive: true });
 
   const out: EvidenceFile[] = [];
-  const byFrameSet = new Map<string, string>();
   for (const ref of refs) {
     const selected = selectTraceStoryboardFrames(ref, frames);
     if (selected.length === 0) continue;
-    const frameKey = selected.map((frame) => frame.path).join('|');
-    let clipPath = byFrameSet.get(frameKey);
-    if (!clipPath) {
-      clipPath = join(outDir, `story-${safeClipName(ref.finding_id)}.webm`);
-      try {
-        await spawnFfmpegScreenshotClip(
-          selected.map((frame) => frame.path),
-          clipPath,
-        );
-      } catch {
-        continue;
-      }
-      byFrameSet.set(frameKey, clipPath);
+    const clipPath = join(outDir, `story-${safeClipName(ref.finding_id)}.webm`);
+    try {
+      await spawnFfmpegScreenshotClip(
+        selected.map((frame) => frame.path),
+        clipPath,
+      );
+    } catch {
+      continue;
     }
     out.push({ finding_id: ref.finding_id, path: clipPath, kind: 'video' });
   }

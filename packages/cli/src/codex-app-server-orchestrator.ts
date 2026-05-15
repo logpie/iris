@@ -25,6 +25,7 @@ import { ulid } from 'ulid';
 import { CodexAppServerClient } from './codex-app-server-client.js';
 import {
   CODEX_APP_SERVER_REASONING_EFFORT,
+  type CodexReasoningEffort,
   type CodexTokenUsage,
   type CodexTokenUsageSnapshot,
   codexModelName,
@@ -45,6 +46,7 @@ export interface CodexAppServerRunConfig {
   threshold?: number;
   explorer_model: string;
   judge_model: string;
+  reasoning_effort?: CodexReasoningEffort;
   no_html: boolean;
   no_clips?: boolean;
   persona?: string;
@@ -64,6 +66,10 @@ export interface CodexAppServerRunResult {
   cost_usd: number;
   termination: string;
   exit_code: 0 | 1 | 2 | 3 | 4;
+}
+
+function codexPhaseTimeoutS(totalTimeoutS: number): number {
+  return Math.max(180, Math.min(totalTimeoutS, Math.ceil(totalTimeoutS * 0.5)));
 }
 
 function extractJsonObjectCandidate(text: string): string | null {
@@ -262,6 +268,8 @@ export async function runIrisViaCodexAppServer(
   const client = new CodexAppServerClient();
   await client.start();
   await client.initialize();
+  const reasoningEffort = config.reasoning_effort ?? CODEX_APP_SERVER_REASONING_EFFORT;
+  const phaseTimeoutS = codexPhaseTimeoutS(config.timeout_s);
   const adapterWithOpts = adapter as unknown as {
     opts?: {
       vision_describer?: (input: {
@@ -278,7 +286,8 @@ export async function runIrisViaCodexAppServer(
       userPrompt: input.prompt,
       imagePath: input.imagePath,
       ...(input.model ? { model: input.model } : {}),
-      timeoutS: 180,
+      reasoningEffort,
+      timeoutS: phaseTimeoutS,
       cwd: appServerCwd,
     });
     return { text: r.text };
@@ -313,7 +322,8 @@ export async function runIrisViaCodexAppServer(
         systemPrompt: specInterpreter.SPEC_INTERPRETER_SYSTEM,
         userPrompt: specInterpreter.SPEC_INTERPRETER_USER_TEMPLATE(specText),
         model: config.explorer_model,
-        timeoutS: 180,
+        reasoningEffort,
+        timeoutS: phaseTimeoutS,
         cwd: appServerCwd,
       });
       totalCost += r.cost_usd;
@@ -399,9 +409,9 @@ export async function runIrisViaCodexAppServer(
               judge: codexModelName(config.judge_model),
             },
             reasoning_efforts: {
-              discovery: CODEX_APP_SERVER_REASONING_EFFORT,
-              explorer: CODEX_APP_SERVER_REASONING_EFFORT,
-              judge: CODEX_APP_SERVER_REASONING_EFFORT,
+              discovery: reasoningEffort,
+              explorer: reasoningEffort,
+              judge: reasoningEffort,
             },
             termination: 'blocked',
             step_count: 0,
@@ -481,11 +491,12 @@ export async function runIrisViaCodexAppServer(
             discoverer: async (i) => {
               const r = await runCodexAppServerSingleShot(client, {
                 systemPrompt: i.systemPrompt,
-                userPrompt: i.userPrompt,
-                imagePath: i.imagePath,
-                ...(i.model ? { model: i.model } : {}),
-                timeoutS: 180,
-                cwd: appServerCwd,
+              userPrompt: i.userPrompt,
+              imagePath: i.imagePath,
+              ...(i.model ? { model: i.model } : {}),
+              reasoningEffort,
+              timeoutS: phaseTimeoutS,
+              cwd: appServerCwd,
               });
               phaseTokenUsage.discovery = r.token_usage;
               return { text: r.text, cost_usd: r.cost_usd };
@@ -594,6 +605,7 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
       maxSteps: config.max_steps,
       timeoutS: config.timeout_s,
       model: config.explorer_model,
+      reasoningEffort,
       maxExpansionGoals: config.expand_goals === false ? 0 : (config.max_expansion_goals ?? 6),
       ...(stepsPerGoal && stepsPerGoal > 0 ? { stepsPerGoal } : {}),
       ...(hasGoals
@@ -682,6 +694,7 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
         systemPrompt: CODEX_APP_SERVER_JUDGE_SYSTEM,
         userPrompt: buildCodexAppServerJudgePrompt(judgeUserPrompt),
         model: config.judge_model,
+        reasoningEffort,
         timeoutS: judgeTimeoutS,
         cwd: appServerCwd,
       });
@@ -770,9 +783,9 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
           judge: codexModelName(config.judge_model),
         },
         reasoning_efforts: {
-          discovery: CODEX_APP_SERVER_REASONING_EFFORT,
-          explorer: CODEX_APP_SERVER_REASONING_EFFORT,
-          judge: CODEX_APP_SERVER_REASONING_EFFORT,
+          discovery: reasoningEffort,
+          explorer: reasoningEffort,
+          judge: reasoningEffort,
         },
         termination: judgeFailedReason ? 'judge_failed' : explorerResult.termination,
         step_count: explorerResult.steps_taken,

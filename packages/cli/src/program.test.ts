@@ -38,5 +38,6 @@ describe('iris CLI program', () => {
     }
     expect(helpText).toMatch(/--mode/);
     expect(helpText).toMatch(/--spec/);
+    expect(helpText).toMatch(/--reasoning-effort/);
   });
 });

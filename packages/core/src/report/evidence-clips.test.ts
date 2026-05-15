@@ -172,6 +172,55 @@ describe('collectClaimEvidenceArtifacts', () => {
     expect(result.clips.G1).toMatch(/story-G1\.webm$/);
     expect(existsSync(result.clips.G1 ?? '')).toBe(true);
   });
+
+  it('writes a distinct storyboard file for each claim even when frame windows overlap', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'iris-trace-storyboard-distinct-'));
+    const screenshotsDir = join(runDir, 'evidence', 'screenshots');
+    mkdirSync(screenshotsDir, { recursive: true });
+    const screenshot = join(screenshotsDir, 'step-0001.png');
+    writeTinyPng(screenshot);
+    const trace = [
+      event('OBS1', 'observation', 10, {
+        ref: 'OBS-000001',
+        perception_state: { screenshot_ref: screenshot },
+      }),
+    ];
+    const judge = {
+      v: 1,
+      findings: [],
+      discarded_findings: [],
+      scores: { overall: { score: 9, weighted_from: [] }, profiles: {} },
+      spec_compliance: {
+        applicable: true,
+        goals: [
+          {
+            id: 'G1',
+            description: 'Open one panel',
+            status: 'verified',
+            evidence: ['OBS1'],
+          },
+          {
+            id: 'G2',
+            description: 'Open another panel',
+            status: 'verified',
+            evidence: ['OBS1'],
+          },
+        ],
+        summary: '',
+      },
+      coverage_review: { surfaces_explored: 1, surfaces_unexplored: 0, judgement: '' },
+      meta: { confidence_overall: 1, confidence_caveats: [], would_re_explore_with: [] },
+    } satisfies JudgeOutput;
+
+    const result = await collectTraceEvidenceArtifacts({ judge, trace, runDir });
+
+    if (result.files.length === 0) return;
+    expect(result.clips.G1).toMatch(/story-G1\.webm$/);
+    expect(result.clips.G2).toMatch(/story-G2\.webm$/);
+    expect(result.clips.G1).not.toBe(result.clips.G2);
+    expect(existsSync(result.clips.G1 ?? '')).toBe(true);
+    expect(existsSync(result.clips.G2 ?? '')).toBe(true);
+  });
 });
 
 function event(

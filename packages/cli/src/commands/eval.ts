@@ -4,6 +4,7 @@ import { WebTargetAdapter } from '@iris/adapter-web';
 import { ModeSchema, type PersonaName, orchestrator } from '@iris/core';
 import { Command } from 'commander';
 import { runIrisViaSdk } from '../agent-sdk-orchestrator.js';
+import { parseCodexReasoningEffort } from '../codex-app-server-runner.js';
 import { runIrisViaCodexAppServer } from '../codex-app-server-orchestrator.js';
 import { inferMode } from '../flags.js';
 import { buildLlmClient } from '../llm-factory.js';
@@ -81,6 +82,10 @@ export function evalCommand(): Command {
     )
     .option('--explorer-model <id>', 'model for Explorer agent', 'claude-sonnet-4-6')
     .option('--judge-model <id>', 'model for Judge agent', 'claude-opus-4-7')
+    .option(
+      '--reasoning-effort <effort>',
+      'Codex App Server reasoning effort: low | medium | high | xhigh',
+    )
     .option('--out <dir>', 'run output directory')
     .option('--no-html', 'skip HTML report')
     .option('--no-clips', 'skip per-finding video clips')
@@ -313,6 +318,9 @@ export function evalCommand(): Command {
             ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
             explorer_model: opts.explorerModel as string,
             judge_model: opts.judgeModel as string,
+            ...(opts.reasoningEffort
+              ? { reasoning_effort: parseCodexReasoningEffort(opts.reasoningEffort as string) }
+              : {}),
             no_html: opts.html === false,
             no_clips: opts.clips === false,
             no_preflight: opts.preflight === false,

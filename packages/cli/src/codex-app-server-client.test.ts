@@ -7,6 +7,7 @@ import { CodexAppServerClient } from './codex-app-server-client.js';
 import {
   codexModelName,
   normalizeTokenUsageSnapshot,
+  parseCodexReasoningEffort,
   runCodexAppServerExplorer,
   runCodexAppServerSingleShot,
 } from './codex-app-server-runner.js';
@@ -362,6 +363,59 @@ describe('runCodexAppServerSingleShot', () => {
     });
 
     expect(result.text).toBe('{"complete":true}');
+
+    await client.close();
+  });
+
+  it('passes a custom reasoning effort to App Server turns', async () => {
+    const server = fakeServerPath(`
+      import readline from 'node:readline';
+      const rl = readline.createInterface({ input: process.stdin });
+      const write = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n');
+      rl.on('line', (line) => {
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          write({ jsonrpc: '2.0', id: msg.id, result: { ok: true } });
+          return;
+        }
+        if (msg.method === 'thread/start') {
+          write({ jsonrpc: '2.0', id: msg.id, result: { thread: { id: 'thread-1' } } });
+          return;
+        }
+        if (msg.method === 'turn/start') {
+          write({ jsonrpc: '2.0', id: msg.id, result: { turn: { id: 'turn-1' } } });
+          setTimeout(() => {
+            write({
+              method: 'turn/completed',
+              params: {
+                threadId: 'thread-1',
+                turn: {
+                  id: 'turn-1',
+                  items: [{ type: 'agentMessage', text: msg.params.effort }]
+                }
+              }
+            });
+          }, 10);
+        }
+      });
+    `);
+    const client = new CodexAppServerClient({
+      command: process.execPath,
+      args: [server],
+      requestTimeoutMs: 1_000,
+    });
+    await client.start();
+    await client.initialize();
+
+    const result = await runCodexAppServerSingleShot(client, {
+      systemPrompt: 'Answer briefly.',
+      userPrompt: 'Say effort.',
+      reasoningEffort: 'high',
+      timeoutS: 2,
+      cwd: tmpdir(),
+    });
+
+    expect(result.text).toBe('high');
 
     await client.close();
   });
@@ -775,6 +829,14 @@ describe('codexModelName', () => {
     expect(codexModelName()).toBe('gpt-5.4-mini');
     expect(codexModelName('claude-opus-4-6')).toBe('gpt-5.4-mini');
     expect(codexModelName('gpt-5.5')).toBe('gpt-5.5');
+  });
+});
+
+describe('parseCodexReasoningEffort', () => {
+  it('accepts known App Server effort labels and rejects invalid values', () => {
+    expect(parseCodexReasoningEffort('high')).toBe('high');
+    expect(parseCodexReasoningEffort('xhigh')).toBe('xhigh');
+    expect(() => parseCodexReasoningEffort('max')).toThrow(/invalid Codex reasoning effort/);
   });
 });
 
