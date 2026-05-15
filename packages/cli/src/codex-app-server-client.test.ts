@@ -107,6 +107,140 @@ describe('CodexAppServerClient', () => {
 
     await client.close();
   });
+
+  it('rejects unknown goal ids without writing goal_status trace noise', async () => {
+    const server = fakeServerPath(`
+      import readline from 'node:readline';
+      const rl = readline.createInterface({ input: process.stdin });
+      const write = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n');
+      rl.on('line', (line) => {
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          write({ jsonrpc: '2.0', id: msg.id, result: { ok: true } });
+          return;
+        }
+        if (msg.method === 'thread/start') {
+          write({ jsonrpc: '2.0', id: msg.id, result: { thread: { id: 'thread-1' } } });
+          return;
+        }
+        if (msg.method === 'turn/start') {
+          write({ jsonrpc: '2.0', id: msg.id, result: { turn: { id: 'turn-1' } } });
+          setTimeout(() => {
+            write({
+              jsonrpc: '2.0',
+              id: 900,
+              method: 'item/tool/call',
+              params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                tool: 'goal_status',
+                arguments: {
+                  id: 'J1',
+                  status: 'verified',
+                  rationale: 'wrong id prefix',
+                  evidence_event_ids: ['OBS-EVENT']
+                }
+              }
+            });
+          }, 10);
+          return;
+        }
+        if (msg.id === 900) {
+          write({
+            jsonrpc: '2.0',
+            id: 901,
+            method: 'item/tool/call',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              tool: 'goal_status',
+              arguments: {
+                id: 'G1',
+                status: 'verified',
+                rationale: 'correct id',
+                evidence_event_ids: ['OBS-EVENT']
+              }
+            }
+          });
+          return;
+        }
+        if (msg.id === 901) {
+          write({
+            jsonrpc: '2.0',
+            id: 902,
+            method: 'item/tool/call',
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'done', arguments: {} }
+          });
+          return;
+        }
+        if (msg.id === 902) {
+          write({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-1' } });
+        }
+      });
+    `);
+    const client = new CodexAppServerClient({
+      command: process.execPath,
+      args: [server],
+      requestTimeoutMs: 1_000,
+    });
+    await client.start();
+    await client.initialize();
+
+    const traceEvents: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    const fakeAdapter: TargetAdapter = {
+      kind: 'web',
+      async start() {},
+      async stop() {
+        return { evidence_dir: '', artifact_files: {} };
+      },
+      listTools: () => [],
+      async callTool() {
+        return { ok: false, error: 'no tools' };
+      },
+      async observe() {
+        return { observation_ref: 'OBS', summary: 'initial page' };
+      },
+      listProbes: () => [],
+      async runProbe(name: string) {
+        return { ok: false, probe: name, error: 'no probes' };
+      },
+      async sliceEvidence() {
+        return [];
+      },
+    };
+
+    const result = await runCodexAppServerExplorer({
+      client,
+      adapter: fakeAdapter,
+      traceWriter: {
+        append: async (event: { kind: string; payload: Record<string, unknown> }) => {
+          traceEvents.push(event);
+        },
+      } as never,
+      systemPrompt: 'Use tools.',
+      initialUserPrompt: 'Verify G1.',
+      maxSteps: 5,
+      timeoutS: 5,
+      goals: [{ id: 'G1', description: 'verify one thing' }],
+      maxExpansionGoals: 0,
+      cwd: tmpdir(),
+    });
+
+    expect(result.termination).toBe('done');
+    expect(
+      traceEvents.some((event) => event.kind === 'goal_status' && event.payload.id === 'J1'),
+    ).toBe(false);
+    expect(traceEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'goal_status',
+          payload: expect.objectContaining({ id: 'G1', status: 'verified' }),
+        }),
+      ]),
+    );
+
+    await client.close();
+  });
 });
 
 describe('runCodexAppServerSingleShot', () => {

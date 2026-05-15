@@ -50,6 +50,80 @@ describe('buildReportMd', () => {
     expect(md).toMatch(/non-cached 40,868/);
   });
 
+  it('renders model and reasoning-effort metadata', () => {
+    const r = buildReportJson({
+      judge: fakeJudge(),
+      run: {
+        ...fakeRun(),
+        transport: 'codex-appserver',
+        models: {
+          discovery: 'gpt-5.4-mini',
+          explorer: 'gpt-5.4-mini',
+          judge: 'gpt-5.4-mini',
+        },
+        reasoning_efforts: {
+          discovery: 'low',
+          explorer: 'low',
+          judge: 'low',
+        },
+      },
+    });
+    const md = buildReportMd(r);
+    expect(md).toContain('**Transport:** codex-appserver');
+    expect(md).toContain('discovery gpt-5.4-mini (effort low)');
+    expect(md).toContain('judge gpt-5.4-mini (effort low)');
+  });
+
+  it('renders product-use contract metadata from Discovery', () => {
+    const r = buildReportJson({
+      judge: fakeJudge(),
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'DISCOVERY_1',
+          ts: 1,
+          step: 0,
+          target_kind: 'web',
+          kind: 'discovery',
+          actor: 'system',
+          payload: {
+            product_use_contract: {
+              product_kinds: ['canvas_editor'],
+              primary_value_loop: 'Create a durable drawing artifact.',
+              core_artifacts: ['visible drawing on canvas'],
+              user_jobs: [
+                {
+                  id: 'PU1',
+                  title: 'Draw something',
+                  required_actions: ['drag on canvas'],
+                  expected_artifact: 'drawing visible',
+                  acceptable_evidence: ['post-drag canvas screenshot'],
+                  weak_evidence: ['toolbar selected'],
+                  risk: 'high',
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const md = buildReportMd(r);
+    expect(md).toContain('**Real-use contract:** Create a durable drawing artifact.');
+    expect(md).toContain('**Product kind:** canvas_editor');
+    expect(md).toContain('**Expected artifact:** visible drawing on canvas');
+  });
+
+  it('omits zero-cost metadata from markdown reports', () => {
+    const r = buildReportJson({
+      judge: fakeJudge(),
+      run: { ...fakeRun(), cost_usd: 0 },
+    });
+    const md = buildReportMd(r);
+    expect(md).not.toContain('Cost');
+    expect(md).not.toContain('$0.00');
+  });
+
   it('lists top blocker/major findings', () => {
     const r = buildReportJson({ judge: fakeJudge(), run: fakeRun() });
     const md = buildReportMd(r);

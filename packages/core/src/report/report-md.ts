@@ -6,8 +6,16 @@ export function buildReportMd(report: ReportJson): string {
 
   lines.push(`# Iris run — ${report.headline.score} / 10  ${passEmoji}`);
   lines.push('');
+  const runMeta = [
+    `**Target:** ${report.run.target.url}`,
+    ...(report.run.transport ? [`**Transport:** ${report.run.transport}`] : []),
+    `**Mode:** ${report.run.mode}`,
+    `**Duration:** ${formatDuration(report.run.duration_s)}`,
+    ...(report.run.cost_usd > 0.005 ? [`**Cost:** $${report.run.cost_usd.toFixed(2)}`] : []),
+  ];
+  lines.push(runMeta.join('  •  '));
   lines.push(
-    `**Target:** ${report.run.target.url}  •  **Mode:** ${report.run.mode}  •  **Duration:** ${formatDuration(report.run.duration_s)}  •  **Cost:** $${report.run.cost_usd.toFixed(2)}`,
+    `**Models:** discovery ${report.run.models.discovery ?? report.run.models.explorer} (${effortLabel(report.run.reasoning_efforts?.discovery)})  •  explorer ${report.run.models.explorer} (${effortLabel(report.run.reasoning_efforts?.explorer)})  •  judge ${report.run.models.judge} (${effortLabel(report.run.reasoning_efforts?.judge)})`,
   );
   if (report.run.usage?.total) {
     const usage = report.run.usage.total;
@@ -18,6 +26,17 @@ export function buildReportMd(report: ReportJson): string {
     lines.push(
       `**Tokens:** input ${usage.input_tokens.toLocaleString()}  •  cached ${cached.toLocaleString()}  •  non-cached ${nonCached.toLocaleString()}  •  output ${usage.output_tokens.toLocaleString()}`,
     );
+  }
+  if (report.discovery?.product_use_contract) {
+    const contract = report.discovery.product_use_contract;
+    const kinds =
+      contract.product_kinds.length > 0 ? contract.product_kinds.join(', ') : 'unknown';
+    const artifacts =
+      contract.core_artifacts.length > 0
+        ? contract.core_artifacts.join('; ')
+        : 'visible value-producing artifact or state change';
+    lines.push(`**Real-use contract:** ${mdCell(contract.primary_value_loop || 'not recorded')}`);
+    lines.push(`**Product kind:** ${mdCell(kinds)}  •  **Expected artifact:** ${mdCell(artifacts)}`);
   }
   lines.push('');
 
@@ -95,6 +114,10 @@ export function buildReportMd(report: ReportJson): string {
   }
 
   return lines.join('\n');
+}
+
+function effortLabel(effort: string | undefined): string {
+  return `effort ${effort ?? 'not recorded'}`;
 }
 
 function formatDuration(s: number): string {

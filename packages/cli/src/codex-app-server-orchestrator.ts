@@ -1,4 +1,12 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TargetAdapter } from '@iris/adapter-types';
@@ -16,6 +24,7 @@ import type { RubricProfile } from '@iris/rubrics';
 import { ulid } from 'ulid';
 import { CodexAppServerClient } from './codex-app-server-client.js';
 import {
+  CODEX_APP_SERVER_REASONING_EFFORT,
   type CodexTokenUsage,
   type CodexTokenUsageSnapshot,
   codexModelName,
@@ -90,6 +99,7 @@ function parseJudgeOutput(text: string): judgeMod.JudgeOutput {
 const CODEX_APP_SERVER_JUDGE_SYSTEM = `You are Iris's Judge. Return ONLY one complete JSON object. Keep output compact but complete. Use the latest goal_status for each goal. At most 3 findings. All strings short.
 Scores are mandatory: scores.profiles MUST contain every profile listed under RUBRIC PROFILES TO SCORE, and each profile.dimensions MUST contain every listed dimension id. Do not omit frontend, usability, accessibility, coverage, or UX baseline profiles to save tokens. Use score:null only for a dimension that is genuinely untestable from this run; still include that dimension with a short rationale.
 Raw axe impact is not product severity: machine-only axe/a11y issues should usually be minor findings or rubric-score evidence, not major/blocker findings, unless trace evidence shows a core flow blocked, explicit accessibility/compliance focus, or broad user impact.
+If discovery includes product_use_contract, grade real-use depth against it: high coverage/completeness requires the primary value loop and expected artifact/state evidence, not only menus/toolbars/focus/mode selection.
 Required exact shape:
 {"v":1,"findings":[{"id":"F-001","title":"...","category":"bug|a11y|ux|perf|copy|suggestion","severity":"blocker|major|minor|nit|suggestion","evidence":["EVENT"],"rationale":"..."}],"discarded_findings":[],"scores":{"overall":{"score":0,"weighted_from":["quality"]},"profiles":{"quality":{"score":0,"dimensions":{"correctness":{"score":0,"rationale":"...","evidence":["EVENT"]},"completeness":{"score":0,"rationale":"...","evidence":["EVENT"]},"polish":{"score":0,"rationale":"...","evidence":["EVENT"]}}}}},"spec_compliance":{"applicable":true,"goals":[{"id":"G1","description":"...","status":"verified|partial|blocked|skipped|untested","evidence":["EVENT"],"notes":"..."}],"summary":"..."},"coverage_review":{"surfaces_explored":0,"surfaces_unexplored":0,"judgement":"..."},"meta":{"confidence_overall":0.8,"confidence_caveats":[],"would_re_explore_with":[]},"access_blocks":[]}
 If rubric profile names or dimensions differ, replace quality/correctness/completeness/polish with the actual RUBRIC PROFILES ids. scores.overall.weighted_from must list every scored profile id. Use [] for empty arrays. Use null for untested dimension scores. Do not use v:2. Do not add extra top-level keys.`;
@@ -112,10 +122,10 @@ function addTokenUsage(a: CodexTokenUsage | undefined, b: CodexTokenUsage): Code
     cached_input_tokens: (a?.cached_input_tokens ?? 0) + b.cached_input_tokens,
     non_cached_input_tokens: (a?.non_cached_input_tokens ?? 0) + b.non_cached_input_tokens,
     output_tokens: (a?.output_tokens ?? 0) + b.output_tokens,
-    ...((a?.total_tokens !== undefined || b.total_tokens !== undefined)
+    ...(a?.total_tokens !== undefined || b.total_tokens !== undefined
       ? { total_tokens: (a?.total_tokens ?? 0) + (b.total_tokens ?? 0) }
       : {}),
-    ...((a?.reasoning_output_tokens !== undefined || b.reasoning_output_tokens !== undefined)
+    ...(a?.reasoning_output_tokens !== undefined || b.reasoning_output_tokens !== undefined
       ? {
           reasoning_output_tokens:
             (a?.reasoning_output_tokens ?? 0) + (b.reasoning_output_tokens ?? 0),
@@ -155,7 +165,11 @@ function buildJudgeFailureOutput(input: {
   const allowedStatuses = new Set(['verified', 'partial', 'blocked', 'skipped', 'untested']);
   const latestGoalStatus = new Map<
     string,
-    { status: 'verified' | 'partial' | 'blocked' | 'skipped' | 'untested'; rationale: string; evidence: string[] }
+    {
+      status: 'verified' | 'partial' | 'blocked' | 'skipped' | 'untested';
+      rationale: string;
+      evidence: string[];
+    }
   >();
   for (const event of input.events) {
     if (event.kind !== 'goal_status') continue;
@@ -228,7 +242,8 @@ function buildJudgeFailureOutput(input: {
     },
     coverage_review: {
       surfaces_explored: input.events.filter((event) => event.kind === 'surface_seen').length,
-      surfaces_unexplored: input.events.filter((event) => event.kind === 'surface_unexplored').length,
+      surfaces_unexplored: input.events.filter((event) => event.kind === 'surface_unexplored')
+        .length,
       judgement: `Judge did not complete: ${input.reason}`,
     },
     meta: {
@@ -377,9 +392,16 @@ export async function runIrisViaCodexAppServer(
             ended_at: new Date().toISOString(),
             duration_s: (Date.now() - startMs) / 1000,
             cost_usd: totalCost,
+            transport: 'codex-appserver',
             models: {
+              discovery: codexModelName(config.explorer_model),
               explorer: codexModelName(config.explorer_model),
               judge: codexModelName(config.judge_model),
+            },
+            reasoning_efforts: {
+              discovery: CODEX_APP_SERVER_REASONING_EFFORT,
+              explorer: CODEX_APP_SERVER_REASONING_EFFORT,
+              judge: CODEX_APP_SERVER_REASONING_EFFORT,
             },
             termination: 'blocked',
             step_count: 0,
@@ -485,6 +507,9 @@ export async function runIrisViaCodexAppServer(
                 goals: out.goals,
                 surfaces: out.surfaces,
                 journeys: out.journeys,
+                ...(out.product_use_contract
+                  ? { product_use_contract: out.product_use_contract }
+                  : {}),
                 ...(out.coverage_plan ? { coverage_plan: out.coverage_plan } : {}),
                 focus_areas: out.focus_areas,
                 hints: out.hints,
@@ -512,9 +537,7 @@ export async function runIrisViaCodexAppServer(
               out_of_scope: out.out_of_scope,
             };
             if (config.mode === 'free') (config as { mode: Mode }).mode = 'grounded';
-            process.stderr.write(
-              `iris: discovery - ${out.goals.length} seed goals proposed\n`,
-            );
+            process.stderr.write(`iris: discovery - ${out.goals.length} seed goals proposed\n`);
           }
         }
       } catch (err) {
@@ -556,6 +579,7 @@ PRIORITY ORDER:
 
 Iris will run axe and console_errors_since automatically after your Explorer turn. Do not spend model turns calling those probes unless a goal specifically needs their evidence.
 Do not mark a goal partial until you have tried the strongest cheap proof available. For focus, layout, sidebar, collapse, selected-state, text-size, width, or color-mode goals, use the ui_state probe after interaction. If Iris reports that budget remains for partial retries, retry only those partial goals before stopping.
+Do not use direct URL navigation after initial load to satisfy product feature goals such as search, auth, donate, or settings. Interact with visible UI like a user. Direct navigation is only acceptable for initial target load, browser back/forward/reload, or explicit URL-handling goals.
 If all assigned goals are terminal after goal_status and Iris does not request a retry, stop; do not call extra tools just to say done.
 
 Avoid treating selector misses as product evidence. Use dynamic tools directly. Budget: ${config.timeout_s}s wall-clock.`;
@@ -625,7 +649,12 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
         kind: 'probe_result',
         actor: 'system',
         payload: cResult.ok
-          ? { probe: 'console_errors_since', summary: cResult.summary, data: cResult.data, ok: true }
+          ? {
+              probe: 'console_errors_since',
+              summary: cResult.summary,
+              data: cResult.data,
+              ok: true,
+            }
           : { probe: 'console_errors_since', error: cResult.error, ok: false },
       });
     }
@@ -707,6 +736,7 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
           adapter,
           judge: judgeOutput,
           trace: events,
+          runDir: config.out_dir,
         });
         Object.assign(clipPaths, evidence.clips);
         if (evidence.files.length > 0) {
@@ -733,9 +763,16 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
         ended_at: new Date().toISOString(),
         duration_s,
         cost_usd: totalCost,
+        transport: 'codex-appserver',
         models: {
+          discovery: codexModelName(config.explorer_model),
           explorer: codexModelName(config.explorer_model),
           judge: codexModelName(config.judge_model),
+        },
+        reasoning_efforts: {
+          discovery: CODEX_APP_SERVER_REASONING_EFFORT,
+          explorer: CODEX_APP_SERVER_REASONING_EFFORT,
+          judge: CODEX_APP_SERVER_REASONING_EFFORT,
         },
         termination: judgeFailedReason ? 'judge_failed' : explorerResult.termination,
         step_count: explorerResult.steps_taken,
@@ -768,7 +805,10 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
     let exitCode: 0 | 1 | 2 | 3 | 4 = 0;
     if (judgeFailedReason) {
       exitCode = 3;
-    } else if (explorerResult.termination === 'budget_steps' || explorerResult.termination === 'budget_time') {
+    } else if (
+      explorerResult.termination === 'budget_steps' ||
+      explorerResult.termination === 'budget_time'
+    ) {
       exitCode = 2;
     } else if (!report.headline.threshold_passed) {
       exitCode = 1;

@@ -5,19 +5,24 @@ import type {
   DiscoveryCoveragePlan,
   DiscoveryGoal,
   DiscoveryJourney,
+  ProductUseContract,
   DiscoverySurface,
 } from '../discovery/discovery.js';
 import { type TaskRun, buildTaskRuns } from '../task-runs/task-runs.js';
+import { buildTraceIndexById, resolveTraceRefTypo } from '../trace/ref-resolver.js';
+import { deriveProbeConfidenceCaveats, normalizeReportScores } from './score-normalization.js';
 
 export interface ReportRunMeta {
   id: string;
   target: { kind: string; url: string };
+  transport?: string;
   mode: string;
   started_at: string;
   ended_at: string;
   duration_s: number;
   cost_usd: number;
-  models: { explorer: string; judge: string };
+  models: { discovery?: string; explorer: string; judge: string };
+  reasoning_efforts?: { discovery?: string; explorer?: string; judge?: string };
   termination: string;
   step_count: number;
   spec_input_path?: string;
@@ -60,6 +65,7 @@ export interface DiscoveryReport {
   surfaces?: DiscoverySurface[];
   journeys?: DiscoveryJourney[];
   coverage_plan?: DiscoveryCoveragePlan;
+  product_use_contract?: ProductUseContract;
   survey_summary?: string;
 }
 
@@ -166,43 +172,22 @@ function countAttemptedGoals(judge: JudgeOutput): {
   return { total: goals.length, attempted, verified };
 }
 
-function normalizeScore(value: number | null): number | null {
-  if (value === null) return null;
-  if (!Number.isFinite(value)) return 0;
-  const scaled = value > 10 && value <= 100 ? value / 10 : value;
-  return Math.max(0, Math.min(10, Number(scaled.toFixed(2))));
-}
-
-function normalizeScores(scores: JudgeOutput['scores']): JudgeOutput['scores'] {
-  return {
-    ...scores,
-    overall: {
-      ...scores.overall,
-      score: normalizeScore(scores.overall.score) ?? 0,
-    },
-    profiles: Object.fromEntries(
-      Object.entries(scores.profiles).map(([profileName, profile]) => [
-        profileName,
-        {
-          ...profile,
-          score: normalizeScore(profile.score) ?? 0,
-          dimensions: Object.fromEntries(
-            Object.entries(profile.dimensions).map(([dimensionName, dimension]) => [
-              dimensionName,
-              { ...dimension, score: normalizeScore(dimension.score) },
-            ]),
-          ),
-        },
-      ]),
-    ),
-  };
-}
-
 export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
-  const counts = countSeverities(inp.judge.findings);
-  const scores = normalizeScores(inp.judge.scores);
+  const judge = resolveJudgeEvidenceRefs(inp.judge, inp.trace_events);
+  const counts = countSeverities(judge.findings);
+  const scores = normalizeReportScores(judge.scores, {
+    traceEvents: inp.trace_events,
+    confidenceCaveats: judge.meta.confidence_caveats,
+  });
+  const meta = {
+    ...judge.meta,
+    confidence_caveats: uniqueStrings([
+      ...judge.meta.confidence_caveats,
+      ...deriveProbeConfidenceCaveats(inp.trace_events),
+    ]),
+  };
   const score = scores.overall.score;
-  const coverage = countAttemptedGoals(inp.judge);
+  const coverage = countAttemptedGoals(judge);
   // Phase 12: threshold check is no longer just "score ≥ threshold." A high
   // score on a barely-tested product was passing — Dillinger scored 5.2 with
   // 3/12 coverage and "passed" because the (default null) threshold check
@@ -226,14 +211,14 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
       eventIndex.set(e.id, { ...(e.content_hash ? { content_hash: e.content_hash } : {}) });
     }
   }
-  const findingsWithHash = inp.judge.findings.map((f) => ({
+  const findingsWithHash = judge.findings.map((f) => ({
     ...f,
     finding_hash: findingHash(f, eventIndex),
   }));
   const discovery = extractDiscoveryReport(inp.trace_events);
   const taskRuns =
-    inp.trace_events && inp.judge.spec_compliance.applicable
-      ? buildTaskRuns({ goals: inp.judge.spec_compliance.goals, trace: inp.trace_events })
+    inp.trace_events && judge.spec_compliance.applicable
+      ? buildTaskRuns({ goals: judge.spec_compliance.goals, trace: inp.trace_events })
       : [];
 
   const for_builder = findingsWithHash
@@ -256,7 +241,7 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     minors: counts.minor,
     nits: counts.nit,
     suggestions: counts.suggestion,
-    ...(inp.judge.spec_compliance.applicable
+    ...(judge.spec_compliance.applicable
       ? {
           goals_attempted: coverage.attempted,
           goals_verified: coverage.verified,
@@ -273,27 +258,85 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     run: inp.run,
     headline,
     scores,
-    spec_compliance: inp.judge.spec_compliance,
+    spec_compliance: judge.spec_compliance,
     findings: findingsWithHash,
-    coverage_review: inp.judge.coverage_review,
-    meta: inp.judge.meta,
+    coverage_review: judge.coverage_review,
+    meta,
     ...(discovery ? { discovery } : {}),
     ...(taskRuns.length > 0 ? { task_runs: taskRuns } : {}),
     ...(inp.artifacts ? { artifacts: inp.artifacts } : {}),
     ...(inp.preflight ? { preflight: inp.preflight } : {}),
-    ...(inp.judge.evidence_validation
-      ? { evidence_validation: inp.judge.evidence_validation }
+    ...(judge.evidence_validation ? { evidence_validation: judge.evidence_validation } : {}),
+    ...(judge.discarded_findings && judge.discarded_findings.length > 0
+      ? { discarded_findings: judge.discarded_findings }
       : {}),
-    ...(inp.judge.discarded_findings && inp.judge.discarded_findings.length > 0
-      ? { discarded_findings: inp.judge.discarded_findings }
-      : {}),
-    ...(inp.judge.access_blocks && inp.judge.access_blocks.length > 0
-      ? { access_blocks: inp.judge.access_blocks }
+    ...(judge.access_blocks && judge.access_blocks.length > 0
+      ? { access_blocks: judge.access_blocks }
       : {}),
     next_actions: {
       for_builder,
-      for_re_evaluation: inp.judge.meta.would_re_explore_with,
+      for_re_evaluation: meta.would_re_explore_with,
     },
+  };
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function resolveJudgeEvidenceRefs(
+  judge: JudgeOutput,
+  traceEvents: TraceEvent[] | undefined,
+): JudgeOutput {
+  if (!traceEvents || traceEvents.length === 0) return judge;
+  const traceIndexById = buildTraceIndexById(traceEvents);
+  const resolveRefs = (refs: string[]) =>
+    refs.map((ref) => resolveTraceRefTypo(ref, traceEvents, traceIndexById) ?? ref);
+  return {
+    ...judge,
+    findings: judge.findings.map((finding) => ({
+      ...finding,
+      evidence: resolveRefs(finding.evidence),
+    })),
+    scores: {
+      ...judge.scores,
+      profiles: Object.fromEntries(
+        Object.entries(judge.scores.profiles).map(([profileName, profile]) => [
+          profileName,
+          {
+            ...profile,
+            dimensions: Object.fromEntries(
+              Object.entries(profile.dimensions).map(([dimensionName, dimension]) => [
+                dimensionName,
+                { ...dimension, evidence: resolveRefs(dimension.evidence) },
+              ]),
+            ),
+          },
+        ]),
+      ),
+    },
+    spec_compliance: {
+      ...judge.spec_compliance,
+      goals: judge.spec_compliance.goals.map((goal) => ({
+        ...goal,
+        evidence: resolveRefs(goal.evidence),
+      })),
+    },
+    ...(judge.access_blocks
+      ? {
+          access_blocks: judge.access_blocks.map((block) => ({
+            ...block,
+            evidence: resolveRefs(block.evidence),
+          })),
+        }
+      : {}),
   };
 }
 
@@ -306,12 +349,21 @@ function extractDiscoveryReport(events: TraceEvent[] | undefined): DiscoveryRepo
       ? { product_description: payload.product_description }
       : {}),
     ...(Array.isArray(payload.goals) ? { goals: payload.goals as DiscoveryGoal[] } : {}),
-    ...(Array.isArray(payload.surfaces) ? { surfaces: payload.surfaces as DiscoverySurface[] } : {}),
-    ...(Array.isArray(payload.journeys) ? { journeys: payload.journeys as DiscoveryJourney[] } : {}),
+    ...(Array.isArray(payload.surfaces)
+      ? { surfaces: payload.surfaces as DiscoverySurface[] }
+      : {}),
+    ...(Array.isArray(payload.journeys)
+      ? { journeys: payload.journeys as DiscoveryJourney[] }
+      : {}),
     ...(payload.coverage_plan && typeof payload.coverage_plan === 'object'
       ? { coverage_plan: payload.coverage_plan as DiscoveryCoveragePlan }
       : {}),
-    ...(typeof payload.survey_summary === 'string' ? { survey_summary: payload.survey_summary } : {}),
+    ...(payload.product_use_contract && typeof payload.product_use_contract === 'object'
+      ? { product_use_contract: payload.product_use_contract as ProductUseContract }
+      : {}),
+    ...(typeof payload.survey_summary === 'string'
+      ? { survey_summary: payload.survey_summary }
+      : {}),
   };
 }
 

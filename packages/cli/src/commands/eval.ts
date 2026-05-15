@@ -337,6 +337,7 @@ export function evalCommand(): Command {
         const orch = new orchestrator.Orchestrator({ adapter, explorerClient, judgeClient });
         result = await orch.run({
           target: { kind: 'web', url: target },
+          transport,
           mode,
           out_dir: outDir,
           ...(specText !== undefined ? { spec_text: specText } : {}),

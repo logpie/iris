@@ -111,3 +111,39 @@ Do not hide Iris claim clips behind tiny collapsed controls inside flex action r
 ## 2026-05-14 — Do not reflexively tell the user they are right
 
 When the user reports a discrepancy, respond with the observed evidence and the fix path, not validation phrasing like "you are right" or "you are right again." The user may be diagnosing from partial or stale artifacts, and reflexive agreement is both ungrounded and patronizing. Say "I reproduced it," "I found a regression," or "this URL is stale" only after checking.
+
+## 2026-05-14 — Discovery surface counts need an explicit coverage mapping
+
+When Discovery reports more surfaces than journeys or goals, the report must explain the grouping directly: surfaces are inventory, journeys are workflows, and goals are selected test claims. Show `surfaces -> journeys -> goals`, distinguish direct journey surfaces from page-context surfaces, and list deferred surfaces separately. An empty deferred list is misleading if unmapped page containers are not called out as context.
+
+## 2026-05-14 — Repair near-miss trace references before rendering reports
+
+Judge evidence can contain one-character ULID typos. Do not render those as mysterious source ids or unresolved evidence until a deterministic typo resolver has tried to map them to unique trace events. Apply the same resolver to findings, goals, and rubric score evidence so HTML, Markdown, JSON, and validators agree.
+
+## 2026-05-14 — Report UI should not hardcode product-specific analysis
+
+If a report row seems to imply too much, fix the analysis contract first rather than adding one-off HTML warnings for login, checkout, donation, or other domains. The Judge/LLM should preserve the exact claim boundary in goal notes, and the report should generically render goal scope, observed result, journey, and surfaces. UI can improve scanability, but product interpretation belongs in analysis.
+
+## 2026-05-14 — Show Discovery relationships as a map, not separate chip piles
+
+For Discovery v2, a surface inventory plus selected-journey chips is still hard to scan. Prefer a compact coverage map with columns for Journey, Goal checked, and Surfaces covered. Keep full surface inventory collapsible and deferred surfaces separate.
+
+## 2026-05-14 — Failed evaluator probes are not product evidence
+
+When Iris tooling injects probes such as axe and the site blocks them with CSP, classify the resulting console errors as instrumentation noise. The report should mark the affected probe-backed rubric as n/a with a caveat, not as a product console bug and not as a clean axe pass. Re-render commands must apply the same derived caveats as fresh report generation.
+
+## 2026-05-14 — Report metadata belongs in the report, not the chat answer
+
+When asked for key Iris run metadata such as provider, model, reasoning effort, and token usage, surface it in `report.html`/`report.md` where users audit the run. Chat summaries are useful only after the report itself contains the information.
+
+## 2026-05-14 — Product-depth fixes must be generic contracts, not site patches
+
+When Iris under-tests a rich product like a canvas editor, do not patch prompts with a named-site workaround. Discovery should infer the product kind, define the primary value loop, list required user actions, and mark weak evidence that cannot verify the job. Explorer, Judge, validators, and reports should all consume that same product-use contract so the behavior applies across editors, CRUD tools, dashboards, search/content sites, and other app classes.
+
+## 2026-05-15 — Evidence cannot serve contradictory report roles
+
+Do not attach the same Iris video as both verified-goal proof and finding proof. If a finding explains a tested goal, link the finding to that goal row and show the media once in the goal evidence. Claim evidence should be unique, visible, and claim-scoped; raw/debug recordings stay in the audit appendix and should never compete with goal/finding proof.
+
+## 2026-05-15 — Artifact products require artifact-depth evidence
+
+For canvas editors, document editors, builders, design tools, and similar creation products, "opened a menu" or "clicked a tool" is weak evidence unless the user-visible artifact changes. Discovery and Explorer should ask for a minimally meaningful artifact composed of multiple operations when feasible, and reports should make the resulting artifact clip central rather than showing static toolbar/menu footage.

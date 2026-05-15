@@ -11,7 +11,7 @@ export interface ConsoleEntry {
   // fetches at console level even though no app code called console.error.
   // Lumping them together caused Iris to report "15 console errors during
   // normal use" on Dillinger when the app worked fine.
-  category?: 'app_error' | 'resource_error';
+  category?: 'app_error' | 'resource_error' | 'instrumentation_error';
 }
 
 const RESOURCE_ERROR_PATTERNS: RegExp[] = [
@@ -20,8 +20,18 @@ const RESOURCE_ERROR_PATTERNS: RegExp[] = [
   /\b(GET|POST|PUT|DELETE|HEAD|OPTIONS)\s+https?:\/\/.+\b\d{3}\s/i, // HTTP method + URL + status
 ];
 
-function categorize(type: string, text: string): 'app_error' | 'resource_error' {
+const INSTRUMENTATION_ERROR_PATTERNS: RegExp[] = [
+  /Executing inline script violates .*Content Security Policy.*The action has been blocked/i,
+];
+
+function categorize(
+  type: string,
+  text: string,
+): 'app_error' | 'resource_error' | 'instrumentation_error' {
   if (type === 'error') {
+    for (const p of INSTRUMENTATION_ERROR_PATTERNS) {
+      if (p.test(text)) return 'instrumentation_error';
+    }
     for (const p of RESOURCE_ERROR_PATTERNS) if (p.test(text)) return 'resource_error';
   }
   return 'app_error';
@@ -76,6 +86,7 @@ export class ConsoleProbe {
       // are mostly third-party / ad-blocker noise.
       const appErrors = errs.filter((e) => e.category === 'app_error');
       const resourceErrors = errs.filter((e) => e.category === 'resource_error');
+      const instrumentationErrors = errs.filter((e) => e.category === 'instrumentation_error');
       return {
         ok: true,
         probe: name,
@@ -85,8 +96,13 @@ export class ConsoleProbe {
           // New: explicit breakdown.
           app_error_count: appErrors.length,
           resource_error_count: resourceErrors.length,
+          instrumentation_error_count: instrumentationErrors.length,
         },
-        data: { app_errors: appErrors, resource_errors: resourceErrors },
+        data: {
+          app_errors: appErrors,
+          resource_errors: resourceErrors,
+          instrumentation_errors: instrumentationErrors,
+        },
       };
     }
     if (name === 'console_all_since') {

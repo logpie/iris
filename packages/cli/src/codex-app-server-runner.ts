@@ -69,18 +69,12 @@ function matchesThreadTurn(
   if (!params || params.threadId !== threadId) return false;
   const turn = params.turn as { id?: unknown } | undefined;
   const notificationTurnId =
-    typeof params.turnId === 'string'
-      ? params.turnId
-      : typeof turn?.id === 'string'
-        ? turn.id
-        : '';
+    typeof params.turnId === 'string' ? params.turnId : typeof turn?.id === 'string' ? turn.id : '';
   return !turnId || !notificationTurnId || notificationTurnId === turnId;
 }
 
 function agentTextFromCompletedTurn(params: Record<string, unknown>): string | undefined {
-  const turn = params.turn as
-    | { items?: Array<{ type?: string; text?: unknown }> }
-    | undefined;
+  const turn = params.turn as { items?: Array<{ type?: string; text?: unknown }> } | undefined;
   const items = turn?.items ?? [];
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
@@ -92,6 +86,8 @@ function agentTextFromCompletedTurn(params: Record<string, unknown>): string | u
 export function codexModelName(model?: string): string {
   return model && !model.startsWith('claude-') ? model : 'gpt-5.4-mini';
 }
+
+export const CODEX_APP_SERVER_REASONING_EFFORT = 'low';
 
 function normalizeUsage(usage?: TokenUsageBreakdown): CodexTokenUsage | undefined {
   if (!usage) return undefined;
@@ -161,15 +157,18 @@ export async function runCodexAppServerSingleShot(
   let tokenUsage: { last?: TokenUsageBreakdown; total?: TokenUsageBreakdown } | undefined;
 
   const done = new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      if (turnId) {
-        client.request('turn/interrupt', { threadId, turnId }).catch(() => {
-          // best effort
-        });
-      }
-      cleanup();
-      reject(new Error(`codex app-server single-shot timed out after ${opts.timeoutS ?? 600}s`));
-    }, (opts.timeoutS ?? 600) * 1000);
+    const timer = setTimeout(
+      () => {
+        if (turnId) {
+          client.request('turn/interrupt', { threadId, turnId }).catch(() => {
+            // best effort
+          });
+        }
+        cleanup();
+        reject(new Error(`codex app-server single-shot timed out after ${opts.timeoutS ?? 600}s`));
+      },
+      (opts.timeoutS ?? 600) * 1000,
+    );
     timer.unref?.();
 
     const onNotification = (msg: JsonRpcNotification) => {
@@ -212,7 +211,7 @@ export async function runCodexAppServerSingleShot(
       input,
       approvalPolicy: 'never',
       model: codexModelName(opts.model),
-      effort: 'low',
+      effort: CODEX_APP_SERVER_REASONING_EFFORT,
       ...(opts.outputSchema ? { outputSchema: opts.outputSchema } : {}),
     },
     30_000,
@@ -349,6 +348,8 @@ export async function runCodexAppServerExplorer(
 
   await emit('run_start', 'system', {
     transport: 'codex-appserver',
+    model: codexModelName(config.model),
+    reasoning_effort: CODEX_APP_SERVER_REASONING_EFFORT,
     max_steps: config.maxSteps,
   });
 
@@ -582,6 +583,14 @@ export async function runCodexAppServerExplorer(
       const evidence = Array.isArray(args.evidence_event_ids)
         ? args.evidence_event_ids.map(String)
         : [];
+      if (!goalLedger.has(id)) {
+        return {
+          text: `ERROR: unknown goal_status id "${id}". Use one of the active Iris goal ids: ${[
+            ...goalLedger.keys(),
+          ].join(', ')}.`,
+          success: false,
+        };
+      }
       if (status === 'verified' && evidence.length === 0) {
         return {
           text: 'ERROR: verified goal_status requires evidence_event_ids with a post-action observation/screenshot/vision_describe event id.',
@@ -792,7 +801,7 @@ ${config.initialUserPrompt}`),
         ],
         approvalPolicy: 'never',
         model: codexModelName(config.model),
-        effort: 'low',
+        effort: CODEX_APP_SERVER_REASONING_EFFORT,
       },
       30_000,
     )) as { turn?: { id?: string } };
@@ -857,13 +866,19 @@ ${config.initialUserPrompt}`),
         ? { model_continuation_estimate: Number(modelContinuationEstimate.toFixed(2)) }
         : {}),
     },
-    ...((finalAgentText || deltaAgentText)
+    ...(finalAgentText || deltaAgentText
       ? { agent_text_preview: (finalAgentText || deltaAgentText).slice(0, 2000) }
       : {}),
   });
 
   return {
-    state: { surfaces_seen: surfacesSeen, surfaces_unexplored: surfacesUnexplored, hypotheses, done, give_up_reason: giveUpReason },
+    state: {
+      surfaces_seen: surfacesSeen,
+      surfaces_unexplored: surfacesUnexplored,
+      hypotheses,
+      done,
+      give_up_reason: giveUpReason,
+    },
     termination,
     cost_usd: totalCost,
     steps_taken: stepCount,
@@ -872,7 +887,10 @@ ${config.initialUserPrompt}`),
   };
 }
 
-function metaDynamicTools(hasGoals: boolean, allowExpansion: boolean): Array<{
+function metaDynamicTools(
+  hasGoals: boolean,
+  allowExpansion: boolean,
+): Array<{
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
@@ -889,7 +907,8 @@ function metaDynamicTools(hasGoals: boolean, allowExpansion: boolean): Array<{
     },
     {
       name: 'note_finding',
-      description: 'Flag a bug, a11y issue, UX issue, performance issue, copy issue, or suggestion.',
+      description:
+        'Flag a bug, a11y issue, UX issue, performance issue, copy issue, or suggestion.',
       inputSchema: {
         type: 'object',
         properties: {

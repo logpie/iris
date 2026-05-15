@@ -457,7 +457,11 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     return id;
   };
 
-  await emit('run_start', 'system', { transport: 'agent-sdk', max_steps: config.maxSteps });
+  await emit('run_start', 'system', {
+    transport: 'agent-sdk',
+    model: config.model,
+    max_steps: config.maxSteps,
+  });
 
   // Build adapter tools as MCP tools
   const adapterToolSpecs = config.adapter.listTools();

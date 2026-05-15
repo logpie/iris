@@ -153,11 +153,17 @@ export function extractJsonObjectCandidate(text: string): string | null {
     }
   }
 
-  return text.slice(start).replace(/```(?:json)?\s*$/i, '').trim();
+  return text
+    .slice(start)
+    .replace(/```(?:json)?\s*$/i, '')
+    .trim();
 }
 
 function repairTruncatedJsonCandidate(candidate: string): string {
-  let repaired = candidate.trim().replace(/```(?:json)?\s*$/i, '').trim();
+  let repaired = candidate
+    .trim()
+    .replace(/```(?:json)?\s*$/i, '')
+    .trim();
   const stack: string[] = [];
   let inString = false;
   let escaped = false;
@@ -280,7 +286,11 @@ export function formatJudgeErrorForFile(err: unknown): string {
   if (response?.partial_error) lines.push(`SDK partial error: ${response.partial_error}`);
   if (response?.text) {
     const descriptor = response.partial ? 'partial Judge output' : 'Judge output';
-    lines.push('', `--- ${descriptor} (${response.text.length} chars) ---`, errorTextExcerpt(response.text));
+    lines.push(
+      '',
+      `--- ${descriptor} (${response.text.length} chars) ---`,
+      errorTextExcerpt(response.text),
+    );
   }
 
   return `${lines.join('\n')}\n`;
@@ -306,9 +316,7 @@ export async function runIrisViaSdk(
   // through normal rejection.
   const sdkNoiseHandler = (reason: unknown) => {
     const msg = reason instanceof Error ? reason.message : String(reason);
-    if (
-      /Query closed before response received|Claude Code process|ProcessTransport/i.test(msg)
-    ) {
+    if (/Query closed before response received|Claude Code process|ProcessTransport/i.test(msg)) {
       process.stderr.write(`iris: swallowed SDK cleanup noise: ${msg.slice(0, 200)}\n`);
       return;
     }
@@ -434,7 +442,12 @@ export async function runIrisViaSdk(
           ended_at: new Date().toISOString(),
           duration_s: (Date.now() - startMs) / 1000,
           cost_usd: totalCost,
-          models: { explorer: config.explorer_model, judge: config.judge_model },
+          transport: 'agent-sdk',
+          models: {
+            discovery: config.explorer_model,
+            explorer: config.explorer_model,
+            judge: config.judge_model,
+          },
           termination: 'blocked',
           step_count: 0,
         },
@@ -550,6 +563,7 @@ export async function runIrisViaSdk(
               goals: out.goals,
               surfaces: out.surfaces,
               journeys: out.journeys,
+              ...(out.product_use_contract ? { product_use_contract: out.product_use_contract } : {}),
               ...(out.coverage_plan ? { coverage_plan: out.coverage_plan } : {}),
               focus_areas: out.focus_areas,
               hints: out.hints,
@@ -626,7 +640,7 @@ export async function runIrisViaSdk(
   const goalList = hasGoals ? goals.map((g, i) => `  G${i + 1}. ${g.description}`).join('\n') : '';
   const perGoalLine =
     stepsPerGoal && stepsPerGoal > 0
-    ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. For verified goals, include evidence_event_ids with the post-action observation/screenshot/vision_describe event id that shows the outcome. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on. Do not mark a goal partial until you have tried the strongest cheap proof available; for focus, layout, sidebar, collapse, selected-state, text-size, width, or color-mode goals, use the ui_state probe after interaction. If Iris reports that budget remains for partial retries, retry only those partial goals before stopping.`
+      ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. For verified goals, include evidence_event_ids with the post-action observation/screenshot/vision_describe event id that shows the outcome. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on. Do not mark a goal partial until you have tried the strongest cheap proof available; for focus, layout, sidebar, collapse, selected-state, text-size, width, or color-mode goals, use the ui_state probe after interaction. If Iris reports that budget remains for partial retries, retry only those partial goals before stopping.`
       : '';
 
   const initialUserPrompt = `Target: ${config.target.url}
@@ -642,6 +656,7 @@ AVOID:
   - Calling probes before any user interaction. Probes are useful AFTER you've exercised the flows, not before.
   - Defaulting to screenshot when DOM observation already shows what you need.
   - Treating a selector miss as product evidence. A selector miss is automation evidence; try an alternative user path (different visible element, keyboard alternative, or vision-driven action). Only file note_finding when the user-visible behavior is confirmed inaccessible across multiple paths.
+  - Using direct URL navigation after initial load to satisfy product feature goals such as search, auth, donate, or settings. Interact with visible UI like a user. Direct navigation is only acceptable for initial target load, browser back/forward/reload, or explicit URL-handling goals.
   - Spending more than the per-goal budget on one goal. Call goal_status and move on — you can come back later if there's time.
 
 Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris__type\`). BUDGET: ${config.timeout_s}s wall-clock. There is NO turn count to race against — focus on doing each goal properly, not on speed. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns per goal prevents stuck goals from eating the run.`;
@@ -1140,10 +1155,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       `${JSON.stringify({ ...judgeOutput.scores, _written_at: new Date().toISOString() }, null, 2)}\n`,
     );
   } catch (err) {
-    writeFileSync(
-      join(config.out_dir, 'judge-error.txt'),
-      formatJudgeErrorForFile(err),
-    );
+    writeFileSync(join(config.out_dir, 'judge-error.txt'), formatJudgeErrorForFile(err));
     process.off('unhandledRejection', sdkNoiseHandler);
     return {
       report: emptyReport(
@@ -1170,6 +1182,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
         adapter,
         judge: judgeOutput,
         trace: events,
+        runDir: config.out_dir,
       });
       Object.assign(clipPaths, evidence.clips);
       if (evidence.files.length > 0) {
@@ -1197,7 +1210,12 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       ended_at: endedAt.toISOString(),
       duration_s,
       cost_usd: totalCost,
-      models: { explorer: config.explorer_model, judge: config.judge_model },
+      transport: 'agent-sdk',
+      models: {
+        discovery: config.explorer_model,
+        explorer: config.explorer_model,
+        judge: config.judge_model,
+      },
       termination: explorerResult.termination,
       step_count: explorerResult.steps_taken,
     },
@@ -1277,7 +1295,12 @@ function emptyReport(
       ended_at: new Date().toISOString(),
       duration_s: (Date.now() - startedAt.getTime()) / 1000,
       cost_usd,
-      models: { explorer: config.explorer_model, judge: config.judge_model },
+      transport: 'agent-sdk',
+      models: {
+        discovery: config.explorer_model,
+        explorer: config.explorer_model,
+        judge: config.judge_model,
+      },
       termination,
       step_count: steps,
     },

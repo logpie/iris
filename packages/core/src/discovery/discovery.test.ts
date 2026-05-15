@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { runDiscovery } from './discovery.js';
+import { formatDiscoveryExplorerContext, runDiscovery } from './discovery.js';
+import { DISCOVERY_SYSTEM } from './prompts.js';
+
+describe('DISCOVERY_SYSTEM', () => {
+  it('asks artifact editors for minimally meaningful primary artifacts', () => {
+    expect(DISCOVERY_SYSTEM).toContain('minimally meaningful artifact');
+    expect(DISCOVERY_SYSTEM).toContain('draw/place + label/type + style/move/resize');
+    expect(DISCOVERY_SYSTEM).toContain('single trivial object');
+  });
+});
 
 describe('runDiscovery', () => {
   it('parses a well-formed discoverer response', async () => {
@@ -202,10 +211,168 @@ describe('runDiscovery', () => {
     expect(userPrompt).toContain('"S001"');
   });
 
+  it('preserves product-use contracts and includes them in explorer context', async () => {
+    const result = await runDiscovery({
+      url: 'https://draw.example',
+      observation_summary: 'canvas app with tool palette and blank board',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A canvas editor.',
+          product_use_contract: {
+            product_kinds: ['canvas_editor'],
+            primary_value_loop: 'Create and modify a visible drawing artifact on the board.',
+            core_artifacts: ['visible shape or text on the canvas'],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Create board content',
+                journey_id: 'J1',
+                required_actions: ['choose drawing tool', 'drag on canvas', 'add text'],
+                expected_artifact: 'a visible created object remains on the canvas',
+                acceptable_evidence: ['post-action screenshot showing shape/text'],
+                weak_evidence: ['toolbar selected', 'properties panel opened'],
+                risk: 'high',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Canvas',
+              kind: 'content',
+              url: 'https://draw.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+              evidence: [],
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Create board content',
+              priority: 'must',
+              surface_ids: ['S1'],
+              user_intent: 'Draw something useful',
+              suggested_goal: 'Draw a shape on the canvas and add text.',
+              expected_evidence: ['visible shape/text'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Creation is the core value loop.',
+            coverage_risk: 'low',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Draw a shape on the canvas and add text.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+            },
+          ],
+          focus_areas: ['canvas creation'],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    expect(result?.output.product_use_contract?.product_kinds).toEqual(['canvas_editor']);
+    expect(result?.output.product_use_contract?.user_jobs[0]?.weak_evidence).toContain(
+      'toolbar selected',
+    );
+    expect(result?.output.product_use_contract?.user_jobs[0]?.required_actions).toContain(
+      'drag on canvas',
+    );
+    expect(formatDiscoveryExplorerContext(result!.output)).toContain('PRODUCT USE CONTRACT');
+    expect(formatDiscoveryExplorerContext(result!.output)).toContain('weak evidence that must NOT verify');
+  });
+
+  it('attaches page-container surfaces to same-page journeys and goals', async () => {
+    const result = await runDiscovery({
+      url: 'https://example.com',
+      observation_summary: 'initial viewport',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A searchable homepage.',
+          surfaces: [
+            {
+              id: 'S000',
+              label: 'Home page',
+              kind: 'page',
+              url: 'https://example.com',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.95,
+              evidence: [{ ref: 'C000', note: 'initial page' }],
+            },
+            {
+              id: 'S001',
+              label: 'Search',
+              kind: 'search',
+              url: 'https://example.com',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+              evidence: [{ ref: 'C001', note: 'initial viewport' }],
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Search content',
+              priority: 'must',
+              surface_ids: ['S001'],
+              user_intent: 'Find a topic',
+              suggested_goal: 'Search for OpenAI and verify content loads.',
+              expected_evidence: ['article title'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Search is the primary homepage journey.',
+            coverage_risk: 'low',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Search for OpenAI and verify content loads.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S001'],
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    expect(result?.output.journeys[0]?.surface_ids).toEqual(['S000', 'S001']);
+    expect(result?.output.goals[0]?.surface_ids).toEqual(['S001', 'S000']);
+    expect(result?.output.coverage_plan?.deferred_surface_ids).toEqual([]);
+  });
+
   it('synthesizes v2 surfaces, journeys, and coverage when the model returns flat goals', async () => {
     const result = await runDiscovery({
       url: 'https://example.com',
-      observation_summary: 'Homepage with search, article content, account links, and footer links.',
+      observation_summary:
+        'Homepage with search, article content, account links, and footer links.',
       survey_payload: {
         v: 2,
         surfaces: [
@@ -271,7 +438,8 @@ describe('runDiscovery', () => {
           goals: [
             {
               id: 'G1',
-              description: 'Use search to find the OpenAI article and verify article content loads.',
+              description:
+                'Use search to find the OpenAI article and verify article content loads.',
               priority: 'must',
             },
             {
@@ -304,9 +472,9 @@ describe('runDiscovery', () => {
     expect(result?.output.journeys).toHaveLength(3);
     expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1', 'J2', 'J3']);
     expect(result?.output.coverage_plan?.deferred_surface_ids).toEqual(['S005']);
-    expect(result?.output.goals.every((goal) => goal.journey_id && goal.surface_ids.length > 0)).toBe(
-      true,
-    );
+    expect(
+      result?.output.goals.every((goal) => goal.journey_id && goal.surface_ids.length > 0),
+    ).toBe(true);
     expect(result?.output.goals[0]?.surface_ids).toContain('S002');
     expect(result?.output.goals[1]?.surface_ids).toContain('S003');
     expect(result?.output.goals[2]?.surface_ids).toContain('S004');
@@ -544,7 +712,9 @@ describe('runDiscovery', () => {
     expect(systemPrompt).toContain('Privacy');
     expect(systemPrompt).toContain('Terms');
     expect(systemPrompt).toContain('usually one app-download coverage goal');
-    expect(systemPrompt).toContain('usually group them as one low-priority legal/footer coverage goal');
+    expect(systemPrompt).toContain(
+      'usually group them as one low-priority legal/footer coverage goal',
+    );
     expect(userPrompt).toContain('value-rank');
     expect(userPrompt).toContain('group or defer peripheral destinations');
   });
@@ -602,7 +772,8 @@ describe('runDiscovery', () => {
           goals: [
             {
               id: 'G1',
-              description: 'Open the Apple App Store link and verify the App Store destination loads.',
+              description:
+                'Open the Apple App Store link and verify the App Store destination loads.',
               priority: 'should',
             },
             {

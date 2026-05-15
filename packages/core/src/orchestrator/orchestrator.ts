@@ -26,6 +26,7 @@ import type { Mode, TargetKind } from '../types.js';
 
 export interface OrchestratorRunConfig {
   target: { kind: TargetKind; url: string };
+  transport?: string;
   mode: Mode;
   out_dir: string;
   spec_text?: string;
@@ -361,6 +362,7 @@ export class Orchestrator {
           adapter: this.deps.adapter,
           judge: judgeOutput,
           trace: traceEvents,
+          runDir: config.out_dir,
         });
         Object.assign(clipPaths, evidence.clips);
       } catch (err) {
@@ -388,7 +390,12 @@ export class Orchestrator {
         ended_at: endedAt.toISOString(),
         duration_s,
         cost_usd,
-        models: { explorer: config.explorer_model, judge: config.judge_model },
+        ...(config.transport ? { transport: config.transport } : {}),
+        models: {
+          discovery: config.explorer_model,
+          explorer: config.explorer_model,
+          judge: config.judge_model,
+        },
         termination: explorerResult.termination,
         step_count: explorerResult.steps_taken,
       },
@@ -467,7 +474,12 @@ export class Orchestrator {
         ended_at: new Date().toISOString(),
         duration_s: elapsedMs / 1000,
         cost_usd: 0,
-        models: { explorer: config.explorer_model, judge: config.judge_model },
+        ...(config.transport ? { transport: config.transport } : {}),
+        models: {
+          discovery: config.explorer_model,
+          explorer: config.explorer_model,
+          judge: config.judge_model,
+        },
         termination,
         step_count: steps,
       },
@@ -511,7 +523,12 @@ export class Orchestrator {
         ended_at: new Date().toISOString(),
         duration_s: (Date.now() - startMs) / 1000,
         cost_usd: 0,
-        models: { explorer: config.explorer_model, judge: config.judge_model },
+        ...(config.transport ? { transport: config.transport } : {}),
+        models: {
+          discovery: config.explorer_model,
+          explorer: config.explorer_model,
+          judge: config.judge_model,
+        },
         termination: 'blocked',
         step_count: 0,
       },

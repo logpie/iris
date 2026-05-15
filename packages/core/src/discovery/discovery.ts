@@ -81,10 +81,48 @@ export const DiscoveryCoveragePlanSchema = z.object({
 });
 export type DiscoveryCoveragePlan = z.infer<typeof DiscoveryCoveragePlanSchema>;
 
+export const ProductKindSchema = z.enum([
+  'canvas_editor',
+  'document_editor',
+  'search_content',
+  'crud_workflow',
+  'dashboard_filtering',
+  'commerce_checkout',
+  'auth_account',
+  'media_tool',
+  'settings_tool',
+  'content_site',
+  'communication_tool',
+  'developer_tool',
+  'unknown',
+]);
+export type ProductKind = z.infer<typeof ProductKindSchema>;
+
+export const ProductUseJobSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  journey_id: z.string().min(1).optional(),
+  required_actions: z.array(z.string().min(1)).default([]),
+  expected_artifact: z.string().default(''),
+  acceptable_evidence: z.array(z.string().min(1)).default([]),
+  weak_evidence: z.array(z.string().min(1)).default([]),
+  risk: z.enum(['high', 'medium', 'low']).default('medium'),
+});
+export type ProductUseJob = z.infer<typeof ProductUseJobSchema>;
+
+export const ProductUseContractSchema = z.object({
+  product_kinds: z.array(ProductKindSchema).default(['unknown']),
+  primary_value_loop: z.string().default(''),
+  core_artifacts: z.array(z.string().min(1)).default([]),
+  user_jobs: z.array(ProductUseJobSchema).default([]),
+});
+export type ProductUseContract = z.infer<typeof ProductUseContractSchema>;
+
 export const DiscoveryOutputSchema = z.object({
   v: z.union([z.literal(1), z.literal(2)]).default(1),
   target_kind_hint: z.enum(['web', 'cli', 'api', 'desktop']).default('web'),
   product_description: z.string().default(''),
+  product_use_contract: ProductUseContractSchema.optional(),
   goals: z.array(DiscoveryGoalSchema),
   surfaces: z.array(DiscoverySurfaceSchema).default([]),
   journeys: z.array(DiscoveryJourneySchema).default([]),
@@ -131,11 +169,15 @@ function normalizeDiscoveryOutput(
   const surfaces = normalizeDiscoverySurfaces(
     out.surfaces.length > 0 ? out.surfaces : surveySurfaces,
   );
-  const journeys = normalizeDiscoveryJourneys(
-    out.journeys.length > 0 ? out.journeys : synthesizeJourneysFromGoals(out.goals, surfaces),
+  const journeys = attachPageContextSurfaces(
+    normalizeDiscoveryJourneys(
+      out.journeys.length > 0 ? out.journeys : synthesizeJourneysFromGoals(out.goals, surfaces),
+      surfaces,
+    ),
     surfaces,
   );
   const coveragePlan = normalizeDiscoveryCoveragePlan(out.coverage_plan, journeys, surfaces);
+  const productUseContract = normalizeProductUseContract(out.product_use_contract, journeys);
   const goals: DiscoveryGoal[] = [];
   const seenDescriptions = new Set<string>();
 
@@ -165,8 +207,46 @@ function normalizeDiscoveryOutput(
     surfaces,
     journeys,
     ...(coveragePlan ? { coverage_plan: coveragePlan } : {}),
+    ...(productUseContract ? { product_use_contract: productUseContract } : {}),
     goals: goals.map((goal, index) => ({ ...goal, id: `G${index + 1}` })),
   };
+}
+
+function normalizeProductUseContract(
+  contract: ProductUseContract | undefined,
+  journeys: DiscoveryJourney[],
+): ProductUseContract | undefined {
+  if (!contract) return undefined;
+  const journeyIds = new Set(journeys.map((journey) => journey.id));
+  const userJobs = contract.user_jobs
+    .filter((job) => job.title.trim() || job.expected_artifact.trim())
+    .map((job, index) => {
+      const { journey_id, ...rest } = job;
+      return {
+        ...rest,
+        id: job.id || `PU${index + 1}`,
+        ...(journey_id && journeyIds.has(journey_id) ? { journey_id } : {}),
+        required_actions: uniqueNonEmptyStrings(job.required_actions),
+        acceptable_evidence: uniqueNonEmptyStrings(job.acceptable_evidence),
+        weak_evidence: uniqueNonEmptyStrings(job.weak_evidence),
+      };
+    });
+  const normalized: ProductUseContract = {
+    product_kinds: contract.product_kinds.length > 0 ? contract.product_kinds : ['unknown'],
+    primary_value_loop: contract.primary_value_loop,
+    core_artifacts: uniqueNonEmptyStrings(contract.core_artifacts),
+    user_jobs: userJobs,
+  };
+  const hasContent =
+    normalized.primary_value_loop.trim().length > 0 ||
+    normalized.core_artifacts.length > 0 ||
+    normalized.user_jobs.length > 0 ||
+    normalized.product_kinds.some((kind) => kind !== 'unknown');
+  return hasContent ? normalized : undefined;
+}
+
+function uniqueNonEmptyStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function normalizeDiscoverySurfaces(surfaces: DiscoverySurface[]): DiscoverySurface[] {
@@ -207,6 +287,45 @@ function normalizeDiscoveryJourneys(
   return out;
 }
 
+function attachPageContextSurfaces(
+  journeys: DiscoveryJourney[],
+  surfaces: DiscoverySurface[],
+): DiscoveryJourney[] {
+  if (journeys.length === 0 || surfaces.length === 0) return journeys;
+  const byId = new Map(surfaces.map((surface) => [surface.id, surface]));
+  const referenced = new Set(journeys.flatMap((journey) => journey.surface_ids));
+  const pageContextSurfaces = surfaces.filter(
+    (surface) => surface.kind === 'page' && !referenced.has(surface.id),
+  );
+  if (pageContextSurfaces.length === 0) return journeys;
+  return journeys.map((journey, index) => {
+    const matchingPageIds = pageContextSurfaces
+      .filter((pageSurface) =>
+        journey.surface_ids.some((surfaceId) => byId.get(surfaceId)?.url === pageSurface.url),
+      )
+      .map((surface) => surface.id);
+    const fallbackPageIds =
+      index === 0
+        ? pageContextSurfaces
+            .filter(
+              (pageSurface) =>
+                !journeys.some((candidate) =>
+                  candidate.surface_ids.some(
+                    (surfaceId) => byId.get(surfaceId)?.url === pageSurface.url,
+                  ),
+                ),
+            )
+            .map((surface) => surface.id)
+        : [];
+    const nextSurfaceIds = [
+      ...new Set([...matchingPageIds, ...fallbackPageIds, ...journey.surface_ids]),
+    ];
+    return nextSurfaceIds.length === journey.surface_ids.length
+      ? journey
+      : { ...journey, surface_ids: nextSurfaceIds };
+  });
+}
+
 function normalizeDiscoveryCoveragePlan(
   plan: DiscoveryCoveragePlan | undefined,
   journeys: DiscoveryJourney[],
@@ -217,15 +336,18 @@ function normalizeDiscoveryCoveragePlan(
   const surfaceIds = new Set(surfaces.map((surface) => surface.id));
   const selected = plan?.selected_journey_ids.filter((id) => journeyIds.has(id)) ?? [];
   const selected_journey_ids =
-    selected.length > 0 ? selected : journeys.filter((j) => j.priority !== 'could').map((j) => j.id);
+    selected.length > 0
+      ? selected
+      : journeys.filter((j) => j.priority !== 'could').map((j) => j.id);
   const selectedSurfaceIds = new Set(
     journeys
       .filter((journey) => selected_journey_ids.includes(journey.id))
       .flatMap((journey) => journey.surface_ids),
   );
-  const deferred = (plan?.deferred_surface_ids.length
-    ? plan.deferred_surface_ids.filter((id) => surfaceIds.has(id))
-    : surfaces.filter((surface) => surface.value === 'peripheral').map((surface) => surface.id)
+  const deferred = (
+    plan?.deferred_surface_ids.length
+      ? plan.deferred_surface_ids.filter((id) => surfaceIds.has(id))
+      : surfaces.filter((surface) => surface.value === 'peripheral').map((surface) => surface.id)
   ).filter((id) => !selectedSurfaceIds.has(id));
   return {
     selected_journey_ids,
@@ -243,7 +365,15 @@ function attachDiscoveryGoalRefs(
   journeys: DiscoveryJourney[],
   coveragePlan: DiscoveryCoveragePlan | undefined,
 ): DiscoveryGoal {
-  if (goal.surface_ids.length > 0 || goal.journey_id || journeys.length === 0) return goal;
+  if (goal.journey_id) {
+    const journey = journeys.find((candidate) => candidate.id === goal.journey_id);
+    if (!journey) return goal;
+    return {
+      ...goal,
+      surface_ids: [...new Set([...goal.surface_ids, ...journey.surface_ids])],
+    };
+  }
+  if (goal.surface_ids.length > 0 || journeys.length === 0) return goal;
   const normalizedGoal = goal.description.toLowerCase();
   const selected = new Set(coveragePlan?.selected_journey_ids ?? []);
   const matchingJourney =
@@ -331,7 +461,11 @@ function scoreSurfaceForGoal(
     if (surface.kind === 'search') score += 6;
     if (surface.kind === 'content' && surface.source === 'primary_journey') score += 4;
   }
-  if (/\b(article|content|read|contents?|section|reference|citation|history|edit|talk)\b/.test(goalText)) {
+  if (
+    /\b(article|content|read|contents?|section|reference|citation|history|edit|talk)\b/.test(
+      goalText,
+    )
+  ) {
     if (surface.kind === 'content') score += 5;
     if (surface.source === 'primary_journey') score += 4;
     if (surface.kind === 'nav' || surface.kind === 'menu') score += 2;
@@ -421,7 +555,10 @@ function discoveryGoalKey(goal: DiscoveryGoal): string {
   return text;
 }
 
-function supplementalDiscoveryGoals(sourceText: string, existingGoals: DiscoveryGoal[]): DiscoveryGoal[] {
+function supplementalDiscoveryGoals(
+  sourceText: string,
+  existingGoals: DiscoveryGoal[],
+): DiscoveryGoal[] {
   const source = sourceText.toLowerCase();
   const out: DiscoveryGoal[] = [];
   const goalTexts = existingGoals.map((g) => g.description.toLowerCase());
@@ -562,11 +699,7 @@ const DISCOVERY_SURFACE_SOURCES = new Set([
   'primary_journey',
   'sample_nav',
 ] as const);
-const DISCOVERY_SURFACE_VALUES = new Set([
-  'core',
-  'important_secondary',
-  'peripheral',
-] as const);
+const DISCOVERY_SURFACE_VALUES = new Set(['core', 'important_secondary', 'peripheral'] as const);
 
 function extractSurveySurfaces(payload: unknown): DiscoverySurface[] {
   if (!payload || typeof payload !== 'object') return [];
@@ -583,7 +716,8 @@ function extractSurveySurfaces(payload: unknown): DiscoverySurface[] {
 function normalizeSurveySurface(surface: unknown, index: number): DiscoverySurface | null {
   if (!surface || typeof surface !== 'object') return null;
   const record = surface as Record<string, unknown>;
-  const label = stringValue(record.label) ?? stringValue(record.url) ?? `Survey surface ${index + 1}`;
+  const label =
+    stringValue(record.label) ?? stringValue(record.url) ?? `Survey surface ${index + 1}`;
   const candidate = {
     id: stringValue(record.id) ?? `S${String(index + 1).padStart(3, '0')}`,
     label,
@@ -653,7 +787,9 @@ function controlsValue(value: unknown): DiscoverySurface['controls'] {
         ...(stringValue(record.name) ? { name: stringValue(record.name) } : {}),
         ...(stringValue(record.href) ? { href: stringValue(record.href) } : {}),
         ...(stringValue(record.type) ? { type: stringValue(record.type) } : {}),
-        ...(stringValue(record.ariaExpanded) ? { ariaExpanded: stringValue(record.ariaExpanded) } : {}),
+        ...(stringValue(record.ariaExpanded)
+          ? { ariaExpanded: stringValue(record.ariaExpanded) }
+          : {}),
       };
     })
     .filter((item): item is DiscoverySurface['controls'][number] => Boolean(item));
@@ -667,6 +803,30 @@ function stringArrayValue(value: unknown): string[] {
 
 export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
   const lines: string[] = [];
+  if (out.product_use_contract) {
+    const contract = out.product_use_contract;
+    lines.push('PRODUCT USE CONTRACT:');
+    if (contract.product_kinds.length > 0) {
+      lines.push(`- product kinds: ${contract.product_kinds.join(', ')}`);
+    }
+    if (contract.primary_value_loop) {
+      lines.push(`- primary value loop: ${contract.primary_value_loop}`);
+    }
+    if (contract.core_artifacts.length > 0) {
+      lines.push(`- core artifacts/state changes: ${contract.core_artifacts.join('; ')}`);
+    }
+    for (const job of contract.user_jobs.slice(0, 8)) {
+      lines.push(
+        `- ${job.id}${job.journey_id ? ` (${job.journey_id})` : ''}: ${job.title}; required actions: ${job.required_actions.join(', ') || 'normal user actions'}; expected artifact/state: ${job.expected_artifact || 'visible outcome'}`,
+      );
+      if (job.acceptable_evidence.length > 0) {
+        lines.push(`  acceptable evidence: ${job.acceptable_evidence.join('; ')}`);
+      }
+      if (job.weak_evidence.length > 0) {
+        lines.push(`  weak evidence that must NOT verify: ${job.weak_evidence.join('; ')}`);
+      }
+    }
+  }
   if (out.surfaces.length > 0) {
     lines.push('DISCOVERED SURFACES:');
     for (const surface of out.surfaces.slice(0, 24)) {
@@ -710,9 +870,7 @@ function formatDiscoverySurveyPayload(payload: unknown): string {
     limits?: unknown;
   };
   const compact = {
-    ...(Array.isArray(record.surfaces)
-      ? { surfaces: record.surfaces.slice(0, 80) }
-      : {}),
+    ...(Array.isArray(record.surfaces) ? { surfaces: record.surfaces.slice(0, 80) } : {}),
     ...(Array.isArray(record.captures)
       ? {
           captures: record.captures.slice(0, 12).map((capture) => {

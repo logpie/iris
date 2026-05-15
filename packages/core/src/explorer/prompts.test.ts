@@ -25,6 +25,15 @@ describe('EXPLORER_CORE', () => {
     expect(EXPLORER_CORE).toContain('evidence_event_ids');
     expect(EXPLORER_CORE).toContain('post-action observation');
   });
+
+  it('requires product-use contracts to drive real product use', () => {
+    expect(EXPLORER_CORE).toContain('PRODUCT USE CONTRACT');
+    expect(EXPLORER_CORE).toContain('primary value loop');
+    expect(EXPLORER_CORE).toContain('weak proof');
+    expect(EXPLORER_CORE).toContain('create or modify a durable artifact/state');
+    expect(EXPLORER_CORE).toContain('minimally meaningful');
+    expect(EXPLORER_CORE).toContain('draw/place plus label/type plus style/move/resize');
+  });
 });
 
 describe('targetKindSuffix', () => {

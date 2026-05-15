@@ -37,6 +37,18 @@ describe('validateFindings', () => {
     expect(out.discarded[0]?.reason).toBe('all_evidence_ids_invalid');
   });
 
+  it('repairs one-character trace id typos before validating finding evidence', () => {
+    const actual = '01KRMREXYEFSDZQY135WB4T0PM';
+    const typo = '01KRMRREXYEFSDZQY135WB4T0PM';
+    const trace = [ev(actual, 'probe_result', { probe: 'axe', summary: { violations: 1 } })];
+    const out = validateFindings(
+      [finding({ category: 'a11y', severity: 'minor', evidence: [typo] })],
+      trace,
+    );
+    expect(out.kept[0]?.evidence).toEqual([actual]);
+    expect(out.discarded).toHaveLength(0);
+  });
+
   it('downgrades blocker → major when no backing evidence in window', () => {
     const trace = [ev('E1', 'action', { tool: 'click' })];
     const out = validateFindings([finding({ severity: 'blocker', evidence: ['E1'] })], trace);
@@ -151,7 +163,8 @@ describe('validateFindings', () => {
           severity: 'minor',
           category: 'ux',
           title: 'Donation banner close is not sticky',
-          rationale: 'Closing the banner did not keep it dismissed and it still dominated the page.',
+          rationale:
+            'Closing the banner did not keep it dismissed and it still dominated the page.',
           evidence: ['O1'],
         }),
       ],
@@ -475,6 +488,60 @@ describe('validateFindings', () => {
       trace,
     );
     expect(out.kept).toHaveLength(0);
+  });
+
+  it('discards action-result-only retry/click friction without visible product impact', () => {
+    const trace = [
+      ev('E1', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error: 'locator.click: Timeout 5000ms exceeded.',
+      }),
+      ev('E2', 'action_result', {
+        tool: 'double_click',
+        ok: false,
+        error: 'locator.dblclick: Timeout 5000ms exceeded.',
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Primary controls showed intermittent click/focus failures',
+          category: 'ux',
+          severity: 'minor',
+          evidence: ['E1', 'E2'],
+          rationale: 'Visible CTAs needed retries, which adds friction.',
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe('tool_friction_without_user_visible_impact');
+  });
+
+  it('discards action-only focus affordance findings without visible product impact', () => {
+    const trace = [
+      ev('A1', 'action', { tool: 'click', args: { selector: 'role=button[name="Move focus"]' } }),
+      ev('R1', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error: 'locator.click: Timeout 5000ms exceeded.',
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Canvas focus CTA not reliably clickable',
+          category: 'a11y',
+          severity: 'minor',
+          evidence: ['A1', 'R1'],
+          rationale: 'The Move focus control timed out, suggesting weak focus affordance.',
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe('tool_friction_without_user_visible_impact');
   });
 
   it('discards "not focusable via" findings (Dillinger-style agent failure phrasing)', () => {

@@ -1,7 +1,11 @@
 import type { OutcomeContract } from '@iris/adapter-types';
 import { describe, expect, it } from 'vitest';
 import type { TraceEvent } from '../trace/schema.js';
-import { sliceGoalWindows, validateGoalClaims } from './goal-claim-validator.js';
+import {
+  applyGoalClaimValidationToJudgeOutput,
+  sliceGoalWindows,
+  validateGoalClaims,
+} from './goal-claim-validator.js';
 import type { JudgeOutput } from './judge.js';
 
 function ev(
@@ -213,6 +217,226 @@ describe('validateGoalClaims', () => {
     expect(result.goals[0]?.status).toBe('verified');
   });
 
+  it('downgrades verified goals that miss product-use required actions', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Create a board object', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create visible canvas content.',
+          core_artifacts: ['visible shape on canvas'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Create visible shape',
+              journey_id: 'J1',
+              required_actions: [
+                'select a drawing or shape tool',
+                'drag on canvas',
+                'change one or more style controls such as color, fill, dash, or size',
+              ],
+              expected_artifact: 'visible created shape',
+              acceptable_evidence: ['post-action screenshot showing shape'],
+              weak_evidence: ['toolbar selected'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Create a board object',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Post-action observation shows a created shape on the canvas.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.summary.downgrade_reasons[0]).toContain('missing required actions');
+    expect(result.goals[0]?.status).toBe('partial');
+  });
+
+  it('downgrades verified goals whose notes match product-use weak evidence', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Create a board object', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create visible canvas content.',
+          core_artifacts: ['visible shape on canvas'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Create visible shape',
+              journey_id: 'J1',
+              required_actions: ['drag on canvas'],
+              expected_artifact: 'visible created shape',
+              acceptable_evidence: ['post-action screenshot showing shape'],
+              weak_evidence: ['toolbar selected'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Create a board object',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'The toolbar selected state changed after choosing the shape tool.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.summary.downgrade_reasons[0]).toContain('rejected weak evidence');
+    expect(result.goals[0]?.status).toBe('partial');
+  });
+
+  it('keeps verified when product-use required actions and artifact evidence are present', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Create a board object', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create visible canvas content.',
+          core_artifacts: ['visible shape on canvas'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Create visible shape',
+              journey_id: 'J1',
+              required_actions: [
+                'select a drawing or shape tool',
+                'drag on canvas',
+                'change one or more style controls such as color, fill, dash, or size',
+              ],
+              expected_artifact: 'visible created shape',
+              acceptable_evidence: ['post-action screenshot showing shape'],
+              weak_evidence: ['toolbar selected'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'press', ok: true }),
+      ev('B', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('C', 'action_result', { tool: 'click', ok: true }),
+      ev('D', 'observation'),
+      ev('E', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Create a board object',
+        status: 'verified',
+        evidence: ['D'],
+        notes:
+          'Selected the shape tool, then the post-drag observation shows a created object on the canvas with a style change.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['D'] }),
+    });
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('keeps batched goal_status calls when cited evidence has the required action history', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [
+          { id: 'G1', description: 'Create a board object', journey_id: 'J1' },
+          { id: 'G2', description: 'Style the board object', journey_id: 'J2' },
+        ],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create and style visible canvas content.',
+          core_artifacts: ['visible styled shape on canvas'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Create visible shape',
+              journey_id: 'J1',
+              required_actions: ['select a drawing or shape tool', 'drag on canvas'],
+              expected_artifact: 'visible created shape',
+              acceptable_evidence: ['post-action screenshot showing shape'],
+              weak_evidence: ['toolbar selected'],
+            },
+            {
+              id: 'PU2',
+              title: 'Style visible shape',
+              journey_id: 'J2',
+              required_actions: ['create or select an object', 'change color or fill controls'],
+              expected_artifact: 'visible styled shape',
+              acceptable_evidence: ['post-action screenshot showing style change'],
+              weak_evidence: ['style toolbar visible'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'press', ok: true }),
+      ev('B', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('C', 'observation'),
+      ev('D', 'action_result', { tool: 'click', ok: true }),
+      ev('E', 'observation'),
+      ev('S1', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        rationale: 'Selected a shape tool and dragged a visible shape onto the canvas.',
+        evidence_event_ids: ['C'],
+      }),
+      ev('S2', 'goal_status', {
+        id: 'G2',
+        status: 'verified',
+        rationale: 'Changed fill controls and observed the visible styled shape.',
+        evidence_event_ids: ['E'],
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Create a board object',
+        status: 'verified',
+        evidence: ['C'],
+        notes: 'Selected a shape tool and dragged a visible object onto the canvas.',
+      },
+      {
+        id: 'G2',
+        description: 'Style the board object',
+        status: 'verified',
+        evidence: ['E'],
+        notes: 'Changed color/fill controls and observed the visible styled object.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['C'], G2: ['E'] }),
+    });
+
+    expect(result.summary).toEqual({ verified_kept: 2, downgraded: 0, downgrade_reasons: [] });
+    expect(result.goals.map((goal) => goal.status)).toEqual(['verified', 'verified']);
+  });
+
   it('keeps verified when terse Judge notes have a substantive Explorer rationale', () => {
     const trace: TraceEvent[] = [
       ev('A', 'action_result', { tool: 'click', ok: true }),
@@ -327,7 +551,8 @@ describe('validateGoalClaims', () => {
         kind: 'test',
         collectOutcomeEvidence: ({ goal_events }) => {
           const hasInteraction = goal_events.some(
-            (e) => e.kind === 'action_result' && e.payload.tool === 'click' && e.payload.ok === true,
+            (e) =>
+              e.kind === 'action_result' && e.payload.tool === 'click' && e.payload.ok === true,
           );
           if (!hasInteraction) return [];
           return goal_events
@@ -351,5 +576,43 @@ describe('validateGoalClaims', () => {
     const result = validateGoalClaims({ judge, trace: [], outcome_contract: contract });
     expect(result.summary.downgraded).toBe(0);
     expect(result.goals.map((g) => g.status)).toEqual(['partial', 'blocked', 'untested']);
+  });
+
+  it('rewrites stale Judge summary when validation downgrades a goal', () => {
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'search',
+        status: 'verified',
+        evidence: ['OBS1'],
+        notes: 'Search result loaded.',
+      },
+      {
+        id: 'G2',
+        description: 'donate',
+        status: 'verified',
+        evidence: ['OBS2'],
+        notes: 'Donate page loaded.',
+      },
+    ]);
+    judge.spec_compliance.summary = 'All goals verified.';
+    const applied = applyGoalClaimValidationToJudgeOutput(judge, {
+      goals: [
+        { ...judge.spec_compliance.goals[0]!, status: 'partial' },
+        judge.spec_compliance.goals[1]!,
+      ],
+      summary: {
+        verified_kept: 1,
+        downgraded: 1,
+        downgrade_reasons: ['G1: outcome artifacts exist but none cited in evidence'],
+      },
+    });
+
+    expect(applied.spec_compliance.summary).toBe(
+      'Goal evidence validation downgraded 1 verified claim. Final goal status: 1 verified, 1 partial.',
+    );
+    expect(applied.meta.confidence_caveats).toContain(
+      '1 verified goal claim(s) were downgraded by deterministic evidence validation.',
+    );
   });
 });

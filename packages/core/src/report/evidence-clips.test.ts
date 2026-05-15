@@ -1,8 +1,11 @@
 import type { TargetAdapter } from '@iris/adapter-types';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { JudgeOutput } from '../judge/judge.js';
 import type { TraceEvent } from '../trace/schema.js';
-import { collectClaimEvidenceArtifacts } from './evidence-clips.js';
+import { collectClaimEvidenceArtifacts, collectTraceEvidenceArtifacts } from './evidence-clips.js';
 
 describe('collectClaimEvidenceArtifacts', () => {
   it('slices evidence for findings and goal claims, resolving goal_status pointers', async () => {
@@ -67,6 +70,108 @@ describe('collectClaimEvidenceArtifacts', () => {
     ]);
     expect(result.clips).toEqual({ 'F-001': '/tmp/F-001.webm', G1: '/tmp/G1.webm' });
   });
+
+  it('builds trace storyboard clips from observation screenshots before adapter raw-video slicing', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'iris-trace-storyboard-'));
+    const screenshotsDir = join(runDir, 'evidence', 'screenshots');
+    mkdirSync(screenshotsDir, { recursive: true });
+    const before = join(screenshotsDir, 'step-0001.png');
+    const after = join(screenshotsDir, 'step-0002.png');
+    writeTinyPng(before);
+    writeTinyPng(after);
+
+    let adapterRefs: Array<{ finding_id: string; event_ids: string[] }> = [];
+    const adapter = {
+      injectEventTimestamps() {},
+      async sliceEvidence(refs: Array<{ finding_id: string; event_ids: string[] }>) {
+        adapterRefs = refs;
+        return refs.map((ref) => ({
+          finding_id: ref.finding_id,
+          path: join(runDir, 'evidence', 'clips', `raw-${ref.finding_id}.webm`),
+          kind: 'video' as const,
+        }));
+      },
+    } as Pick<TargetAdapter, 'injectEventTimestamps' | 'sliceEvidence'>;
+
+    const trace = [
+      event('OBS1', 'observation', 10, {
+        ref: 'OBS-000001',
+        perception_state: { screenshot_ref: before },
+      }),
+      event('OBS2', 'observation', 12, {
+        ref: 'OBS-000002',
+        perception_state: { screenshot_ref: after },
+      }),
+    ];
+    const judge = {
+      v: 1,
+      findings: [],
+      discarded_findings: [],
+      scores: { overall: { score: 9, weighted_from: [] }, profiles: {} },
+      spec_compliance: {
+        applicable: true,
+        goals: [
+          {
+            id: 'G1',
+            description: 'Draw an object',
+            status: 'verified',
+            evidence: ['OBS2'],
+            notes: 'The object is visible.',
+          },
+        ],
+        summary: '',
+      },
+      coverage_review: { surfaces_explored: 1, surfaces_unexplored: 0, judgement: '' },
+      meta: { confidence_overall: 1, confidence_caveats: [], would_re_explore_with: [] },
+    } satisfies JudgeOutput;
+
+    const result = await collectClaimEvidenceArtifacts({ adapter, judge, trace, runDir });
+
+    if (result.files.length === 0) return;
+    expect(adapterRefs).toEqual([]);
+    expect(result.clips.G1).toMatch(/story-G1\.webm$/);
+    expect(existsSync(result.clips.G1 ?? '')).toBe(true);
+  });
+
+  it('can rebuild claim storyboards from a stored trace without a live adapter', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'iris-trace-storyboard-report-'));
+    const screenshotsDir = join(runDir, 'evidence', 'screenshots');
+    mkdirSync(screenshotsDir, { recursive: true });
+    const screenshot = join(screenshotsDir, 'step-0001.png');
+    writeTinyPng(screenshot);
+    const trace = [
+      event('OBS1', 'observation', 10, {
+        ref: 'OBS-000001',
+        perception_state: { screenshot_ref: screenshot },
+      }),
+    ];
+    const judge = {
+      v: 1,
+      findings: [],
+      discarded_findings: [],
+      scores: { overall: { score: 9, weighted_from: [] }, profiles: {} },
+      spec_compliance: {
+        applicable: true,
+        goals: [
+          {
+            id: 'G1',
+            description: 'Draw an object',
+            status: 'verified',
+            evidence: ['OBS1'],
+          },
+        ],
+        summary: '',
+      },
+      coverage_review: { surfaces_explored: 1, surfaces_unexplored: 0, judgement: '' },
+      meta: { confidence_overall: 1, confidence_caveats: [], would_re_explore_with: [] },
+    } satisfies JudgeOutput;
+
+    const result = await collectTraceEvidenceArtifacts({ judge, trace, runDir });
+
+    if (result.files.length === 0) return;
+    expect(result.clips.G1).toMatch(/story-G1\.webm$/);
+    expect(existsSync(result.clips.G1 ?? '')).toBe(true);
+  });
 });
 
 function event(
@@ -76,4 +181,14 @@ function event(
   payload: Record<string, unknown>,
 ): TraceEvent {
   return { v: 1, id, ts, step: 1, target_kind: 'web', kind, actor: 'system', payload };
+}
+
+function writeTinyPng(path: string): void {
+  writeFileSync(
+    path,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  );
 }

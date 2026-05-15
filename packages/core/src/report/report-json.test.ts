@@ -99,6 +99,200 @@ describe('buildReportJson', () => {
     expect(r.headline.threshold_passed).toBe(true);
   });
 
+  it('repairs one-character trace id typos in report evidence references', () => {
+    const actual = '01KRMREXYEFSDZQY135WB4T0PM';
+    const typo = '01KRMRREXYEFSDZQY135WB4T0PM';
+    const judge = fakeJudge();
+    judge.findings = [
+      {
+        id: 'F-typo',
+        title: 'Minor issue',
+        category: 'ux',
+        severity: 'minor',
+        evidence: [typo],
+        rationale: 'A minor issue was observed.',
+      },
+    ];
+    judge.scores.profiles.quality!.dimensions.correctness!.evidence = [typo];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'Verify thing', status: 'verified', evidence: [typo] },
+    ];
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: actual,
+          ts: 1,
+          step: 1,
+          target_kind: 'web',
+          kind: 'observation',
+          actor: 'adapter',
+          payload: { ref: 'OBS-000001', summary: 'Thing is visible' },
+        },
+      ],
+    });
+    expect(r.findings[0]?.evidence).toEqual([actual]);
+    expect(r.scores.profiles.quality?.dimensions.correctness?.evidence).toEqual([actual]);
+    expect(r.spec_compliance.goals[0]?.evidence).toEqual([actual]);
+  });
+
+  it('does not score responsive rubric dimensions when no mobile viewport was exercised', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.profiles.frontend_correctness = {
+      score: 9,
+      dimensions: {
+        console_clean: {
+          score: 10,
+          rationale: 'No console errors.',
+          evidence: [],
+        },
+        responsive_behavior: {
+          score: 8,
+          rationale: 'No desktop responsive issue was seen.',
+          evidence: ['OBS_DESKTOP'],
+        },
+      },
+    };
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'OBS_DESKTOP',
+          ts: 1,
+          step: 1,
+          target_kind: 'web',
+          kind: 'observation',
+          actor: 'adapter',
+          payload: {
+            ref: 'OBS-000001',
+            summary: 'Desktop page',
+            perception_state: { v: 1, viewport: { width: 1280, height: 720 }, elements: [] },
+          },
+        },
+      ],
+    });
+
+    expect(
+      r.scores.profiles.frontend_correctness?.dimensions.responsive_behavior?.score,
+    ).toBeNull();
+    expect(
+      r.scores.profiles.frontend_correctness?.dimensions.responsive_behavior?.evidence,
+    ).toEqual([]);
+  });
+
+  it('does not turn Iris probe-injection CSP failures into product console or axe scores', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.meta.confidence_caveats = [];
+    judge.scores.profiles.frontend_correctness = {
+      score: 9,
+      dimensions: {
+        console_clean: {
+          score: 8,
+          rationale: 'One console error was seen.',
+          evidence: ['CONSOLE_1'],
+        },
+      },
+    };
+    judge.scores.profiles.accessibility = {
+      score: 10,
+      dimensions: {
+        axe_violations: {
+          score: 10,
+          rationale: 'Axe reported no violations.',
+          evidence: ['AXE_1'],
+        },
+      },
+    };
+    const cspText =
+      "Executing inline script violates the following Content Security Policy directive 'script-src self'. The action has been blocked.";
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'AXE_1',
+          ts: 1,
+          step: 1,
+          target_kind: 'web',
+          kind: 'probe_result',
+          actor: 'system',
+          payload: { probe: 'axe', ok: false, error: cspText },
+        },
+        {
+          v: 1,
+          id: 'CONSOLE_1',
+          ts: 2,
+          step: 1,
+          target_kind: 'web',
+          kind: 'probe_result',
+          actor: 'system',
+          payload: {
+            probe: 'console_errors_since',
+            ok: true,
+            summary: { error_count: 1, app_error_count: 1, resource_error_count: 0 },
+            data: { app_errors: [{ type: 'error', text: cspText, category: 'app_error' }] },
+          },
+        },
+      ],
+    });
+
+    expect(r.scores.profiles.frontend_correctness?.dimensions.console_clean?.score).toBe(10);
+    expect(r.scores.profiles.frontend_correctness?.dimensions.console_clean?.rationale).toContain(
+      'ignored Iris instrumentation CSP error',
+    );
+    expect(r.scores.profiles.accessibility?.dimensions.axe_violations?.score).toBeNull();
+    expect(r.scores.profiles.accessibility?.dimensions.axe_violations?.rationale).toContain(
+      'axe probe did not run',
+    );
+    expect(r.meta.confidence_caveats).toContain(
+      'Not scored: axe probe did not run. Content Security Policy blocked Iris instrumentation.',
+    );
+  });
+
+  it('keeps responsive rubric scores when a mobile viewport was exercised', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.profiles.frontend_correctness = {
+      score: 8,
+      dimensions: {
+        responsive_behavior: {
+          score: 8,
+          rationale: 'Mobile viewport worked.',
+          evidence: ['OBS_MOBILE'],
+        },
+      },
+    };
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'OBS_MOBILE',
+          ts: 1,
+          step: 1,
+          target_kind: 'web',
+          kind: 'observation',
+          actor: 'adapter',
+          payload: {
+            ref: 'OBS-000001',
+            summary: 'Mobile page',
+            perception_state: { v: 1, viewport: { width: 390, height: 844 }, elements: [] },
+          },
+        },
+      ],
+    });
+
+    expect(r.scores.profiles.frontend_correctness?.dimensions.responsive_behavior?.score).toBe(8);
+  });
+
   it('preserves optional provider token usage in run metadata', () => {
     const run = {
       ...fakeRun(),
@@ -123,6 +317,29 @@ describe('buildReportJson', () => {
     expect(r.run.usage?.last?.cached_input_tokens).toBe(20);
   });
 
+  it('preserves optional provider and reasoning metadata in run metadata', () => {
+    const r = buildReportJson({
+      judge: fakeJudge(),
+      run: {
+        ...fakeRun(),
+        transport: 'codex-appserver',
+        models: {
+          discovery: 'gpt-5.4-mini',
+          explorer: 'gpt-5.4-mini',
+          judge: 'gpt-5.4-mini',
+        },
+        reasoning_efforts: {
+          discovery: 'low',
+          explorer: 'low',
+          judge: 'low',
+        },
+      },
+    });
+    expect(r.run.transport).toBe('codex-appserver');
+    expect(r.run.models.discovery).toBe('gpt-5.4-mini');
+    expect(r.run.reasoning_efforts?.judge).toBe('low');
+  });
+
   it('extracts Discovery surface graph metadata from trace events', () => {
     const r = buildReportJson({
       judge: fakeJudge(),
@@ -138,7 +355,15 @@ describe('buildReportJson', () => {
           actor: 'system',
           payload: {
             product_description: 'A searchable content product.',
-            goals: [{ id: 'G1', description: 'Search content', priority: 'must', journey_id: 'J1', surface_ids: ['S1'] }],
+            goals: [
+              {
+                id: 'G1',
+                description: 'Search content',
+                priority: 'must',
+                journey_id: 'J1',
+                surface_ids: ['S1'],
+              },
+            ],
             surfaces: [
               {
                 id: 'S1',
@@ -169,6 +394,23 @@ describe('buildReportJson', () => {
               rationale: 'Search is the core journey.',
               coverage_risk: 'low',
             },
+            product_use_contract: {
+              product_kinds: ['search_content'],
+              primary_value_loop: 'Search, open, and consume content.',
+              core_artifacts: ['loaded article or result content'],
+              user_jobs: [
+                {
+                  id: 'PU1',
+                  title: 'Find content',
+                  journey_id: 'J1',
+                  required_actions: ['enter query', 'open result'],
+                  expected_artifact: 'article content visible',
+                  acceptable_evidence: ['post-search observation with article title'],
+                  weak_evidence: ['search box visible'],
+                  risk: 'high',
+                },
+              ],
+            },
           },
         },
       ],
@@ -176,6 +418,10 @@ describe('buildReportJson', () => {
     expect(r.discovery?.surfaces?.[0]?.label).toBe('Search');
     expect(r.discovery?.journeys?.[0]?.title).toBe('Search content');
     expect(r.discovery?.coverage_plan?.rationale).toBe('Search is the core journey.');
+    expect(r.discovery?.product_use_contract?.product_kinds).toEqual(['search_content']);
+    expect(r.discovery?.product_use_contract?.user_jobs[0]?.weak_evidence).toContain(
+      'search box visible',
+    );
   });
 
   it('includes trace-derived task runs with replay metadata', () => {

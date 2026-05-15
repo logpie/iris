@@ -15,6 +15,7 @@
 // was a transient Explorer error and shouldn't count as backing.
 
 import type { JudgeFinding, JudgeOutput } from '../judge/judge.js';
+import { resolveTraceRefTypo } from '../trace/ref-resolver.js';
 import type { TraceEvent } from '../trace/schema.js';
 
 export interface DiscardedFinding {
@@ -97,6 +98,39 @@ const AGENT_PERSPECTIVE_TITLE_PATTERNS: RegExp[] = [
 
 function looksLikeAgentPerspectiveFinding(title: string): boolean {
   return AGENT_PERSPECTIVE_TITLE_PATTERNS.some((p) => p.test(title));
+}
+
+function looksLikeToolFrictionFinding(f: JudgeFinding): boolean {
+  const text = `${f.title} ${f.rationale}`.toLowerCase();
+  return (
+    (f.category === 'ux' || f.category === 'a11y') &&
+    /\b(intermittent|retry|retries|first-try|first try|click\/focus|click|focus|locator|selector|targeting|timed out|timeout|tool failure|controls? failed|keyboard traversal|affordance|opaque|friction)\b/.test(
+      text,
+    ) &&
+    !/\b(error message|lost|blank|crash|crashed|saved|submitted|created|deleted|downloaded|exported|user-facing|user facing)\b/.test(
+      text,
+    )
+  );
+}
+
+function citesOnlyActionResults(
+  validIds: string[],
+  eventById: Map<string, TraceEvent>,
+): boolean {
+  return validIds.length > 0 && validIds.every((id) => eventById.get(id)?.kind === 'action_result');
+}
+
+function citesOnlyActionEvents(
+  validIds: string[],
+  eventById: Map<string, TraceEvent>,
+): boolean {
+  return (
+    validIds.length > 0 &&
+    validIds.every((id) => {
+      const kind = eventById.get(id)?.kind;
+      return kind === 'action' || kind === 'action_result';
+    })
+  );
 }
 
 // Phase 12: a "no confirmation / no toast / no notification" finding is only
@@ -255,7 +289,13 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
   for (const rawFinding of findings) {
     // Phase 7 F7-3: strip code_pointer if its selector doesn't appear in the
     // trace (Judge fabricated it). Keep the rest of suggested_fix.
-    const f = stripFabricatedCodePointer(rawFinding, ctx);
+    const normalizedFinding = {
+      ...rawFinding,
+      evidence: rawFinding.evidence.map(
+        (id) => resolveTraceRefTypo(id, trace, traceIndexById) ?? id,
+      ),
+    };
+    const f = stripFabricatedCodePointer(normalizedFinding, ctx);
 
     const validIds = f.evidence.filter((id) => eventById.has(id));
     if (validIds.length === 0) {
@@ -277,7 +317,9 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
       continue;
     }
 
-    if (dismissalFindingContradictedByCitedPostCloseObservation(f, validIds, trace, traceIndexById)) {
+    if (
+      dismissalFindingContradictedByCitedPostCloseObservation(f, validIds, trace, traceIndexById)
+    ) {
       discarded.push({
         tentative_event_id: f.id,
         reason: 'dismissal_finding_contradicted_by_post_close_observation',
@@ -289,6 +331,17 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
       discarded.push({
         tentative_event_id: f.id,
         reason: 'machine_only_probe_no_user_visible_impact',
+      });
+      continue;
+    }
+
+    if (
+      looksLikeToolFrictionFinding(f) &&
+      (citesOnlyActionResults(validIds, eventById) || citesOnlyActionEvents(validIds, eventById))
+    ) {
+      discarded.push({
+        tentative_event_id: f.id,
+        reason: 'tool_friction_without_user_visible_impact',
       });
       continue;
     }
@@ -390,7 +443,9 @@ function dismissalFindingContradictedByCitedPostCloseObservation(
     .filter((idx) => hasSuccessfulDismissActionBefore(trace, idx));
   if (postCloseObservationIndices.length === 0) return false;
   return !postCloseObservationIndices.some((idx) => {
-    const summary = String((trace[idx]?.payload as Record<string, unknown> | undefined)?.summary ?? '');
+    const summary = String(
+      (trace[idx]?.payload as Record<string, unknown> | undefined)?.summary ?? '',
+    );
     return containsPersistentDismissedSurface(summary, f);
   });
 }
@@ -447,7 +502,9 @@ function containsPersistentDismissedSurface(summary: string, f: JudgeFinding): b
       text,
     );
   }
-  return /\b(close|dismiss|no thanks|not now|modal|dialog|popup|banner|overlay|drawer)\b/.test(text);
+  return /\b(close|dismiss|no thanks|not now|modal|dialog|popup|banner|overlay|drawer)\b/.test(
+    text,
+  );
 }
 
 function looksLikeMachineOnlyProbeFinding(
@@ -466,7 +523,10 @@ function looksLikeMachineOnlyProbeFinding(
     });
   if (probes.length !== validIds.length) return false;
   const text = `${f.title} ${f.rationale}`.toLowerCase();
-  if (probes.every((probe) => probe === 'axe') && /\b(a11y|accessibility|axe|violation)\b/.test(text)) {
+  if (
+    probes.every((probe) => probe === 'axe') &&
+    /\b(a11y|accessibility|axe|violation)\b/.test(text)
+  ) {
     return true;
   }
   if (probes.every((probe) => probe === 'console_errors_since') && /\bconsole\b/.test(text)) {

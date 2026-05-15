@@ -70,4 +70,23 @@ describe('ConsoleProbe', () => {
     // Backwards-compat: error_count now reflects ONLY app errors.
     expect(r.summary.error_count).toBe(1);
   });
+
+  it('classifies Iris probe-injection CSP errors as instrumentation, not product app errors', async () => {
+    server = await startFixtureServer('hello');
+    const page = lc.getPage();
+    const probe = new ConsoleProbe(page);
+    probe.attach();
+    await page.goto(`${server.url}/index.html`);
+    probe.pushExternal(
+      'error',
+      "Executing inline script violates the following Content Security Policy directive 'script-src self'. The action has been blocked.",
+    );
+
+    const r = await probe.runProbe('console_errors_since', {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.summary.error_count).toBe(0);
+    expect(r.summary.app_error_count).toBe(0);
+    expect(r.summary.instrumentation_error_count).toBe(1);
+  });
 });

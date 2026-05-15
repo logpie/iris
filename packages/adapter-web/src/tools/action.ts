@@ -58,7 +58,9 @@ export async function selectOption(
   const outcome = await actionWithRetry(
     page,
     args.selector,
-    (l) => l.selectOption(option, { timeout: SHORT_TIMEOUT_MS }),
+    async (l) => {
+      await l.selectOption(option, { timeout: SHORT_TIMEOUT_MS });
+    },
     { timeoutMs: SHORT_TIMEOUT_MS, allowRetry: false },
   );
   return toToolResult(outcome);

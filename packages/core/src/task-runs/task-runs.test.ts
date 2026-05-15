@@ -137,13 +137,97 @@ describe('buildTaskRuns', () => {
       }),
     ];
     const runs = buildTaskRuns({
-      goals: [{ id: 'G1', description: 'Capture screenshot', status: 'verified', evidence: ['R1'] }],
+      goals: [
+        { id: 'G1', description: 'Capture screenshot', status: 'verified', evidence: ['R1'] },
+      ],
       trace,
     });
     expect(runs[0]?.replay).toMatchObject({
       replayable: false,
       reason: 'unsupported tool for deterministic replay: screenshot',
     });
+  });
+
+  it('segments actions by cited evidence when goal_status calls are batched at the end', () => {
+    const trace = [
+      ev('OBS1', 1, 'observation', { ref: 'OBS-000001' }),
+      ev('A1', 2, 'action', { tool: 'click', args: { selector: 'text=Search' } }),
+      ev('R1', 2, 'action_result', { tool: 'click', ok: true }),
+      ev('OBS2', 2, 'observation', { ref: 'OBS-000002' }),
+      ev('A2', 3, 'action', { tool: 'click', args: { selector: 'text=Donate' } }),
+      ev('R2', 3, 'action_result', { tool: 'click', ok: true }),
+      ev('OBS3', 3, 'observation', { ref: 'OBS-000003' }),
+      ev('GS1', 4, 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['OBS2'],
+      }),
+      ev('GS2', 4, 'goal_status', {
+        id: 'G2',
+        status: 'verified',
+        evidence_event_ids: ['OBS3'],
+      }),
+    ];
+
+    const runs = buildTaskRuns({
+      goals: [
+        { id: 'G1', description: 'Search', status: 'verified', evidence: ['OBS2'] },
+        { id: 'G2', description: 'Donate', status: 'verified', evidence: ['OBS3'] },
+      ],
+      trace,
+    });
+
+    expect(runs.map((run) => run.actions.map((action) => action.event_id))).toEqual([
+      ['A1'],
+      ['A2'],
+    ]);
+    expect(runs[0]?.event_ids).toContain('GS1');
+    expect(runs[1]?.event_ids).toContain('GS2');
+    expect(runs.map((run) => run.replay.action_count)).toEqual([1, 1]);
+  });
+
+  it('keeps chronological action segments when later goals are reported before earlier retries', () => {
+    const trace = [
+      ev('A1', 1, 'action', { tool: 'click', args: { selector: 'text=Search' } }),
+      ev('R1', 1, 'action_result', { tool: 'click', ok: true }),
+      ev('OBS1', 1, 'observation', { ref: 'OBS-000001' }),
+      ev('A2', 2, 'action', { tool: 'click', args: { selector: 'text=Talk' } }),
+      ev('R2', 2, 'action_result', { tool: 'click', ok: true }),
+      ev('OBS2', 2, 'observation', { ref: 'OBS-000002' }),
+      ev('A3', 3, 'action', { tool: 'scroll', args: { direction: 'down' } }),
+      ev('R3', 3, 'action_result', { tool: 'scroll', ok: true }),
+      ev('OBS3', 3, 'observation', { ref: 'OBS-000003' }),
+      ev('GS1', 4, 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['OBS1'],
+      }),
+      ev('GS2', 4, 'goal_status', {
+        id: 'G2',
+        status: 'partial',
+        evidence_event_ids: ['OBS3'],
+      }),
+      ev('GS3', 4, 'goal_status', {
+        id: 'G3',
+        status: 'verified',
+        evidence_event_ids: ['OBS2'],
+      }),
+    ];
+
+    const runs = buildTaskRuns({
+      goals: [
+        { id: 'G1', description: 'Search', status: 'verified', evidence: ['OBS1'] },
+        { id: 'G2', description: 'News', status: 'partial', evidence: ['OBS3'] },
+        { id: 'G3', description: 'Talk', status: 'verified', evidence: ['OBS2'] },
+      ],
+      trace,
+    });
+
+    expect(runs.map((run) => run.actions.map((action) => action.event_id))).toEqual([
+      ['A1'],
+      ['A3'],
+      ['A2'],
+    ]);
   });
 });
 

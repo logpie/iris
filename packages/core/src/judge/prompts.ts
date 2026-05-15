@@ -53,6 +53,8 @@ When a goal_status trace line includes evidence=[...], treat those ids as the Ex
 
 Every verified goal MUST have a non-empty notes field explaining in one sentence WHY the goal is verified, quoting trace evidence. Example: "Observation OBS-000017 contains 'Buy groceries' after type+Enter." An empty notes field on a verified goal will be auto-downgraded to partial. Every passing claim must tie itself back to trace evidence the next reader can verify.
 
+Preserve the exact claim boundary in goal notes. If a goal only asks to open a page, reach a destination, reveal a panel, or verify an entry point, do NOT imply that the deeper workflow succeeded. For example, if the goal is "open login and verify the authentication page loads", a verified note should say "login page loaded with fields/return target"; it must NOT say or imply "user logged in", "authenticated", or "account created" unless the trace shows submitted credentials and a signed-in/session-created state. Apply this principle to all page-reach, checkout, settings, export, and destructive-action entry points: verified means the stated scope was verified, not the full downstream workflow.
+
 Findings like "X gives no visible confirmation" or "no toast/notification after Y" REQUIRE a successful notifications_visible probe (kind=probe_result, probe=notifications_visible) taken AFTER the relevant action AND showing an empty result. If notifications_visible was not called or returned non-empty data, drop the finding or mark the goal untested with a caveat that confirmation-detection was not attempted. vision_describe pointed at the wrong region is NOT sufficient evidence.
 
 Iris observations capture DOM outline, body innerText, and RICH CONTENT (textarea/input values, contenteditable, CodeMirror/Monaco/ACE). If the Explorer attempted a goal but observations don't visibly reflect the result, do NOT confidently call the goal "blocked" or claim a failure finding. Three possibilities exist and the trace alone cannot distinguish them:
@@ -87,6 +89,8 @@ LATEST goal_status WINS. The trace can contain MULTIPLE goal_status events for t
 
 When the trace begins with a discovery event, the goals were proposed by Iris's discovery pass (no human spec). Treat them with the same weight as spec goals for grading. The discovery event payload also carries a product_description — quote/use it when summarizing what the product is.
 
+If the discovery event includes product_use_contract, use it as the generic real-use acceptance contract. Judge whether the Explorer exercised the primary_value_loop and produced the listed core_artifacts/state changes. The contract's weak_evidence entries are explicitly insufficient for verified goals and high coverage scores unless the goal scope is only to reveal that entry point.
+
 goal_proposed events mean the Explorer added a goal mid-run after discovering a missed surface. Expansion goals are reported in spec_compliance, but the spec-compliance score denominator counts only seed goals. Expansion goals appear in the per-goal list with their status, but their attempted/verified counts do not pull the percentage down for the seed-goal score. If an expansion goal is verified, mention it in spec_compliance.summary as bonus coverage. List expansion goals with their proper id (G7+).
 
 ## Severity Calibration
@@ -108,11 +112,13 @@ the issue in rubric scoring.
 ## Rubric Scoring
 Score each rubric profile's dimensions on a 0-10 scale. Cite trace event ids as evidence (e.g. "T01ABC...").
 
+Separate surface coverage from real-use depth. Do not give high coverage/completeness scores merely because menus, toolbars, filters, settings, or sign-in entry points were clicked. High scores require task coverage: the primary value loop was exercised and there is trace evidence of the durable artifact, data/state change, loaded content, filtered view, cart/account state, or transformed media that the product exists to produce.
+
 When scoring the ux_baseline rubric, the dimensions are product-agnostic — score them based on what the trace shows, not against any goal:
 - primary_action_discoverable: how quickly did the Explorer find and exercise the primary feature?
-- console_clean: count pageerror + console.error events.
+- console_clean: count pageerror + console.error events from the product. Do not penalize the product for Iris/tooling instrumentation errors, e.g. CSP blocking axe/script injection.
 - network_clean: count first-party network failures (4xx/5xx) excluding tracking/ads domains.
-- a11y_baseline: roll up axe probe results.
+- a11y_baseline: roll up axe probe results. If the axe probe itself failed or was blocked by CSP/tooling, score null and add a confidence caveat; do not claim axe passed.
 - error_states_clear: did empty/invalid submits produce clear messages?
 - destructive_confirmed: did destructive actions prompt? Score null if no destructive surface was visited.
 - keyboard_accessible: did the Explorer's keyboard attempt succeed?

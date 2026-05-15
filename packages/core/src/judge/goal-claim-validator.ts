@@ -21,6 +21,7 @@
 // The adapter contract picks the artifacts; the validator picks the verdict.
 
 import type { OutcomeContract, OutcomeContractTraceEvent } from '@iris/adapter-types';
+import { resolveTraceRefTypo } from '../trace/ref-resolver.js';
 import type { TraceEvent } from '../trace/schema.js';
 import type { JudgeOutput } from './judge.js';
 
@@ -95,13 +96,36 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
         notes: g.notes ? `${g.notes} ${caveat}` : caveat,
       };
     }
-    const window = goalWindows.get(g.id) ?? [];
     const citedSet = collectCitedRefs({
       goal: g,
       trace,
       traceIndexById,
       statusInfo,
     });
+    const window = goalWindows.get(g.id) ?? [];
+    const productUseWindow = productUseWindowForCitedEvidence({
+      trace,
+      traceIndexById,
+      citedRefs: citedSet,
+      statusInfo,
+      fallbackWindow: window,
+    });
+    const productUseCheck = evaluateProductUseContract({
+      goal: g,
+      trace,
+      goalWindow: productUseWindow,
+      statusRationale,
+    });
+    if (!productUseCheck.ok) {
+      downgraded++;
+      reasons.push(`${g.id}: ${productUseCheck.reason}`);
+      const caveat = `[goal-claim validator: ${productUseCheck.reason}]`;
+      return {
+        ...g,
+        status: 'partial' as const,
+        notes: g.notes ? `${g.notes} ${caveat}` : caveat,
+      };
+    }
     const artifacts = [
       ...outcome_contract.collectOutcomeEvidence({
         goal: { id: g.id, description: g.description },
@@ -167,6 +191,225 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
   };
 }
 
+interface ProductUseJobLike {
+  id?: string;
+  title?: string;
+  journey_id?: string;
+  required_actions?: string[];
+  expected_artifact?: string;
+  acceptable_evidence?: string[];
+  weak_evidence?: string[];
+}
+
+interface ProductUseContractLike {
+  product_kinds?: string[];
+  primary_value_loop?: string;
+  core_artifacts?: string[];
+  user_jobs?: ProductUseJobLike[];
+}
+
+const PRODUCT_USE_CITATION_LOOKBACK_EVENTS = 80;
+
+function productUseWindowForCitedEvidence(input: {
+  trace: TraceEvent[];
+  traceIndexById: Map<string, number>;
+  citedRefs: Set<string>;
+  statusInfo: GoalStatusInfo | undefined;
+  fallbackWindow: OutcomeContractTraceEvent[];
+}): OutcomeContractTraceEvent[] {
+  if (!input.statusInfo || input.citedRefs.size === 0) return input.fallbackWindow;
+  const citedIndices = Array.from(input.citedRefs)
+    .map((ref) => input.traceIndexById.get(ref))
+    .filter((idx): idx is number => idx !== undefined && idx <= input.statusInfo!.idx);
+  if (citedIndices.length === 0) return input.fallbackWindow;
+  const maxCitedIdx = Math.max(...citedIndices);
+  const start = Math.max(0, maxCitedIdx - PRODUCT_USE_CITATION_LOOKBACK_EVENTS);
+  const citationWindow = input.trace
+    .slice(start, maxCitedIdx + 1)
+    .filter((event) => sessionIdOf(event) === input.statusInfo!.session_id)
+    .map(toContractEvent);
+  if (citationWindow.length === 0) return input.fallbackWindow;
+
+  const out: OutcomeContractTraceEvent[] = [];
+  const seen = new Set<string>();
+  for (const event of [...input.fallbackWindow, ...citationWindow]) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    out.push(event);
+  }
+  return out;
+}
+
+function evaluateProductUseContract(input: {
+  goal: JudgeOutput['spec_compliance']['goals'][number];
+  trace: TraceEvent[];
+  goalWindow: OutcomeContractTraceEvent[];
+  statusRationale: string;
+}): { ok: true } | { ok: false; reason: string } {
+  const contract = latestProductUseContract(input.trace);
+  if (!contract) return { ok: true };
+  const discoveryGoal = latestDiscoveryGoal(input.trace, input.goal.id);
+  const job = productUseJobForGoal(contract, input.goal, discoveryGoal?.journey_id);
+  if (!job) return { ok: true };
+  const missingActions = requiredActionsMissing(job.required_actions ?? [], input.goalWindow);
+  if (missingActions.length > 0) {
+    return { ok: false, reason: `product-use contract missing required actions: ${missingActions.join(', ')}` };
+  }
+  const proofText = `${input.goal.notes ?? ''}\n${input.statusRationale}`;
+  const weakProof = matchingWeakEvidence(
+    [...(job.weak_evidence ?? []), ...genericWeakEvidencePhrases(contract)],
+    proofText,
+  );
+  if (weakProof && !hasOutcomeLanguage(proofText)) {
+    return { ok: false, reason: `product-use contract rejected weak evidence: ${weakProof}` };
+  }
+  return { ok: true };
+}
+
+function latestProductUseContract(trace: TraceEvent[]): ProductUseContractLike | undefined {
+  for (let i = trace.length - 1; i >= 0; i--) {
+    const event = trace[i];
+    if (!event || event.kind !== 'discovery') continue;
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    const contract = payload.product_use_contract;
+    if (contract && typeof contract === 'object') return contract as ProductUseContractLike;
+  }
+  return undefined;
+}
+
+function latestDiscoveryGoal(
+  trace: TraceEvent[],
+  goalId: string,
+): { id?: string; journey_id?: string; description?: string } | undefined {
+  for (let i = trace.length - 1; i >= 0; i--) {
+    const event = trace[i];
+    if (!event || event.kind !== 'discovery') continue;
+    const payload = (event.payload ?? {}) as { goals?: unknown };
+    if (!Array.isArray(payload.goals)) continue;
+    const goal = payload.goals.find((candidate) => {
+      return candidate && typeof candidate === 'object' && String((candidate as { id?: unknown }).id ?? '') === goalId;
+    });
+    return goal as { id?: string; journey_id?: string; description?: string } | undefined;
+  }
+  return undefined;
+}
+
+function productUseJobForGoal(
+  contract: ProductUseContractLike,
+  goal: JudgeOutput['spec_compliance']['goals'][number],
+  journeyId: string | undefined,
+): ProductUseJobLike | undefined {
+  const jobs = contract.user_jobs ?? [];
+  if (journeyId) {
+    const byJourney = jobs.find((job) => job.journey_id === journeyId);
+    if (byJourney) return byJourney;
+  }
+  const normalizedGoal = normalizeText(`${goal.id} ${goal.description}`);
+  return jobs.find((job) => {
+    const candidate = normalizeText(`${job.id ?? ''} ${job.title ?? ''} ${job.expected_artifact ?? ''}`);
+    return candidate.length > 0 && (normalizedGoal.includes(candidate) || candidate.includes(normalizedGoal.slice(0, 80)));
+  });
+}
+
+function requiredActionsMissing(
+  requiredActions: string[],
+  goalWindow: OutcomeContractTraceEvent[],
+): string[] {
+  const normalizedRequired = requiredActions.map((action) => action.toLowerCase());
+  const missing: string[] = [];
+  for (const required of normalizedRequired) {
+    const toolSet = requiredActionTools(required);
+    if (toolSet.length === 0) continue;
+    if (!goalWindow.some((event) => successfulActionTool(event, toolSet))) missing.push(required);
+  }
+  return missing;
+}
+
+function requiredActionTools(requiredAction: string): string[] {
+  if (/\b(vision[_ -]?drag|drag|draw|sketch|resize|move\s+object)\b/.test(requiredAction)) {
+    return ['drag', 'vision_drag'];
+  }
+  if (/\b(style|color|fill|dash|stroke|size|opacity|font|align)\b/.test(requiredAction)) {
+    return ['click', 'vision_click', 'select_option', 'drag', 'vision_drag', 'press', 'key_chord'];
+  }
+  if (/\b(type|enter|write|text|input|query|fill)\b/.test(requiredAction)) {
+    return ['type', 'paste', 'vision_paste', 'press', 'key_chord'];
+  }
+  if (/\b(export|download|submit|save|publish|send|share|confirm|create)\b/.test(requiredAction)) {
+    return ['click', 'vision_click', 'double_click', 'vision_double_click', 'press', 'key_chord'];
+  }
+  if (/\b(upload|media|file)\b/.test(requiredAction)) {
+    if (/\b(select|choose|click|open|pick|activate|invoke|toggle|menu|button|link|start|initiat)\b/.test(requiredAction)) {
+      return ['click', 'vision_click', 'double_click', 'vision_double_click', 'press', 'key_chord', 'upload'];
+    }
+    return ['upload'];
+  }
+  if (
+    /\b(select|choose|click|open|pick|activate|invoke|toggle|menu|button|link)\b/.test(
+      requiredAction,
+    )
+  ) {
+    return [
+      'click',
+      'vision_click',
+      'double_click',
+      'vision_double_click',
+      'select_option',
+      'press',
+      'key_chord',
+    ];
+  }
+  if (/\b(filter|sort|slider|range)\b/.test(requiredAction)) {
+    return ['click', 'vision_click', 'select_option', 'drag', 'vision_drag', 'press', 'key_chord'];
+  }
+  return [];
+}
+
+function successfulActionTool(event: OutcomeContractTraceEvent, tools: string[]): boolean {
+  if (event.kind !== 'action_result') return false;
+  const payload = (event.payload ?? {}) as Record<string, unknown>;
+  return payload.ok === true && tools.includes(String(payload.tool ?? ''));
+}
+
+function matchingWeakEvidence(weakEvidence: string[], text: string): string | undefined {
+  const normalizedText = normalizeText(text);
+  if (!normalizedText) return undefined;
+  for (const weak of weakEvidence) {
+    const normalizedWeak = normalizeText(weak);
+    if (normalizedWeak.length >= 4 && normalizedText.includes(normalizedWeak)) return weak;
+  }
+  return undefined;
+}
+
+function hasOutcomeLanguage(text: string): boolean {
+  const normalized = normalizeText(text);
+  const outcomeVerb =
+    /\b(visible|visibly|created|drew|drawn|placed|added|appeared|updated|changed|loaded|opened|exported|downloaded|authenticated)\b/.test(
+      normalized,
+    );
+  const outcomeObject =
+    /\b(canvas|object|artifact|rectangle|content|board|dialog|surface|page|flow|panel|result|record|chart|table|cart|account|style|color|fill|stroke)\b/.test(
+      normalized,
+    );
+  return outcomeVerb && outcomeObject;
+}
+
+function genericWeakEvidencePhrases(contract: ProductUseContractLike): string[] {
+  const kinds = contract.product_kinds ?? [];
+  const generic = ['toolbar selected', 'tool selected', 'mode activated', 'button highlighted', 'focus moved'];
+  if (kinds.includes('canvas_editor') || kinds.includes('document_editor')) {
+    return [...generic, 'properties panel opened', 'tool palette activates'];
+  }
+  if (kinds.includes('search_content')) return [...generic, 'search box visible', 'homepage loaded'];
+  if (kinds.includes('crud_workflow')) return [...generic, 'form opened', 'modal opened'];
+  if (kinds.includes('dashboard_filtering')) return [...generic, 'filter menu opened'];
+  return generic;
+}
+
+function normalizeText(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 interface GoalStatusInfo {
   idx: number;
   session_id: string;
@@ -200,7 +443,11 @@ function collectCitedRefs(input: {
 }): Set<string> {
   const cited = new Set<string>();
   for (const ref of input.goal.evidence ?? []) {
-    cited.add(resolveTraceRefTypo(ref, input.trace, input.traceIndexById, input.statusInfo?.idx) ?? ref);
+    cited.add(
+      resolveTraceRefTypo(ref, input.trace, input.traceIndexById, {
+        maxIdx: input.statusInfo?.idx,
+      }) ?? ref,
+    );
   }
   if (!input.statusInfo) return cited;
 
@@ -221,57 +468,6 @@ function collectCitedRefs(input: {
   }
 
   return cited;
-}
-
-function resolveTraceRefTypo(
-  ref: string,
-  trace: TraceEvent[],
-  traceIndexById: Map<string, number>,
-  maxIdx: number | undefined,
-): string | undefined {
-  if (traceIndexById.has(ref)) return ref;
-  if (!looksLikeTraceId(ref)) return undefined;
-  const candidates = trace.filter((event, idx) => {
-    if (maxIdx !== undefined && idx > maxIdx) return false;
-    if (event.id.slice(0, 18) === ref.slice(0, 18) && Math.abs(event.id.length - ref.length) <= 2) {
-      return true;
-    }
-    return event.id.slice(0, 10) === ref.slice(0, 10) && editDistanceAtMostOne(event.id, ref);
-  });
-  return candidates.length === 1 ? candidates[0]?.id : undefined;
-}
-
-function looksLikeTraceId(ref: string): boolean {
-  return /^01[0-9A-HJKMNP-TV-Z]{20,28}$/i.test(ref);
-}
-
-function editDistanceAtMostOne(a: string, b: string): boolean {
-  if (a === b) return true;
-  if (Math.abs(a.length - b.length) > 1) return false;
-  if (a.length === b.length) {
-    let mismatches = 0;
-    for (let i = 0; i < a.length; i++) {
-      if (a[i] !== b[i]) mismatches++;
-      if (mismatches > 1) return false;
-    }
-    return true;
-  }
-  const shorter = a.length < b.length ? a : b;
-  const longer = a.length < b.length ? b : a;
-  let i = 0;
-  let j = 0;
-  let edits = 0;
-  while (i < shorter.length && j < longer.length) {
-    if (shorter[i] === longer[j]) {
-      i++;
-      j++;
-      continue;
-    }
-    edits++;
-    if (edits > 1) return false;
-    j++;
-  }
-  return true;
 }
 
 function collectCitedOutcomeEvidence(input: {
@@ -373,12 +569,49 @@ export function applyGoalClaimValidationToJudgeOutput(
   judge: JudgeOutput,
   result: GoalClaimValidationOutput,
 ): JudgeOutput {
+  const summary =
+    result.summary.downgraded > 0
+      ? summarizeValidatedGoalStatuses(result.goals, result.summary.downgraded)
+      : judge.spec_compliance.summary;
   return {
     ...judge,
     spec_compliance: {
       ...judge.spec_compliance,
       goals: result.goals,
+      summary,
       goal_claim_validation: result.summary,
     },
+    meta: {
+      ...judge.meta,
+      confidence_caveats:
+        result.summary.downgraded > 0
+          ? uniqueStrings([
+              ...judge.meta.confidence_caveats,
+              `${result.summary.downgraded} verified goal claim(s) were downgraded by deterministic evidence validation.`,
+            ])
+          : judge.meta.confidence_caveats,
+    },
   };
+}
+
+function summarizeValidatedGoalStatuses(
+  goals: JudgeOutput['spec_compliance']['goals'],
+  downgraded: number,
+): string {
+  const counts = goals.reduce<Record<string, number>>((acc, goal) => {
+    acc[goal.status] = (acc[goal.status] ?? 0) + 1;
+    return acc;
+  }, {});
+  const parts = ['verified', 'partial', 'blocked', 'skipped', 'untested']
+    .map((status) => {
+      const count = counts[status] ?? 0;
+      return count > 0 ? `${count} ${status}` : '';
+    })
+    .filter(Boolean);
+  const noun = downgraded === 1 ? 'claim' : 'claims';
+  return `Goal evidence validation downgraded ${downgraded} verified ${noun}. Final goal status: ${parts.join(', ')}.`;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }

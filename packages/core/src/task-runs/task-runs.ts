@@ -60,20 +60,64 @@ export function buildTaskRuns(input: {
   if (input.goals.length === 0 || input.trace.length === 0) return [];
   const indexById = new Map(input.trace.map((event, index) => [event.id, index]));
   const statusByGoal = latestGoalStatusByGoal(input.trace);
-
-  return input.goals.map((goal) => {
+  const plans = input.goals.map((goal, order) => {
     const statusEvent = statusByGoal.get(goal.id);
-    const endIndex = statusEvent ? (indexById.get(statusEvent.id) ?? input.trace.length - 1) : -1;
-    const startIndex = endIndex >= 0 ? previousGoalStatusIndex(input.trace, endIndex) + 1 : 0;
-    const windowEvents = endIndex >= 0 ? input.trace.slice(startIndex, endIndex + 1) : [];
     const evidenceIds = uniqueStrings([
       ...(goal.evidence ?? []),
-      ...stringArray((statusEvent?.payload as Record<string, unknown> | undefined)?.evidence_event_ids),
+      ...stringArray(
+        (statusEvent?.payload as Record<string, unknown> | undefined)?.evidence_event_ids,
+      ),
     ]);
     const evidenceEvents = evidenceIds
       .map((id) => input.trace[indexById.get(id) ?? -1])
       .filter((event): event is TraceEvent => Boolean(event));
-    const eventIds = uniqueStrings([...windowEvents.map((event) => event.id), ...evidenceIds]);
+    const sessionId =
+      (statusEvent ? sessionIdOf(statusEvent) : undefined) ??
+      (evidenceEvents[0] ? sessionIdOf(evidenceEvents[0]) : '__default__');
+    const statusIndex = statusEvent ? (indexById.get(statusEvent.id) ?? -1) : -1;
+    const evidenceIndexes = evidenceEvents
+      .map((event) => indexById.get(event.id))
+      .filter((idx): idx is number => idx !== undefined);
+    const anchorIndex =
+      evidenceIndexes.length > 0
+        ? Math.max(...evidenceIndexes)
+        : statusIndex >= 0
+          ? statusIndex
+          : -1;
+    return {
+      goal,
+      order,
+      statusEvent,
+      evidenceIds,
+      evidenceEvents,
+      sessionId,
+      anchorIndex,
+    };
+  });
+
+  const lastAnchorBySession = new Map<string, number>();
+  const windowByGoalId = new Map<string, TraceEvent[]>();
+  for (const plan of [...plans]
+    .filter((item) => item.anchorIndex >= 0)
+    .sort((a, b) => a.anchorIndex - b.anchorIndex || a.order - b.order)) {
+    const previousAnchor = lastAnchorBySession.get(plan.sessionId) ?? -1;
+    const startIndex = plan.anchorIndex > previousAnchor ? previousAnchor + 1 : plan.anchorIndex;
+    const windowEvents = input.trace
+      .slice(startIndex, plan.anchorIndex + 1)
+      .filter((event) => sessionIdOf(event) === plan.sessionId);
+    if (plan.anchorIndex >= previousAnchor) {
+      lastAnchorBySession.set(plan.sessionId, plan.anchorIndex);
+    }
+    windowByGoalId.set(plan.goal.id, windowEvents);
+  }
+
+  return plans.map(({ goal, statusEvent, evidenceIds, evidenceEvents }) => {
+    const windowEvents = windowByGoalId.get(goal.id) ?? [];
+    const eventIds = uniqueStrings([
+      ...windowEvents.map((event) => event.id),
+      ...evidenceIds,
+      statusEvent?.id,
+    ]);
     const observations = buildObservationRefs([...windowEvents, ...evidenceEvents]);
     const actions = buildActions(windowEvents);
     const replay = replaySummary(actions);
@@ -106,13 +150,6 @@ function latestGoalStatusByGoal(trace: TraceEvent[]): Map<string, TraceEvent> {
     if (id) out.set(id, event);
   }
   return out;
-}
-
-function previousGoalStatusIndex(trace: TraceEvent[], beforeIndex: number): number {
-  for (let i = beforeIndex - 1; i >= 0; i--) {
-    if (trace[i]?.kind === 'goal_status') return i;
-  }
-  return -1;
 }
 
 function buildActions(events: TraceEvent[]): TaskRunAction[] {
@@ -173,7 +210,9 @@ function buildObservationRefs(events: TraceEvent[]): TaskRunObservationRef[] {
     observations.push({
       event_id: event.id,
       ...(typeof event.payload.ref === 'string' ? { observation_ref: event.payload.ref } : {}),
-      ...(typeof state?.screenshot_ref === 'string' ? { screenshot_ref: state.screenshot_ref } : {}),
+      ...(typeof state?.screenshot_ref === 'string'
+        ? { screenshot_ref: state.screenshot_ref }
+        : {}),
       ...(typeof state?.url === 'string' ? { url: state.url } : {}),
       ...(typeof state?.title === 'string' ? { title: state.title } : {}),
       element_hashes: uniqueStrings(
@@ -238,4 +277,11 @@ function uniqueStrings(values: Array<string | undefined>): string[] {
 
 function plainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function sessionIdOf(event: TraceEvent): string {
+  const payload = event.payload ?? {};
+  return typeof payload.session_id === 'string' && payload.session_id
+    ? payload.session_id
+    : '__default__';
 }
