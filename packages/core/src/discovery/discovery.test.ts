@@ -24,6 +24,9 @@ describe('runDiscovery', () => {
       }),
     });
     expect(result).not.toBeNull();
+    expect(result?.output.v).toBe(1);
+    expect(result?.output.surfaces).toHaveLength(0);
+    expect(result?.output.journeys).toHaveLength(0);
     expect(result?.output.goals).toHaveLength(2);
     expect(result?.cost_usd).toBeCloseTo(0.05);
   });
@@ -197,6 +200,116 @@ describe('runDiscovery', () => {
     expect(result?.output.goals[0]).toMatchObject({ journey_id: 'J1', surface_ids: ['S001'] });
     expect(userPrompt).toContain('STRUCTURED DISCOVERY SURVEY PAYLOAD');
     expect(userPrompt).toContain('"S001"');
+  });
+
+  it('synthesizes v2 surfaces, journeys, and coverage when the model returns flat goals', async () => {
+    const result = await runDiscovery({
+      url: 'https://example.com',
+      observation_summary: 'Homepage with search, article content, account links, and footer links.',
+      survey_payload: {
+        v: 2,
+        surfaces: [
+          {
+            id: 'S001',
+            label: 'Search box',
+            kind: 'search',
+            url: 'https://example.com',
+            source: 'initial',
+            value: 'core',
+            confidence: 0.9,
+            evidence: [{ ref: 'C001', note: 'initial viewport' }],
+          },
+          {
+            id: 'S002',
+            label: 'OpenAI article content with Contents and References',
+            kind: 'content',
+            url: 'https://example.com/wiki/OpenAI',
+            source: 'primary_journey',
+            value: 'core',
+            confidence: 0.85,
+            evidence: [{ ref: 'C002', note: 'after primary search journey' }],
+          },
+          {
+            id: 'S003',
+            label: 'Create account',
+            kind: 'account',
+            url: 'https://example.com/create-account',
+            source: 'scroll',
+            value: 'important_secondary',
+            confidence: 0.75,
+            evidence: [{ ref: 'C003', note: 'scroll sample' }],
+          },
+          {
+            id: 'S004',
+            label: 'Privacy Policy',
+            kind: 'footer',
+            url: 'https://example.com/privacy',
+            source: 'scroll',
+            value: 'peripheral',
+            confidence: 0.7,
+            evidence: [{ ref: 'C004', note: 'footer' }],
+          },
+          {
+            id: 'S005',
+            label: 'Apple App Store',
+            kind: 'external',
+            url: 'https://apps.apple.com/example',
+            source: 'scroll',
+            value: 'peripheral',
+            confidence: 0.7,
+            evidence: [{ ref: 'C005', note: 'mobile app link' }],
+          },
+        ],
+        captures: [],
+      },
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 1,
+          target_kind_hint: 'web',
+          product_description: 'A content product.',
+          goals: [
+            {
+              id: 'G1',
+              description: 'Use search to find the OpenAI article and verify article content loads.',
+              priority: 'must',
+            },
+            {
+              id: 'G2',
+              description: 'Open Create account and verify the account entry destination loads.',
+              priority: 'should',
+            },
+            {
+              id: 'G3',
+              description: 'Open Privacy Policy and verify the legal page loads.',
+              priority: 'should',
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    expect(result?.output.v).toBe(2);
+    expect(result?.output.surfaces.map((surface) => surface.id)).toEqual([
+      'S001',
+      'S002',
+      'S003',
+      'S004',
+      'S005',
+    ]);
+    expect(result?.output.journeys).toHaveLength(3);
+    expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1', 'J2', 'J3']);
+    expect(result?.output.coverage_plan?.deferred_surface_ids).toEqual(['S005']);
+    expect(result?.output.goals.every((goal) => goal.journey_id && goal.surface_ids.length > 0)).toBe(
+      true,
+    );
+    expect(result?.output.goals[0]?.surface_ids).toContain('S002');
+    expect(result?.output.goals[1]?.surface_ids).toContain('S003');
+    expect(result?.output.goals[2]?.surface_ids).toContain('S004');
   });
 
   it('does not report selected journey surfaces as deferred', async () => {

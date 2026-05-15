@@ -123,9 +123,18 @@ export interface DiscoveryRunResult {
   cost_usd: number;
 }
 
-function normalizeDiscoveryOutput(out: DiscoveryOutput, sourceText: string): DiscoveryOutput {
-  const surfaces = normalizeDiscoverySurfaces(out.surfaces);
-  const journeys = normalizeDiscoveryJourneys(out.journeys, surfaces);
+function normalizeDiscoveryOutput(
+  out: DiscoveryOutput,
+  sourceText: string,
+  surveySurfaces: DiscoverySurface[] = [],
+): DiscoveryOutput {
+  const surfaces = normalizeDiscoverySurfaces(
+    out.surfaces.length > 0 ? out.surfaces : surveySurfaces,
+  );
+  const journeys = normalizeDiscoveryJourneys(
+    out.journeys.length > 0 ? out.journeys : synthesizeJourneysFromGoals(out.goals, surfaces),
+    surfaces,
+  );
   const coveragePlan = normalizeDiscoveryCoveragePlan(out.coverage_plan, journeys, surfaces);
   const goals: DiscoveryGoal[] = [];
   const seenDescriptions = new Set<string>();
@@ -253,6 +262,138 @@ function attachDiscoveryGoalRefs(
   };
 }
 
+function synthesizeJourneysFromGoals(
+  goals: DiscoveryGoal[],
+  surfaces: DiscoverySurface[],
+): DiscoveryJourney[] {
+  if (surfaces.length === 0) return [];
+  return goals.map((goal, index) => {
+    const surfaceIds = selectSurfacesForGoal(goal, surfaces);
+    const selectedSurfaces = surfaces.filter((surface) => surfaceIds.includes(surface.id));
+    const peripheralOnly =
+      selectedSurfaces.length > 0 &&
+      selectedSurfaces.every((surface) => surface.value === 'peripheral');
+    return {
+      id: `J${index + 1}`,
+      title: titleFromGoal(goal.description),
+      priority: goal.priority === 'must' ? 'must' : 'should',
+      surface_ids: surfaceIds,
+      user_intent: goal.description,
+      suggested_goal: goal.description,
+      expected_evidence: ['Visible browser state or destination proves the goal outcome.'],
+      risk: goal.priority === 'must' ? 'high' : peripheralOnly ? 'low' : 'medium',
+    };
+  });
+}
+
+function selectSurfacesForGoal(goal: DiscoveryGoal, surfaces: DiscoverySurface[]): string[] {
+  const text = goal.description.toLowerCase();
+  const scored = surfaces
+    .map((surface) => ({ surface, score: scoreSurfaceForGoal(text, goal.priority, surface) }))
+    .sort((a, b) => b.score - a.score);
+  const best = scored[0]?.score ?? 0;
+  if (best > 0) {
+    return scored
+      .filter((entry) => entry.score > 0 && entry.score >= best - 1)
+      .slice(0, 3)
+      .map((entry) => entry.surface.id);
+  }
+  const fallback =
+    surfaces.find((surface) => surface.value === 'core') ??
+    surfaces.find((surface) => surface.value === 'important_secondary') ??
+    surfaces[0];
+  return fallback ? [fallback.id] : [];
+}
+
+function scoreSurfaceForGoal(
+  goalText: string,
+  priority: DiscoveryGoal['priority'],
+  surface: DiscoverySurface,
+): number {
+  const label = surface.label.toLowerCase();
+  const controlText = surface.controls
+    .map((control) => `${control.name ?? ''} ${control.href ?? ''} ${control.role ?? ''}`)
+    .join(' ')
+    .toLowerCase();
+  const haystack = `${label} ${surface.kind} ${surface.source} ${surface.url.toLowerCase()} ${controlText}`;
+  let score = 0;
+
+  if (surface.value === 'core') score += 3;
+  if (surface.value === 'important_secondary') score += 2;
+  if (priority === 'must' && surface.value === 'core') score += 1;
+  if (surface.source === 'primary_journey') score += 1;
+
+  for (const token of importantGoalTokens(goalText)) {
+    if (token.length >= 4 && haystack.includes(token)) score += 4;
+  }
+
+  if (/\b(search|find|query|topic|article)\b/.test(goalText)) {
+    if (surface.kind === 'search') score += 6;
+    if (surface.kind === 'content' && surface.source === 'primary_journey') score += 4;
+  }
+  if (/\b(article|content|read|contents?|section|reference|citation|history|edit|talk)\b/.test(goalText)) {
+    if (surface.kind === 'content') score += 5;
+    if (surface.source === 'primary_journey') score += 4;
+    if (surface.kind === 'nav' || surface.kind === 'menu') score += 2;
+  }
+  if (/\b(account|log\s*in|login|sign[- ]?in|sign[- ]?up|create account)\b/.test(goalText)) {
+    if (surface.kind === 'account') score += 7;
+  }
+  if (/\b(language|edition|translation|localized|locale)\b/.test(goalText)) {
+    if (surface.kind === 'menu' || surface.kind === 'nav') score += 4;
+    if (/language|english|deutsch|francais|espanol|japanese|chinese/.test(haystack)) score += 5;
+  }
+  if (/\b(donate|donation|fundraiser|banner|dismiss|close)\b/.test(goalText)) {
+    if (surface.kind === 'banner' || surface.kind === 'modal') score += 6;
+    if (/donate|fundraiser|banner|close|dismiss/.test(haystack)) score += 5;
+  }
+  if (/\b(privacy|terms|legal|license|copyright|creative commons)\b/.test(goalText)) {
+    if (surface.kind === 'footer') score += 7;
+    if (surface.value === 'peripheral') score += 2;
+  }
+  if (/\b(app store|google play|mobile app|android|ios)\b/.test(goalText)) {
+    if (surface.kind === 'external') score += 6;
+    if (/app store|google play|android|ios|mobile/.test(haystack)) score += 6;
+  }
+  if (/\b(settings|preferences|appearance|theme)\b/.test(goalText)) {
+    if (surface.kind === 'settings' || surface.kind === 'menu') score += 5;
+  }
+
+  return score;
+}
+
+function importantGoalTokens(text: string): string[] {
+  const stop = new Set([
+    'and',
+    'the',
+    'for',
+    'from',
+    'with',
+    'that',
+    'this',
+    'page',
+    'open',
+    'verify',
+    'loads',
+    'load',
+    'works',
+    'use',
+    'using',
+    'check',
+    'confirm',
+  ]);
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter((token) => token.length >= 4 && !stop.has(token));
+}
+
+function titleFromGoal(description: string): string {
+  const trimmed = description.replace(/\s+/g, ' ').trim();
+  if (trimmed.length <= 80) return trimmed;
+  return `${trimmed.slice(0, 77).trim()}...`;
+}
+
 function discoveryGoalKey(goal: DiscoveryGoal): string {
   const text = goal.description.toLowerCase().replace(/\s+/g, ' ').trim();
   if (/google\s+play(?:\s+store)?/.test(text)) return 'dest:google-play';
@@ -344,13 +485,12 @@ function supplementalDiscoveryGoals(sourceText: string, existingGoals: Discovery
  * free mode without aborting the whole run.
  */
 export async function runDiscovery(inputs: DiscoveryRunInputs): Promise<DiscoveryRunResult | null> {
+  const surveyPayloadSummary = formatDiscoverySurveyPayload(inputs.survey_payload);
   const userPrompt = DISCOVERY_USER_TEMPLATE({
     url: inputs.url,
     observation_summary: inputs.observation_summary,
     ...(inputs.survey_summary ? { survey_summary: inputs.survey_summary } : {}),
-    ...(inputs.survey_payload
-      ? { survey_payload_summary: formatDiscoverySurveyPayload(inputs.survey_payload) }
-      : {}),
+    ...(surveyPayloadSummary ? { survey_payload_summary: surveyPayloadSummary } : {}),
   });
   let text = '';
   let cost = 0;
@@ -388,14 +528,141 @@ export async function runDiscovery(inputs: DiscoveryRunInputs): Promise<Discover
     const out = DiscoveryOutputSchema.parse(parsed);
     const normalized = normalizeDiscoveryOutput(
       out,
-      `${inputs.observation_summary}\n${inputs.survey_summary ?? ''}\n${formatDiscoverySurveyPayload(
-        inputs.survey_payload,
-      )}`,
+      `${inputs.observation_summary}\n${inputs.survey_summary ?? ''}\n${surveyPayloadSummary}`,
+      extractSurveySurfaces(inputs.survey_payload),
     );
     return { output: normalized, cost_usd: cost };
   } catch {
     return null;
   }
+}
+
+const DISCOVERY_SURFACE_KINDS = new Set([
+  'page',
+  'nav',
+  'form',
+  'search',
+  'menu',
+  'modal',
+  'banner',
+  'content',
+  'table',
+  'media',
+  'account',
+  'settings',
+  'footer',
+  'external',
+  'unknown',
+] as const);
+const DISCOVERY_SURFACE_SOURCES = new Set([
+  'initial',
+  'scroll',
+  'menu_peek',
+  'banner_dismiss',
+  'primary_journey',
+  'sample_nav',
+] as const);
+const DISCOVERY_SURFACE_VALUES = new Set([
+  'core',
+  'important_secondary',
+  'peripheral',
+] as const);
+
+function extractSurveySurfaces(payload: unknown): DiscoverySurface[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const surfaces = (payload as { surfaces?: unknown }).surfaces;
+  if (!Array.isArray(surfaces)) return [];
+  const out: DiscoverySurface[] = [];
+  for (const [index, surface] of surfaces.entries()) {
+    const normalized = normalizeSurveySurface(surface, index);
+    if (normalized) out.push(normalized);
+  }
+  return out;
+}
+
+function normalizeSurveySurface(surface: unknown, index: number): DiscoverySurface | null {
+  if (!surface || typeof surface !== 'object') return null;
+  const record = surface as Record<string, unknown>;
+  const label = stringValue(record.label) ?? stringValue(record.url) ?? `Survey surface ${index + 1}`;
+  const candidate = {
+    id: stringValue(record.id) ?? `S${String(index + 1).padStart(3, '0')}`,
+    label,
+    kind: enumValue(record.kind, DISCOVERY_SURFACE_KINDS) ?? 'unknown',
+    url: stringValue(record.url) ?? '',
+    source: enumValue(record.source, DISCOVERY_SURFACE_SOURCES) ?? 'initial',
+    value:
+      enumValue(record.value, DISCOVERY_SURFACE_VALUES) ??
+      inferSurveySurfaceValue(String(record.kind ?? ''), label, stringValue(record.url)),
+    confidence: numberValue(record.confidence) ?? 0.65,
+    evidence: evidenceValue(record.evidence),
+    controls: controlsValue(record.controls),
+    prerequisites: stringArrayValue(record.prerequisites),
+  };
+  const parsed = DiscoverySurfaceSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : null;
+}
+
+function inferSurveySurfaceValue(
+  kind: string,
+  label: string,
+  url: string | undefined,
+): DiscoverySurface['value'] {
+  const text = `${kind} ${label} ${url ?? ''}`.toLowerCase();
+  if (/external|privacy|terms|legal|license|copyright|app store|google play/.test(text)) {
+    return 'peripheral';
+  }
+  if (/search|form|content|article|table/.test(text)) return 'core';
+  return 'important_secondary';
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function enumValue<T extends string>(value: unknown, allowed: Set<T>): T | undefined {
+  return typeof value === 'string' && allowed.has(value as T) ? (value as T) : undefined;
+}
+
+function evidenceValue(value: unknown): DiscoverySurface['evidence'] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as Record<string, unknown>;
+      const ref = stringValue(record.ref);
+      const note = stringValue(record.note) ?? '';
+      return ref ? { ref, note } : null;
+    })
+    .filter((item): item is { ref: string; note: string } => Boolean(item));
+}
+
+function controlsValue(value: unknown): DiscoverySurface['controls'] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, 20)
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as Record<string, unknown>;
+      return {
+        ...(stringValue(record.role) ? { role: stringValue(record.role) } : {}),
+        ...(stringValue(record.tag) ? { tag: stringValue(record.tag) } : {}),
+        ...(stringValue(record.name) ? { name: stringValue(record.name) } : {}),
+        ...(stringValue(record.href) ? { href: stringValue(record.href) } : {}),
+        ...(stringValue(record.type) ? { type: stringValue(record.type) } : {}),
+        ...(stringValue(record.ariaExpanded) ? { ariaExpanded: stringValue(record.ariaExpanded) } : {}),
+      };
+    })
+    .filter((item): item is DiscoverySurface['controls'][number] => Boolean(item));
+}
+
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => stringValue(item)).filter((item): item is string => Boolean(item))
+    : [];
 }
 
 export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
