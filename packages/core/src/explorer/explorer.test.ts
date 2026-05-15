@@ -117,7 +117,6 @@ describe('Explorer', () => {
         target_kind: 'web',
         model: 'claude-sonnet-4-6',
         max_steps: 10,
-        max_cost_usd: 1,
         timeout_s: 60,
       },
     });
@@ -156,7 +155,6 @@ describe('Explorer', () => {
         target_kind: 'web',
         model: 'claude-sonnet-4-6',
         max_steps: 3,
-        max_cost_usd: 100,
         timeout_s: 60,
       },
     });
@@ -181,7 +179,6 @@ describe('Explorer', () => {
         target_kind: 'web',
         model: 'claude-sonnet-4-6',
         max_steps: 10,
-        max_cost_usd: 1,
         timeout_s: 60,
       },
     });
@@ -206,7 +203,6 @@ describe('Explorer', () => {
         target_kind: 'web',
         model: 'claude-sonnet-4-6',
         max_steps: 10,
-        max_cost_usd: 1,
         timeout_s: 60,
         initial_plan_stack: ['verify checkout', 'verify signin'],
       },

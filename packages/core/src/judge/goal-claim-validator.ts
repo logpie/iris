@@ -66,18 +66,25 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
   }
 
   const goalWindows = sliceGoalWindows(trace, goals);
+  const goalStatusInfo = latestGoalStatusInfo(trace, goals);
+  const traceIndexById = new Map(trace.map((e, idx) => [e.id, idx]));
   let verifiedKept = 0;
   let downgraded = 0;
   const reasons: string[] = [];
 
   const next = goals.map((g) => {
     if (g.status !== 'verified') return g;
+    const statusInfo = goalStatusInfo.get(g.id);
     // Phase 14: every verified goal MUST have a notes field with substantive
     // explanation. Empty notes are how audit drift starts — verifications
     // get accepted without a paper trail tying claim to evidence. Downgrade
-    // verified→partial when notes is empty/trivial.
+    // verified→partial when notes is empty/trivial. If the Judge wrote a
+    // terse note but the Explorer's goal_status rationale is substantive, use
+    // that trace-backed rationale as the audit note instead of downgrading.
     const notes = (g.notes ?? '').trim();
-    if (notes.length < 20) {
+    const statusRationale = (statusInfo?.rationale ?? '').trim();
+    const noteBackfill = notes.length < 20 && statusRationale.length >= 20 ? statusRationale : '';
+    if (notes.length < 20 && !noteBackfill) {
       downgraded++;
       const reason = `${g.id}: verified without substantive notes (mandatory under Phase 14)`;
       reasons.push(reason);
@@ -89,28 +96,49 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
       };
     }
     const window = goalWindows.get(g.id) ?? [];
-    const artifacts = outcome_contract.collectOutcomeEvidence({
-      goal: { id: g.id, description: g.description },
-      goal_events: window,
+    const citedSet = collectCitedRefs({
+      goal: g,
+      trace,
+      traceIndexById,
+      statusInfo,
     });
-    const citedSet = new Set(g.evidence ?? []);
-    const cited = artifacts.some((a) => citedSet.has(a.ref));
+    const artifacts = [
+      ...outcome_contract.collectOutcomeEvidence({
+        goal: { id: g.id, description: g.description },
+        goal_events: window,
+      }),
+      ...collectCitedOutcomeEvidence({
+        goal: g,
+        citedRefs: citedSet,
+        trace,
+        traceIndexById,
+        statusInfo,
+        outcome_contract,
+      }),
+    ];
+    const uniqueArtifacts = uniqueArtifactsByRef(artifacts);
+    const cited = uniqueArtifacts.some((a) => citedSet.has(a.ref));
     const hasSideEffectOnly =
       !cited &&
       ((g.notes && SIDE_EFFECT_PATTERNS.some((p) => p.test(g.notes ?? ''))) ||
         // Also downgrade when there's no outcome artifact available at all —
         // means the goal window contained no interaction or no post-interaction
         // observation. Indistinguishable from "agent didn't really do it."
-        artifacts.length === 0);
+        uniqueArtifacts.length === 0);
 
     if (cited) {
       verifiedKept++;
-      return g;
+      return noteBackfill
+        ? {
+            ...g,
+            notes: notes ? `${notes} Explorer rationale: ${noteBackfill}` : noteBackfill,
+          }
+        : g;
     }
-    if (hasSideEffectOnly || artifacts.length === 0) {
+    if (hasSideEffectOnly || uniqueArtifacts.length === 0) {
       downgraded++;
       const reason =
-        artifacts.length === 0
+        uniqueArtifacts.length === 0
           ? `${g.id}: no outcome-shaped evidence in goal window`
           : `${g.id}: rationale cites side-effects only; no outcome artifact cited`;
       reasons.push(reason);
@@ -137,6 +165,158 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
     goals: next,
     summary: { verified_kept: verifiedKept, downgraded, downgrade_reasons: reasons },
   };
+}
+
+interface GoalStatusInfo {
+  idx: number;
+  session_id: string;
+  rationale: string;
+}
+
+function latestGoalStatusInfo(
+  trace: TraceEvent[],
+  goals: JudgeOutput['spec_compliance']['goals'],
+): Map<string, GoalStatusInfo> {
+  const out = new Map<string, GoalStatusInfo>();
+  const goalIdSet = new Set(goals.map((g) => g.id));
+  for (let i = 0; i < trace.length; i++) {
+    const e = trace[i];
+    if (!e || e.kind !== 'goal_status') continue;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    const gid = String(p.id ?? '');
+    if (!gid || !goalIdSet.has(gid)) continue;
+    const rationale =
+      typeof p.rationale === 'string' && p.rationale.trim().length > 0 ? p.rationale : '';
+    out.set(gid, { idx: i, session_id: sessionIdOf(e), rationale });
+  }
+  return out;
+}
+
+function collectCitedRefs(input: {
+  goal: JudgeOutput['spec_compliance']['goals'][number];
+  trace: TraceEvent[];
+  traceIndexById: Map<string, number>;
+  statusInfo: GoalStatusInfo | undefined;
+}): Set<string> {
+  const cited = new Set<string>();
+  for (const ref of input.goal.evidence ?? []) {
+    cited.add(resolveTraceRefTypo(ref, input.trace, input.traceIndexById, input.statusInfo?.idx) ?? ref);
+  }
+  if (!input.statusInfo) return cited;
+
+  for (const ref of Array.from(cited)) {
+    const idx = input.traceIndexById.get(ref);
+    if (idx === undefined || idx > input.statusInfo.idx) continue;
+    const event = input.trace[idx];
+    if (!event || event.kind !== 'goal_status') continue;
+    if (sessionIdOf(event) !== input.statusInfo.session_id) continue;
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    if (String(payload.id ?? '') !== input.goal.id) continue;
+    const evidenceEventIds = Array.isArray(payload.evidence_event_ids)
+      ? payload.evidence_event_ids
+      : [];
+    for (const evidenceRef of evidenceEventIds) {
+      if (typeof evidenceRef === 'string' && evidenceRef) cited.add(evidenceRef);
+    }
+  }
+
+  return cited;
+}
+
+function resolveTraceRefTypo(
+  ref: string,
+  trace: TraceEvent[],
+  traceIndexById: Map<string, number>,
+  maxIdx: number | undefined,
+): string | undefined {
+  if (traceIndexById.has(ref)) return ref;
+  if (!looksLikeTraceId(ref)) return undefined;
+  const candidates = trace.filter((event, idx) => {
+    if (maxIdx !== undefined && idx > maxIdx) return false;
+    if (event.id.slice(0, 18) === ref.slice(0, 18) && Math.abs(event.id.length - ref.length) <= 2) {
+      return true;
+    }
+    return event.id.slice(0, 10) === ref.slice(0, 10) && editDistanceAtMostOne(event.id, ref);
+  });
+  return candidates.length === 1 ? candidates[0]?.id : undefined;
+}
+
+function looksLikeTraceId(ref: string): boolean {
+  return /^01[0-9A-HJKMNP-TV-Z]{20,28}$/i.test(ref);
+}
+
+function editDistanceAtMostOne(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  if (a.length === b.length) {
+    let mismatches = 0;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) mismatches++;
+      if (mismatches > 1) return false;
+    }
+    return true;
+  }
+  const shorter = a.length < b.length ? a : b;
+  const longer = a.length < b.length ? b : a;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < shorter.length && j < longer.length) {
+    if (shorter[i] === longer[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    edits++;
+    if (edits > 1) return false;
+    j++;
+  }
+  return true;
+}
+
+function collectCitedOutcomeEvidence(input: {
+  goal: JudgeOutput['spec_compliance']['goals'][number];
+  citedRefs: Set<string>;
+  trace: TraceEvent[];
+  traceIndexById: Map<string, number>;
+  statusInfo: GoalStatusInfo | undefined;
+  outcome_contract: OutcomeContract;
+}): ReturnType<OutcomeContract['collectOutcomeEvidence']> {
+  const statusInfo = input.statusInfo;
+  if (!statusInfo) return [];
+  const out: ReturnType<OutcomeContract['collectOutcomeEvidence']> = [];
+  for (const ref of input.citedRefs) {
+    const evidenceIdx = input.traceIndexById.get(ref);
+    if (evidenceIdx === undefined || evidenceIdx > statusInfo.idx) continue;
+    const evidenceEvent = input.trace[evidenceIdx];
+    if (!evidenceEvent || sessionIdOf(evidenceEvent) !== statusInfo.session_id) continue;
+    // App Server explorers can finish goals out of order and emit goal_status
+    // calls in a later batch. The sequential window then excludes the cited
+    // post-action observation even though the citation is valid and predates
+    // the goal_status. Re-run the adapter contract on the same-session prefix
+    // ending at the cited event, then accept only the artifact that was cited.
+    const prefix = input.trace
+      .slice(0, evidenceIdx + 1)
+      .filter((e) => sessionIdOf(e) === statusInfo.session_id)
+      .map(toContractEvent);
+    const artifacts = input.outcome_contract.collectOutcomeEvidence({
+      goal: { id: input.goal.id, description: input.goal.description },
+      goal_events: prefix,
+    });
+    out.push(...artifacts.filter((a) => a.ref === ref));
+  }
+  return out;
+}
+
+function uniqueArtifactsByRef(
+  artifacts: ReturnType<OutcomeContract['collectOutcomeEvidence']>,
+): ReturnType<OutcomeContract['collectOutcomeEvidence']> {
+  const seen = new Set<string>();
+  return artifacts.filter((artifact) => {
+    if (seen.has(artifact.ref)) return false;
+    seen.add(artifact.ref);
+    return true;
+  });
 }
 
 // Slice trace events into per-goal windows. A goal's window starts at the

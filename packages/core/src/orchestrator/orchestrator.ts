@@ -7,6 +7,7 @@ import { Explorer, type ExplorerResult } from '../explorer/explorer.js';
 import type { PersonaName } from '../explorer/personas/index.js';
 import { judgeWithEnsemble } from '../judge/ensemble.js';
 import { validateFindings } from '../judge/evidence-validator.js';
+import { ensureRubricScoreCoverage } from '../judge/score-coverage.js';
 import {
   applyGoalClaimValidationToJudgeOutput,
   validateGoalClaims,
@@ -17,6 +18,7 @@ import { runPreflight } from '../preflight/preflight.js';
 import { buildReportHtml } from '../report/report-html.js';
 import { type ReportJson, buildReportJson } from '../report/report-json.js';
 import { buildReportMd } from '../report/report-md.js';
+import { collectClaimEvidenceArtifacts } from '../report/evidence-clips.js';
 import { type InterpretedSpec, interpretSpec } from '../spec-interpreter/interpreter.js';
 import { readTraceArray } from '../trace/reader.js';
 import { TraceWriter } from '../trace/writer.js';
@@ -39,6 +41,7 @@ export interface OrchestratorRunConfig {
   explorer_model: string;
   judge_model: string;
   no_html: boolean;
+  no_clips?: boolean;
   persona?: PersonaName;
   // Phase 5 additions
   steps_per_goal?: number;
@@ -290,6 +293,7 @@ export class Orchestrator {
           model: config.judge_model,
         });
       }
+      judgeOutput = ensureRubricScoreCoverage(judgeOutput, config.rubric_profiles);
 
       // Phase 5 G3: validate findings against the trace. Deterministic step;
       // drops findings whose cited event ids don't exist and downgrades severe
@@ -350,34 +354,21 @@ export class Orchestrator {
       };
     }
 
-    // 7.5. Phase 6 F3: per-finding video clips. After validator, before report.
-    // Build EvidenceRef[] from each kept finding's cited trace event IDs.
-    // Inject the {event_id → ts} map so the adapter can compute clip windows
-    // for events the Judge cites (which are ULIDs from trace.jsonl, not the
-    // observation_refs the adapter tracks internally).
     const clipPaths: Record<string, string> = {};
-    if (this.deps.adapter.injectEventTimestamps && this.deps.adapter.sliceEvidence) {
-      const tsMap: Record<string, number> = {};
-      for (const e of traceEvents) tsMap[e.id] = e.ts;
-      this.deps.adapter.injectEventTimestamps(tsMap);
-      const refs = judgeOutput.findings
-        .filter((f) => f.evidence.length > 0)
-        .map((f) => ({ finding_id: f.id, event_ids: f.evidence }));
-      if (refs.length > 0) {
-        try {
-          const evidenceFiles = await this.deps.adapter.sliceEvidence(refs);
-          for (const ef of evidenceFiles) {
-            if (ef.kind === 'video' || ef.kind === 'screenshot') {
-              clipPaths[ef.finding_id] = ef.path;
-            }
-          }
-        } catch (err) {
-          // Slicing is best-effort. Don't fail the run if ffmpeg breaks.
-          writeFileSync(
-            join(config.out_dir, 'clips-error.txt'),
-            err instanceof Error ? err.message : String(err),
-          );
-        }
+    if (!config.no_clips) {
+      try {
+        const evidence = await collectClaimEvidenceArtifacts({
+          adapter: this.deps.adapter,
+          judge: judgeOutput,
+          trace: traceEvents,
+        });
+        Object.assign(clipPaths, evidence.clips);
+      } catch (err) {
+        // Slicing is best-effort. Don't fail the run if ffmpeg breaks.
+        writeFileSync(
+          join(config.out_dir, 'clips-error.txt'),
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
 

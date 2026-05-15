@@ -1,5 +1,8 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { computeClipWindows, isFfmpegAvailable } from './ffmpeg-slice.js';
+import { computeClipWindows, isFfmpegAvailable, selectScreenshotFrames } from './ffmpeg-slice.js';
 
 describe('computeClipWindows', () => {
   it('returns empty for empty refs', () => {
@@ -28,8 +31,8 @@ describe('computeClipWindows', () => {
       recording_duration_s: 60,
     });
     expect(out).toHaveLength(1);
-    expect(out[0]?.start_s).toBeCloseTo(8.5);
-    expect(out[0]?.duration_s).toBeCloseTo(4.0);
+    expect(out[0]?.start_s).toBeCloseTo(4);
+    expect(out[0]?.duration_s).toBeCloseTo(8);
   });
 
   it('clamps start_s to 0', () => {
@@ -91,5 +94,22 @@ describe('isFfmpegAvailable', () => {
   it('returns boolean (presence varies by env)', async () => {
     const r = await isFfmpegAvailable();
     expect(typeof r).toBe('boolean');
+  });
+});
+
+describe('selectScreenshotFrames', () => {
+  it('chooses neighboring frames around the claim anchor', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'iris-frames-'));
+    const frames = ['A', 'B', 'C', 'D', 'E'].map((ref, index) => {
+      const path = join(dir, `${ref}.png`);
+      writeFileSync(path, ref);
+      return { ref, path, ts: index };
+    });
+
+    expect(
+      selectScreenshotFrames({ finding_id: 'G1', event_ids: ['C'] }, frames).map(
+        (frame) => frame.ref,
+      ),
+    ).toEqual(['A', 'B', 'C', 'D']);
   });
 });

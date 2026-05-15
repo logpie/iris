@@ -55,6 +55,70 @@ describe('validateFindings', () => {
     expect(out.kept[0]?.unverified_backing).toBe(false);
   });
 
+  it('discards machine-only axe findings with no visible user impact', () => {
+    const trace = [ev('E1', 'probe_result', { probe: 'axe', summary: { violations: 1 } })];
+    const out = validateFindings(
+      [
+        finding({
+          category: 'a11y',
+          severity: 'major',
+          title: 'Language select lacks accessible name',
+          evidence: ['E1'],
+          rationale: 'Axe reported a critical select-name issue on the homepage.',
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe('machine_only_probe_no_user_visible_impact');
+  });
+
+  it('discards machine-only console findings with no visible user impact', () => {
+    const trace = [
+      ev('E1', 'probe_result', {
+        probe: 'console_errors_since',
+        summary: { error_count: 1, app_error_count: 1 },
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          category: 'bug',
+          severity: 'minor',
+          title: 'One console error appeared during normal use',
+          evidence: ['E1'],
+          rationale: 'The run reported one browser console error, so the flow was not fully clean.',
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe('machine_only_probe_no_user_visible_impact');
+  });
+
+  it('keeps major accessibility severity when cited evidence includes visible user impact', () => {
+    const trace = [
+      ev('E1', 'probe_result', { probe: 'axe', summary: { violations: 1 } }),
+      ev('E2', 'observation', {
+        summary: 'The checkout form shows an error and cannot proceed after keyboard submit.',
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          category: 'a11y',
+          severity: 'major',
+          title: 'Keyboard users cannot complete checkout',
+          evidence: ['E1', 'E2'],
+          rationale: 'The trace shows the checkout form cannot be completed from the keyboard.',
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept[0]?.severity).toBe('major');
+    expect(out.kept[0]?.severity_calibrated).toBeUndefined();
+  });
+
   it('keeps a finding backed by a failed action_result', () => {
     const trace = [
       ev('E1', 'action', { tool: 'click' }),
@@ -70,6 +134,33 @@ describe('validateFindings', () => {
     ];
     const out = validateFindings([finding({ severity: 'minor', evidence: ['E1'] })], trace);
     expect(out.kept[0]?.unverified_backing).toBe(false);
+  });
+
+  it('discards persistent banner findings contradicted by a cited post-close observation', () => {
+    const trace = [
+      ev('A1', 'action', { tool: 'click', args: { selector: 'button:has-text("Close")' } }),
+      ev('A2', 'action_result', { tool: 'click', ok: true }),
+      ev('O1', 'observation', {
+        summary:
+          'Wikipedia homepage. Search Wikipedia. Footer includes support our work with a donation and app download links.',
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          severity: 'minor',
+          category: 'ux',
+          title: 'Donation banner close is not sticky',
+          rationale: 'Closing the banner did not keep it dismissed and it still dominated the page.',
+          evidence: ['O1'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe(
+      'dismissal_finding_contradicted_by_post_close_observation',
+    );
   });
 
   it('treats tentative_finding events as backing', () => {

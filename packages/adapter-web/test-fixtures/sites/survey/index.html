@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Survey — Iris fixture</title>
+    <style>
+      body { font-family: sans-serif; margin: 0; }
+      header { padding: 16px; background: #f1f1f1; position: sticky; top: 0; }
+      #menu-panel { display: none; padding: 12px; border-top: 1px solid #ccc; }
+      #menu-panel.open { display: block; }
+      main { min-height: 1400px; padding: 24px; }
+      footer { padding: 24px; background: #222; color: white; }
+      footer a { color: white; margin-right: 16px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Survey Fixture</h1>
+      <button id="main-menu" aria-expanded="false">Main menu</button>
+      <nav id="menu-panel">
+        <a href="/settings.html">Settings</a>
+        <a href="/billing.html">Billing</a>
+      </nav>
+    </header>
+    <main>
+      <p>Primary surface above the fold.</p>
+      <form action="/article.html">
+        <label>
+          Search docs
+          <input type="search" name="q" placeholder="Search docs">
+        </label>
+        <button type="submit">Search</button>
+      </form>
+      <p style="margin-top: 900px">Deep content section with documentation cards.</p>
+    </main>
+    <footer>
+      <a href="/privacy.html">Privacy Policy</a>
+      <a href="/terms.html">Terms of Use</a>
+    </footer>
+    <script>
+      document.getElementById('main-menu').addEventListener('click', () => {
+        const panel = document.getElementById('menu-panel');
+        const open = !panel.classList.contains('open');
+        panel.classList.toggle('open', open);
+        document.getElementById('main-menu').setAttribute('aria-expanded', String(open));
+      });
+    </script>
+  </body>
+</html>

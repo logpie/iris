@@ -22,6 +22,7 @@ export const WEB_INTERACTION_KIT: InteractionKit = {
   primitives: [
     { name: 'click', user_action: 'click' },
     { name: 'type', user_action: 'type-text' },
+    { name: 'select_option', user_action: 'select-dropdown-option' },
     { name: 'press', user_action: 'press-single-key' },
     { name: 'key_chord', user_action: 'press-modifier-chord' },
     { name: 'paste', user_action: 'paste-text' },
@@ -58,6 +59,7 @@ export const WEB_INTERACTION_KIT: InteractionKit = {
 const INTERACTION_TOOLS = new Set([
   'click',
   'type',
+  'select_option',
   'press',
   'key_chord',
   'paste',
@@ -106,6 +108,9 @@ export function collectWebOutcomeEvidence(
   //   - vision_describe action_results — these carry a `description` field
   //     naming what the vision model saw on the post-interaction page. The
   //     description IS the outcome evidence the Judge needs to cite.
+  //   - ui_state probe_results with post-interaction browser/product state
+  //     (hash, scroll, or matched visible selectors), useful for section-nav and
+  //     selection-state goals where the state probe is the most precise proof.
   //   - the paired `action` events that produced the above results — the
   //     Judge often cites the `action` event id (not the action_result),
   //     so accept both as equivalent.
@@ -150,6 +155,13 @@ export function collectWebOutcomeEvidence(
         });
       }
     }
+    if (e.kind === 'probe_result' && isUiStateOutcomeProbe(p)) {
+      artifacts.push({
+        kind: 'screenshot',
+        ref: e.id,
+        note: uiStateOutcomeNote(p),
+      });
+    }
     // The Judge often cites the `action` event id rather than the
     // corresponding action_result. Accept the action id for screenshot /
     // vision_describe actions taken after the interaction.
@@ -161,6 +173,38 @@ export function collectWebOutcomeEvidence(
     }
   }
   return artifacts;
+}
+
+function isUiStateOutcomeProbe(payload: Record<string, unknown>): boolean {
+  if (String(payload.probe ?? '') !== 'ui_state') return false;
+  const summary = asRecord(payload.summary);
+  if (typeof summary.hash === 'string' && summary.hash.trim()) return true;
+  const scroll = asRecord(summary.scroll);
+  const scrollY = typeof scroll.y === 'number' ? scroll.y : 0;
+  const scrollX = typeof scroll.x === 'number' ? scroll.x : 0;
+  if (scrollY > 0 || scrollX > 0) return true;
+  const found = typeof summary.selectors_found === 'number' ? summary.selectors_found : 0;
+  return found > 0;
+}
+
+function uiStateOutcomeNote(payload: Record<string, unknown>): string {
+  const summary = asRecord(payload.summary);
+  const parts: string[] = ['post-interaction ui_state'];
+  if (typeof summary.hash === 'string' && summary.hash.trim()) parts.push(`hash=${summary.hash}`);
+  const scroll = asRecord(summary.scroll);
+  const scrollY = typeof scroll.y === 'number' ? scroll.y : 0;
+  const scrollX = typeof scroll.x === 'number' ? scroll.x : 0;
+  if (scrollY > 0 || scrollX > 0) parts.push(`scroll=(${scrollX},${scrollY})`);
+  const found = typeof summary.selectors_found === 'number' ? summary.selectors_found : 0;
+  const total = typeof summary.selectors_total === 'number' ? summary.selectors_total : undefined;
+  if (found > 0) parts.push(`selectors_found=${found}${total === undefined ? '' : `/${total}`}`);
+  return parts.join(' ');
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 export const WEB_OUTCOME_CONTRACT: OutcomeContract = {

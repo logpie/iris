@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { LlmClient } from '../llm/client.js';
 import { readTraceArray } from '../trace/reader.js';
 import { JUDGE_SYSTEM, buildJudgeUserPrompt, buildTraceDigest } from './prompts.js';
+import { ensureRubricScoreCoverage } from './score-coverage.js';
 
 export const JudgeFindingSchema = z.object({
   id: z.string(),
@@ -38,15 +39,34 @@ export const JudgeFindingSchema = z.object({
   // action_result that looks like an Explorer selector-miss rather than a
   // real app bug. Renders an inline tag in the report.
   likely_explorer_error: z.boolean().optional(),
+  // Set by the validator when raw technical severity was capped to product
+  // impact. Example: axe-only label/name violations should affect accessibility
+  // scoring but not become major product findings by themselves.
+  severity_calibrated: z.boolean().optional(),
 });
 export type JudgeFinding = z.infer<typeof JudgeFindingSchema>;
+
+const DiscardedFindingSchema = z
+  .object({
+    tentative_event_id: z.string().optional(),
+    id: z.string().optional(),
+    title: z.string().optional(),
+    reason: z.string().optional(),
+    rationale: z.string().optional(),
+  })
+  .transform((item) => ({
+    tentative_event_id:
+      item.tentative_event_id ?? item.id ?? (item.title ? `judge:${item.title}` : 'judge:unknown'),
+    reason:
+      item.reason ??
+      item.rationale ??
+      (item.title ? `Discarded by Judge: ${item.title}` : 'Discarded by Judge without a reason.'),
+  }));
 
 export const JudgeOutputSchema = z.object({
   v: z.literal(1),
   findings: z.array(JudgeFindingSchema),
-  discarded_findings: z
-    .array(z.object({ tentative_event_id: z.string(), reason: z.string() }))
-    .default([]),
+  discarded_findings: z.array(DiscardedFindingSchema).default([]),
   scores: z.object({
     overall: z.object({ score: z.number(), weighted_from: z.array(z.string()) }),
     profiles: z.record(
@@ -58,7 +78,7 @@ export const JudgeOutputSchema = z.object({
             // (e.g., destructive_confirmed when no destructive surface was visited).
             score: z.number().nullable(),
             rationale: z.string(),
-            evidence: z.array(z.string()),
+            evidence: z.array(z.string()).default([]),
           }),
         ),
       }),
@@ -180,6 +200,6 @@ export class Judge {
     if (!jsonMatch)
       throw new Error(`Judge returned no JSON object:\n${response.text.slice(0, 500)}`);
     const parsed = JSON.parse(jsonMatch[0]);
-    return JudgeOutputSchema.parse(parsed);
+    return ensureRubricScoreCoverage(JudgeOutputSchema.parse(parsed), inputs.rubric_profiles);
   }
 }

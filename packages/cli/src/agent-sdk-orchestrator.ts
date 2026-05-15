@@ -50,6 +50,7 @@ export interface AgentSdkRunConfig {
   explorer_model: string;
   judge_model: string;
   no_html: boolean;
+  no_clips?: boolean;
   persona?: string;
   /** Phase 5: per-goal budget. If set, max_steps is recomputed as
    * goals * steps_per_goal + free_exploration_steps. */
@@ -340,6 +341,7 @@ export async function runIrisViaSdk(
   // 3. Spec interpreter (one SDK single-shot call)
   let interpreted: specInterpreter.InterpretedSpec | undefined;
   let totalCost = 0;
+  let discoveryExplorerContext = '';
   if (config.mode === 'grounded' && specText) {
     process.stderr.write('iris: running spec interpreter via Agent SDK...\n');
     const r = await runAgentSdkSingleShot({
@@ -496,6 +498,14 @@ export async function runIrisViaSdk(
       const obs = await adapter.observe();
       // Capture a screenshot via the adapter so discovery sees what the user sees.
       const ssResult = await adapter.callTool('screenshot', { full_page: false });
+      const survey = await adapter
+        .discoverySurvey?.({ max_scrolls: 2, peek_menus: true, dismiss_banners: true })
+        .catch((err: unknown) => {
+          process.stderr.write(
+            `iris: discovery survey failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+          return undefined;
+        });
       const ssPath =
         ssResult.ok && ssResult.evidence_refs && ssResult.evidence_refs.length > 0
           ? ssResult.evidence_refs[0]
@@ -507,6 +517,8 @@ export async function runIrisViaSdk(
         const discoveryResult = await discoveryMod.runDiscovery({
           url: config.target.url,
           observation_summary: obs.summary,
+          ...(survey?.summary ? { survey_summary: survey.summary } : {}),
+          ...(survey?.payload ? { survey_payload: survey.payload } : {}),
           screenshot_path: ssPath,
           model: config.explorer_model,
           discoverer: async (i) =>
@@ -536,14 +548,26 @@ export async function runIrisViaSdk(
             payload: {
               product_description: out.product_description,
               goals: out.goals,
+              surfaces: out.surfaces,
+              journeys: out.journeys,
+              ...(out.coverage_plan ? { coverage_plan: out.coverage_plan } : {}),
               focus_areas: out.focus_areas,
               hints: out.hints,
+              ...(survey?.summary ? { survey_summary: survey.summary.slice(0, 4000) } : {}),
+              ...(survey?.payload ? { survey_payload: survey.payload } : {}),
             },
           });
+          if (survey?.payload) {
+            writeFileSync(
+              join(config.out_dir, 'discovery-survey.json'),
+              `${JSON.stringify(survey.payload, null, 2)}\n`,
+            );
+          }
           writeFileSync(
             join(config.out_dir, 'discovery.json'),
             `${JSON.stringify(out, null, 2)}\n`,
           );
+          discoveryExplorerContext = discoveryMod.formatDiscoveryExplorerContext(out);
           // Shape into InterpretedSpec so downstream code paths converge.
           interpreted = {
             v: 1,
@@ -602,12 +626,12 @@ export async function runIrisViaSdk(
   const goalList = hasGoals ? goals.map((g, i) => `  G${i + 1}. ${g.description}`).join('\n') : '';
   const perGoalLine =
     stepsPerGoal && stepsPerGoal > 0
-      ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. For verified goals, include evidence_event_ids with the post-action observation/screenshot/vision_describe event id that shows the outcome. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on.`
+    ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. For verified goals, include evidence_event_ids with the post-action observation/screenshot/vision_describe event id that shows the outcome. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on. Do not mark a goal partial until you have tried the strongest cheap proof available; for focus, layout, sidebar, collapse, selected-state, text-size, width, or color-mode goals, use the ui_state probe after interaction. If Iris reports that budget remains for partial retries, retry only those partial goals before stopping.`
       : '';
 
   const initialUserPrompt = `Target: ${config.target.url}
 
-${hasGoals ? `What this app is supposed to do (from the spec):\n${goalList}\n\nYour job: USE THIS APP. Verify each spec goal by performing it as a normal user would.\n\nFor each goal, in order:\n  1. Find the relevant UI element (input, button, link).\n  2. Interact with it normally — type text, click, submit. Don't just look.\n  3. Observe what changed.\n  4. Call \`mcp__iris__goal_status\` with the goal id (G1, G2, …), status (verified / partial / blocked / skipped), a one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome.\n  5. If you find a bug, ALSO call \`mcp__iris__note_finding\` with category="bug".\n\n${perGoalLine}\n` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons. Don't just look at the page.\n`}
+${hasGoals ? `What this app is supposed to do (from the spec):\n${goalList}\n\n${discoveryExplorerContext ? `${discoveryExplorerContext}\n\n` : ''}Your job: USE THIS APP. Verify each spec goal by performing it as a normal user would.\n\nFor each goal, in order:\n  1. Find the relevant UI element (input, button, link).\n  2. Interact with it normally — type text, click, submit. Don't just look.\n  3. Observe what changed.\n  4. Call \`mcp__iris__goal_status\` with the goal id (G1, G2, …), status (verified / partial / blocked / skipped), a one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome.\n  5. If you find a bug, ALSO call \`mcp__iris__note_finding\` with category="bug".\n\n${perGoalLine}\n` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons. Don't just look at the page.\n`}
 PRIORITY ORDER:
   1. HAPPY PATHS FIRST. Make the primary features work before anything else. If the app is a TODO list, your first action is to add a todo. If it's a sign-in form, your first action is to fill it in and submit.
   2. AFTER happy paths complete, run \`mcp__iris__axe\` and \`mcp__iris__console_errors_since\` once to catch passive issues.
@@ -1072,6 +1096,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       process.stderr.write(`iris: Judge done — $${judgeResp.cost_usd.toFixed(2)}\n`);
       judgeOutput = parseJudgeOutputFromResponse(judgeResp, 'Judge');
     }
+    judgeOutput = judgeMod.ensureRubricScoreCoverage(judgeOutput, config.rubric_profiles);
 
     // Phase 5 G3: validate findings against the trace.
     const validation = judgeMod.validateFindings(judgeOutput.findings, events);
@@ -1136,32 +1161,25 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
     };
   }
 
-  // 7.5. Phase 6 F3: per-finding video clips.
   const clipPaths: Record<string, string> = {};
   // Phase 16: clip slicing in parallel mode would need per-session video
   // attribution per finding — skip for now and document as known limitation.
-  if (!hasParallelGoals && adapter.injectEventTimestamps && adapter.sliceEvidence) {
-    const tsMap: Record<string, number> = {};
-    for (const e of events) tsMap[e.id] = e.ts;
-    adapter.injectEventTimestamps(tsMap);
-    const refs = judgeOutput.findings
-      .filter((f) => f.evidence.length > 0)
-      .map((f) => ({ finding_id: f.id, event_ids: f.evidence }));
-    if (refs.length > 0) {
-      try {
-        const evidenceFiles = await adapter.sliceEvidence(refs);
-        for (const ef of evidenceFiles) {
-          if (ef.kind === 'video' || ef.kind === 'screenshot') {
-            clipPaths[ef.finding_id] = ef.path;
-          }
-        }
-        process.stderr.write(`iris: sliced ${evidenceFiles.length} per-finding evidence files\n`);
-      } catch (err) {
-        writeFileSync(
-          join(config.out_dir, 'clips-error.txt'),
-          err instanceof Error ? err.message : String(err),
-        );
+  if (!config.no_clips && !hasParallelGoals) {
+    try {
+      const evidence = await reportMod.collectClaimEvidenceArtifacts({
+        adapter,
+        judge: judgeOutput,
+        trace: events,
+      });
+      Object.assign(clipPaths, evidence.clips);
+      if (evidence.files.length > 0) {
+        process.stderr.write(`iris: sliced ${evidence.files.length} claim evidence files\n`);
       }
+    } catch (err) {
+      writeFileSync(
+        join(config.out_dir, 'clips-error.txt'),
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 

@@ -4,6 +4,7 @@ import { WebTargetAdapter } from '@iris/adapter-web';
 import { ModeSchema, type PersonaName, orchestrator } from '@iris/core';
 import { Command } from 'commander';
 import { runIrisViaSdk } from '../agent-sdk-orchestrator.js';
+import { runIrisViaCodexAppServer } from '../codex-app-server-orchestrator.js';
 import { inferMode } from '../flags.js';
 import { buildLlmClient } from '../llm-factory.js';
 import { loadRubricsByNames } from '../load-rubrics.js';
@@ -97,7 +98,7 @@ export function evalCommand(): Command {
     )
     .option(
       '--transport <kind>',
-      'sdk | api | cli — which LLM transport to use. sdk = local Claude Code subscription via Agent SDK (fast, no API key). api = raw Anthropic API (needs ANTHROPIC_API_KEY). cli = `claude -p` subprocess (slow, no API key, fallback). Default: sdk if no API key set, else api.',
+      'sdk | api | cli | codex-appserver | codex — which LLM transport to use. sdk = local Claude Code subscription via Agent SDK. api = raw Anthropic API. cli = `claude -p` fallback. codex/codex-appserver = Codex App Server dynamic-tool harness. Default: sdk if no API key set, else api.',
     )
     .action(async (target: string, opts: Record<string, unknown>) => {
       const explicitMode = opts.mode as string | undefined;
@@ -140,7 +141,13 @@ export function evalCommand(): Command {
       // Choose transport
       const explicitTransport = opts.transport as string | undefined;
       const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-      const transport = explicitTransport ?? (hasApiKey ? 'api' : 'sdk');
+      const transportRaw = explicitTransport ?? (hasApiKey ? 'api' : 'sdk');
+      const transport = transportRaw === 'codex' ? 'codex-appserver' : transportRaw;
+      if (!['sdk', 'api', 'cli', 'codex-appserver'].includes(transport)) {
+        throw new Error(
+          `unknown --transport ${transportRaw}; expected sdk, api, cli, codex-appserver, or codex`,
+        );
+      }
       process.stderr.write(`iris: transport=${transport}\n`);
 
       // Phase 16: build an adapter factory so the SDK orchestrator can
@@ -271,6 +278,7 @@ export function evalCommand(): Command {
             explorer_model: opts.explorerModel as string,
             judge_model: opts.judgeModel as string,
             no_html: opts.html === false,
+            no_clips: opts.clips === false,
             no_preflight: opts.preflight === false,
             preflight_timeout_s: opts.preflightTimeoutS as number,
             judge_ensemble: !!opts.judgeEnsemble,
@@ -288,6 +296,36 @@ export function evalCommand(): Command {
           // adapters when --parallel N>1. For N=1 the factory returns the
           // already-created adapter on first call.
           createAdapter,
+        );
+      } else if (transport === 'codex-appserver') {
+        result = await runIrisViaCodexAppServer(
+          {
+            target: { kind: 'web', url: target },
+            mode,
+            out_dir: outDir,
+            ...(specText !== undefined ? { spec_text: specText } : {}),
+            ...(specPath !== undefined ? { spec_path: specPath } : {}),
+            rubric_profiles: rubricProfiles,
+            max_steps: opts.maxSteps as number,
+            steps_per_goal: opts.stepsPerGoal as number,
+            free_exploration_steps: opts.freeExplorationSteps as number,
+            timeout_s: opts.timeout as number,
+            ...(opts.threshold !== undefined ? { threshold: opts.threshold as number } : {}),
+            explorer_model: opts.explorerModel as string,
+            judge_model: opts.judgeModel as string,
+            no_html: opts.html === false,
+            no_clips: opts.clips === false,
+            no_preflight: opts.preflight === false,
+            preflight_timeout_s: opts.preflightTimeoutS as number,
+            discover: opts.discover !== false,
+            expand_goals: opts.expand !== false,
+            max_expansion_goals: opts.maxExpansionGoals as number,
+            ...(initialTasks.length > 0
+              ? { initial_tasks: initialTasks.map((description) => ({ description })) }
+              : {}),
+            ...(opts.persona !== undefined ? { persona: opts.persona as string } : {}),
+          },
+          adapter,
         );
       } else {
         const explorerClient = buildLlmClient({ use_claude_cli: transport === 'cli' });
@@ -313,6 +351,7 @@ export function evalCommand(): Command {
           explorer_model: opts.explorerModel as string,
           judge_model: opts.judgeModel as string,
           no_html: opts.html === false,
+          no_clips: opts.clips === false,
           no_preflight: opts.preflight === false,
           preflight_timeout_s: opts.preflightTimeoutS as number,
           persona: opts.persona as PersonaName,

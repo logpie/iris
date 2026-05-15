@@ -187,6 +187,8 @@ const META_TOOL_SPECS = [
         description: { type: 'string' },
         rationale: { type: 'string' },
         priority: { type: 'string', enum: ['should', 'could'] },
+        surface_id: { type: 'string' },
+        journey_id: { type: 'string' },
       },
       required: ['description', 'rationale'],
     },
@@ -448,6 +450,8 @@ export class Explorer {
     description: string;
     rationale: string;
     priority?: 'should' | 'could';
+    surface_id?: string;
+    journey_id?: string;
   }): Promise<MetaToolResult> {
     if (this.expansionCount >= this.maxExpansionGoals) {
       return { ok: false, error: `expansion cap reached (${this.maxExpansionGoals})` };
@@ -460,6 +464,8 @@ export class Explorer {
       description: args.description,
       rationale: args.rationale,
       priority: args.priority ?? 'should',
+      ...(args.surface_id ? { surface_id: args.surface_id } : {}),
+      ...(args.journey_id ? { journey_id: args.journey_id } : {}),
     });
     if (this.goalTracker) {
       this.goalTracker.appendGoal({ id: newId, description: args.description });
@@ -630,7 +636,13 @@ export class Explorer {
         return meta.push_subgoal(w, s, u as PushSubgoalArgs, ulid, step, tk);
       case 'propose_goal':
         return this.handleProposeGoal(
-          u as { description: string; rationale: string; priority?: 'should' | 'could' },
+          u as {
+            description: string;
+            rationale: string;
+            priority?: 'should' | 'could';
+            surface_id?: string;
+            journey_id?: string;
+          },
         );
       case 'give_up':
         return meta.give_up(w, s, u as GiveUpArgs, ulid, step, tk);

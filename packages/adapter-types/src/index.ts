@@ -84,6 +84,86 @@ export interface Observation {
   payload?: Record<string, unknown>;
 }
 
+export type DiscoverySurfaceKind =
+  | 'page'
+  | 'nav'
+  | 'form'
+  | 'search'
+  | 'menu'
+  | 'modal'
+  | 'banner'
+  | 'content'
+  | 'table'
+  | 'media'
+  | 'account'
+  | 'settings'
+  | 'footer'
+  | 'external'
+  | 'unknown';
+
+export type DiscoverySurfaceSource =
+  | 'initial'
+  | 'scroll'
+  | 'menu_peek'
+  | 'banner_dismiss'
+  | 'primary_journey'
+  | 'sample_nav';
+
+export interface DiscoverySurveyControl {
+  tag?: string;
+  role?: string;
+  name?: string;
+  href?: string;
+  type?: string;
+  ariaExpanded?: string;
+  checked?: boolean;
+  disabled?: boolean;
+}
+
+export interface DiscoverySurveySurface {
+  id: string;
+  label: string;
+  kind: DiscoverySurfaceKind;
+  url: string;
+  source: DiscoverySurfaceSource;
+  value?: 'core' | 'important_secondary' | 'peripheral';
+  confidence?: number;
+  evidence?: Array<{ ref: string; note: string }>;
+  controls?: DiscoverySurveyControl[];
+  prerequisites?: string[];
+}
+
+export interface DiscoverySurveyCapture {
+  id: string;
+  label: string;
+  url: string;
+  title?: string;
+  scrollY?: number;
+  text?: string;
+  controls?: DiscoverySurveyControl[];
+}
+
+export interface DiscoverySurveyPayload {
+  v: 2;
+  captures: DiscoverySurveyCapture[];
+  surfaces: DiscoverySurveySurface[];
+  links?: Array<{
+    label: string;
+    href: string;
+    same_origin: boolean;
+    source: DiscoverySurfaceSource;
+  }>;
+  limits?: Record<string, unknown>;
+  // Backward-compatible alias for older consumers/tests that looked for
+  // `payload.sections` before v2 introduced structured captures.
+  sections?: DiscoverySurveyCapture[];
+}
+
+export interface DiscoverySurvey {
+  summary: string;
+  payload?: DiscoverySurveyPayload | Record<string, unknown>;
+}
+
 // Phase 5: preflight probe. Adapters return raw measurements; the
 // preflight/checks module turns these into pass/fail check results.
 export interface PreflightProbe {
@@ -166,6 +246,16 @@ export interface TargetAdapter {
   callTool(name: string, args: Record<string, unknown>): Promise<ToolResult>;
 
   observe(): Promise<Observation>;
+
+  // Optional bounded, read-mostly survey for no-spec discovery. Implementations
+  // should avoid mutating the primary run state; web adapters use a disposable
+  // browser context.
+  discoverySurvey?(opts?: {
+    max_scrolls?: number;
+    peek_menus?: boolean;
+    dismiss_banners?: boolean;
+    sample_links?: number;
+  }): Promise<DiscoverySurvey>;
 
   listProbes(): ProbeSpec[];
   runProbe(name: string, args: Record<string, unknown>): Promise<ProbeResult>;

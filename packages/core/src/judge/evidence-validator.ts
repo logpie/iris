@@ -135,6 +135,43 @@ function notificationsProbeShowedSomething(trace: TraceEvent[]): boolean {
   return false;
 }
 
+function calibrateProductImpactSeverity(
+  f: JudgeFinding,
+  validIds: string[],
+  eventById: Map<string, TraceEvent>,
+): { finding: JudgeFinding; changed: boolean } {
+  if (!isMachineOnlyAxeFinding(f, validIds, eventById)) {
+    return { finding: f, changed: false };
+  }
+  if (f.severity !== 'blocker' && f.severity !== 'major') {
+    return { finding: f, changed: false };
+  }
+
+  return {
+    finding: {
+      ...f,
+      severity: 'minor',
+      severity_calibrated: true,
+    },
+    changed: true,
+  };
+}
+
+function isMachineOnlyAxeFinding(
+  f: JudgeFinding,
+  validIds: string[],
+  eventById: Map<string, TraceEvent>,
+): boolean {
+  if (f.category !== 'a11y') return false;
+  if (validIds.length === 0) return false;
+  return validIds.every((id) => {
+    const e = eventById.get(id);
+    if (!e || e.kind !== 'probe_result') return false;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    return p.probe === 'axe';
+  });
+}
+
 function isSelectorMissError(error?: string): boolean {
   if (!error) return false;
   return SELECTOR_MISS_PATTERNS.some((p) => p.test(error));
@@ -201,7 +238,13 @@ function isLikelyExplorerError(e: TraceEvent, idx: number, ctx: TraceContext): b
 
 export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]): ValidationOutput {
   const eventById = new Map<string, TraceEvent>();
-  for (const e of trace) eventById.set(e.id, e);
+  const traceIndexById = new Map<string, number>();
+  for (let i = 0; i < trace.length; i++) {
+    const e = trace[i];
+    if (!e) continue;
+    eventById.set(e.id, e);
+    traceIndexById.set(e.id, i);
+  }
   const ctx = buildTraceContext(trace);
 
   const kept: JudgeFinding[] = [];
@@ -234,6 +277,22 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
       continue;
     }
 
+    if (dismissalFindingContradictedByCitedPostCloseObservation(f, validIds, trace, traceIndexById)) {
+      discarded.push({
+        tentative_event_id: f.id,
+        reason: 'dismissal_finding_contradicted_by_post_close_observation',
+      });
+      continue;
+    }
+
+    if (looksLikeMachineOnlyProbeFinding(f, validIds, eventById)) {
+      discarded.push({
+        tentative_event_id: f.id,
+        reason: 'machine_only_probe_no_user_visible_impact',
+      });
+      continue;
+    }
+
     // Phase 11: agent-perspective title check. If the finding TITLE talks
     // about the agent's interaction strategy ("not reachable via selectors",
     // "could not focus", etc.), it is almost certainly a fabricated finding
@@ -245,7 +304,17 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
         const e = eventById.get(id);
         if (!e) return false;
         const p = (e.payload ?? {}) as Record<string, unknown>;
-        if (e.kind === 'probe_result' && p.ok === true) return true;
+        if (e.kind === 'probe_result') {
+          const summary = (p.summary ?? {}) as Record<string, unknown>;
+          if (p.ok === true) return true;
+          if (
+            p.probe === 'axe' &&
+            typeof summary.violations === 'number' &&
+            summary.violations > 0
+          ) {
+            return true;
+          }
+        }
         if (
           e.kind === 'observation' &&
           typeof p.summary === 'string' &&
@@ -271,8 +340,10 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
     }
     const result = checkBacking(validIds, trace, ctx, f.category);
     if (result.backed) {
-      kept.push({ ...f, unverified_backing: false });
+      const calibrated = calibrateProductImpactSeverity(f, validIds, eventById);
+      kept.push({ ...calibrated.finding, unverified_backing: false });
       verified++;
+      if (calibrated.changed) downgraded++;
     } else {
       const newSev = DOWNGRADE[f.severity] ?? f.severity;
       kept.push({
@@ -303,6 +374,112 @@ function stripFabricatedCodePointer(f: JudgeFinding, ctx: TraceContext): JudgeFi
   // Selector not in trace — drop the code_pointer.
   const { code_pointer: _drop, ...rest } = sf;
   return { ...f, suggested_fix: rest };
+}
+
+function dismissalFindingContradictedByCitedPostCloseObservation(
+  f: JudgeFinding,
+  validIds: string[],
+  trace: TraceEvent[],
+  traceIndexById: Map<string, number>,
+): boolean {
+  if (!looksLikePersistentDismissalFinding(f)) return false;
+  const postCloseObservationIndices = validIds
+    .map((id) => traceIndexById.get(id))
+    .filter((idx): idx is number => idx !== undefined)
+    .filter((idx) => trace[idx]?.kind === 'observation')
+    .filter((idx) => hasSuccessfulDismissActionBefore(trace, idx));
+  if (postCloseObservationIndices.length === 0) return false;
+  return !postCloseObservationIndices.some((idx) => {
+    const summary = String((trace[idx]?.payload as Record<string, unknown> | undefined)?.summary ?? '');
+    return containsPersistentDismissedSurface(summary, f);
+  });
+}
+
+function looksLikePersistentDismissalFinding(f: JudgeFinding): boolean {
+  const text = `${f.title} ${f.rationale}`.toLowerCase();
+  return (
+    /\b(close|closed|dismiss|dismissed|hide|hid)\b/.test(text) &&
+    /\b(still|reappear|reappears|returned|remains|dominat|block|not sticky|did not keep|not keep)\b/.test(
+      text,
+    ) &&
+    /\b(banner|modal|dialog|popup|drawer|overlay|toast|fundrais|donat)\b/.test(text)
+  );
+}
+
+function hasSuccessfulDismissActionBefore(trace: TraceEvent[], observationIdx: number): boolean {
+  const lo = Math.max(0, observationIdx - 8);
+  for (let i = observationIdx - 1; i >= lo; i--) {
+    const e = trace[i];
+    if (!e || e.kind !== 'action_result') continue;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    if (p.ok !== true) continue;
+    const action = nearestPriorAction(trace, i, String(p.tool ?? ''));
+    if (!action) continue;
+    const ap = (action.payload ?? {}) as Record<string, unknown>;
+    const args = (ap.args ?? {}) as Record<string, unknown>;
+    const text = `${args.selector ?? ''} ${args.key ?? ''}`.toLowerCase();
+    if (/\b(close|dismiss|hide)\b|has-text\(['"]?close['"]?\)|text=close/.test(text)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function nearestPriorAction(
+  trace: TraceEvent[],
+  resultIdx: number,
+  tool: string,
+): TraceEvent | undefined {
+  for (let i = resultIdx - 1; i >= Math.max(0, resultIdx - 6); i--) {
+    const e = trace[i];
+    if (!e || e.kind !== 'action') continue;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    if (!tool || String(p.tool ?? '') === tool) return e;
+  }
+  return undefined;
+}
+
+function containsPersistentDismissedSurface(summary: string, f: JudgeFinding): boolean {
+  const claim = `${f.title} ${f.rationale}`.toLowerCase();
+  const text = summary.toLowerCase();
+  if (/\b(fundrais|donat|banner)\b/.test(claim)) {
+    return /we owe you an explanation|donate now|i already donated|fundraiser|don't skip this|banner/.test(
+      text,
+    );
+  }
+  return /\b(close|dismiss|no thanks|not now|modal|dialog|popup|banner|overlay|drawer)\b/.test(text);
+}
+
+function looksLikeMachineOnlyProbeFinding(
+  f: JudgeFinding,
+  validIds: string[],
+  eventById: Map<string, TraceEvent>,
+): boolean {
+  if (validIds.length === 0) return false;
+  if (hasVisibleUserImpactLanguage(f)) return false;
+  const probes = validIds
+    .map((id) => eventById.get(id))
+    .filter((e): e is TraceEvent => Boolean(e))
+    .map((e) => {
+      const p = (e.payload ?? {}) as Record<string, unknown>;
+      return e.kind === 'probe_result' ? String(p.probe ?? '') : '';
+    });
+  if (probes.length !== validIds.length) return false;
+  const text = `${f.title} ${f.rationale}`.toLowerCase();
+  if (probes.every((probe) => probe === 'axe') && /\b(a11y|accessibility|axe|violation)\b/.test(text)) {
+    return true;
+  }
+  if (probes.every((probe) => probe === 'console_errors_since') && /\bconsole\b/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function hasVisibleUserImpactLanguage(f: JudgeFinding): boolean {
+  const text = `${f.title} ${f.rationale}`.toLowerCase();
+  return /\b(user|reader|customer|cannot|can't|unable|blocked|blank|crash|crashed|broken|visible|error message|lost|failed to save|cannot complete|can't complete)\b/.test(
+    text,
+  );
 }
 
 interface BackingResult {

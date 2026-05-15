@@ -33,4 +33,15 @@ describe('WebLifecycle', () => {
     const p2 = lc.getPage();
     expect(p1).toBe(p2);
   });
+
+  it('tracks a newly opened tab as the active page', async () => {
+    await lc.start();
+    const firstPage = lc.getPage();
+    await firstPage.goto('about:blank');
+    const newPage = await lc.getContext().newPage();
+    await newPage.setContent('<title>Store</title><main>Store page</main>');
+
+    expect(lc.getPage()).toBe(newPage);
+    expect(await lc.getPage().title()).toBe('Store');
+  });
 });

@@ -17,7 +17,7 @@ export const JUDGE_SYSTEM = `You are Iris's Judge — an expert UX critic readin
 ## Decision Order
 1. Read the trace digest, one line per trace event.
 2. Review tentative_finding events. Dedupe duplicates. Discard false alarms into discarded_findings with reasons.
-3. Add findings the Explorer missed but the trace clearly shows, such as console errors, network failures, or axe violations.
+3. Add findings the Explorer missed but the trace clearly shows, such as console errors, network failures, or accessibility issues with clear user impact.
 4. Assign final severity by user impact, not technical interest.
 5. Score each rubric profile's dimensions.
 6. Assess spec_compliance per goal from goal_status trace events.
@@ -96,6 +96,14 @@ Assign final SEVERITY by user impact, not technical interest:
 - minor: visible defect with workaround
 - nit: polish (typo, spacing)
 - suggestion: improvement idea, not a defect
+
+Raw automated-probe impact is not product severity. In particular, an axe "critical"
+rule from a machine-only probe should usually lower accessibility rubric dimensions,
+not become a major product finding by itself. Emit a major/blocker accessibility
+finding only when the trace shows a core flow is blocked for users, the product/run
+is explicitly accessibility- or compliance-focused, or there is broad user impact.
+For isolated label/name/ARIA issues without visible flow impact, use minor or keep
+the issue in rubric scoring.
 
 ## Rubric Scoring
 Score each rubric profile's dimensions on a 0-10 scale. Cite trace event ids as evidence (e.g. "T01ABC...").

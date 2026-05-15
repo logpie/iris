@@ -11,6 +11,7 @@ describe('WEB_INTERACTION_KIT', () => {
     expect(names).toContain('drag');
     expect(names).toContain('vision_drag');
     expect(names).toContain('key_chord');
+    expect(names).toContain('select_option');
     expect(names).toContain('paste');
     expect(names).toContain('right_click');
     expect(names).toContain('double_click');
@@ -92,5 +93,25 @@ describe('collectWebOutcomeEvidence', () => {
     const arts = collectWebOutcomeEvidence(events);
     expect(arts.map((a) => a.ref)).toContain('D');
     expect(arts.map((a) => a.ref)).toContain('C');
+  });
+
+  it('includes post-interaction ui_state probes that prove navigation state', () => {
+    const events = [
+      ev('A', 'action', { tool: 'click', selector: "a[href='#Services']" }),
+      ev('B', 'action_result', { tool: 'click', ok: true }),
+      ev('C', 'probe_result', {
+        ok: true,
+        probe: 'ui_state',
+        summary: {
+          hash: '#Services',
+          scroll: { x: 0, y: 9490 },
+          selectors_found: 1,
+          selectors_total: 1,
+        },
+      }),
+    ];
+    const arts = collectWebOutcomeEvidence(events);
+    expect(arts.map((a) => a.ref)).toContain('C');
+    expect(arts.find((a) => a.ref === 'C')?.note).toContain('hash=#Services');
   });
 });

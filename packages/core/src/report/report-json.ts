@@ -1,6 +1,12 @@
 import type { JudgeOutput } from '../judge/judge.js';
 import { findingHash } from '../trace/identity.js';
 import type { TraceEvent } from '../trace/schema.js';
+import type {
+  DiscoveryCoveragePlan,
+  DiscoveryGoal,
+  DiscoveryJourney,
+  DiscoverySurface,
+} from '../discovery/discovery.js';
 
 export interface ReportRunMeta {
   id: string;
@@ -14,6 +20,22 @@ export interface ReportRunMeta {
   termination: string;
   step_count: number;
   spec_input_path?: string;
+  usage?: ReportTokenUsageSummary;
+}
+
+export interface ReportTokenUsage {
+  input_tokens: number;
+  cached_input_tokens?: number;
+  non_cached_input_tokens?: number;
+  output_tokens: number;
+  total_tokens?: number;
+  reasoning_output_tokens?: number;
+}
+
+export interface ReportTokenUsageSummary {
+  total?: ReportTokenUsage;
+  last?: ReportTokenUsage;
+  phases?: Record<string, { total?: ReportTokenUsage; last?: ReportTokenUsage }>;
 }
 
 export interface ReportArtifacts {
@@ -29,6 +51,15 @@ export interface PreflightReport {
   ok: boolean;
   checks: Array<{ name: string; ok: boolean; detail?: string }>;
   screenshot?: string;
+}
+
+export interface DiscoveryReport {
+  product_description?: string;
+  goals?: DiscoveryGoal[];
+  surfaces?: DiscoverySurface[];
+  journeys?: DiscoveryJourney[];
+  coverage_plan?: DiscoveryCoveragePlan;
+  survey_summary?: string;
 }
 
 export interface BuildReportJsonInputs {
@@ -75,6 +106,7 @@ export interface ReportJson {
   findings: JudgeOutput['findings'];
   coverage_review: JudgeOutput['coverage_review'];
   meta: JudgeOutput['meta'];
+  discovery?: DiscoveryReport;
   artifacts?: ReportArtifacts;
   preflight?: PreflightReport;
   evidence_validation?: { verified: number; downgraded: number; discarded: number };
@@ -132,9 +164,42 @@ function countAttemptedGoals(judge: JudgeOutput): {
   return { total: goals.length, attempted, verified };
 }
 
+function normalizeScore(value: number | null): number | null {
+  if (value === null) return null;
+  if (!Number.isFinite(value)) return 0;
+  const scaled = value > 10 && value <= 100 ? value / 10 : value;
+  return Math.max(0, Math.min(10, Number(scaled.toFixed(2))));
+}
+
+function normalizeScores(scores: JudgeOutput['scores']): JudgeOutput['scores'] {
+  return {
+    ...scores,
+    overall: {
+      ...scores.overall,
+      score: normalizeScore(scores.overall.score) ?? 0,
+    },
+    profiles: Object.fromEntries(
+      Object.entries(scores.profiles).map(([profileName, profile]) => [
+        profileName,
+        {
+          ...profile,
+          score: normalizeScore(profile.score) ?? 0,
+          dimensions: Object.fromEntries(
+            Object.entries(profile.dimensions).map(([dimensionName, dimension]) => [
+              dimensionName,
+              { ...dimension, score: normalizeScore(dimension.score) },
+            ]),
+          ),
+        },
+      ]),
+    ),
+  };
+}
+
 export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
   const counts = countSeverities(inp.judge.findings);
-  const score = inp.judge.scores.overall.score;
+  const scores = normalizeScores(inp.judge.scores);
+  const score = scores.overall.score;
   const coverage = countAttemptedGoals(inp.judge);
   // Phase 12: threshold check is no longer just "score ≥ threshold." A high
   // score on a barely-tested product was passing — Dillinger scored 5.2 with
@@ -147,8 +212,8 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
   const coverageRatio = coverage.total > 0 ? coverage.attempted / coverage.total : 1;
   const scorePass = inp.threshold === undefined ? true : score >= inp.threshold;
   const coveragePass = coverage.total === 0 || coverageRatio >= COVERAGE_FLOOR;
-  const noBlockers = counts.blocker === 0;
-  const threshold_passed = scorePass && coveragePass && noBlockers;
+  const noBlockingFindings = counts.blocker === 0 && counts.major === 0;
+  const threshold_passed = !inp.blocked && scorePass && coveragePass && noBlockingFindings;
 
   // Phase 5 G4: compute a stable finding_hash for every finding. Uses content
   // hashes of the cited trace events when available, so the same finding from
@@ -163,6 +228,7 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     ...f,
     finding_hash: findingHash(f, eventIndex),
   }));
+  const discovery = extractDiscoveryReport(inp.trace_events);
 
   const for_builder = findingsWithHash
     .map((f, idx) => ({ f, idx }))
@@ -200,11 +266,12 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     tool: { name: 'iris', version: TOOL_VERSION },
     run: inp.run,
     headline,
-    scores: inp.judge.scores,
+    scores,
     spec_compliance: inp.judge.spec_compliance,
     findings: findingsWithHash,
     coverage_review: inp.judge.coverage_review,
     meta: inp.judge.meta,
+    ...(discovery ? { discovery } : {}),
     ...(inp.artifacts ? { artifacts: inp.artifacts } : {}),
     ...(inp.preflight ? { preflight: inp.preflight } : {}),
     ...(inp.judge.evidence_validation
@@ -220,6 +287,24 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
       for_builder,
       for_re_evaluation: inp.judge.meta.would_re_explore_with,
     },
+  };
+}
+
+function extractDiscoveryReport(events: TraceEvent[] | undefined): DiscoveryReport | undefined {
+  const discoveryEvent = [...(events ?? [])].reverse().find((event) => event.kind === 'discovery');
+  if (!discoveryEvent) return undefined;
+  const payload = discoveryEvent.payload as Record<string, unknown>;
+  return {
+    ...(typeof payload.product_description === 'string'
+      ? { product_description: payload.product_description }
+      : {}),
+    ...(Array.isArray(payload.goals) ? { goals: payload.goals as DiscoveryGoal[] } : {}),
+    ...(Array.isArray(payload.surfaces) ? { surfaces: payload.surfaces as DiscoverySurface[] } : {}),
+    ...(Array.isArray(payload.journeys) ? { journeys: payload.journeys as DiscoveryJourney[] } : {}),
+    ...(payload.coverage_plan && typeof payload.coverage_plan === 'object'
+      ? { coverage_plan: payload.coverage_plan as DiscoveryCoveragePlan }
+      : {}),
+    ...(typeof payload.survey_summary === 'string' ? { survey_summary: payload.survey_summary } : {}),
   };
 }
 

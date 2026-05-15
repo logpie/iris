@@ -21,6 +21,21 @@ export const WEB_TOOL_SPECS: ToolSpec[] = [
     },
   },
   {
+    name: 'select_option',
+    description:
+      'Select an option in a native <select> control. Prefer label when the visible option text is known; use value or index when needed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string' },
+        value: { type: 'string' },
+        label: { type: 'string' },
+        index: { type: 'number' },
+      },
+      required: ['selector'],
+    },
+  },
+  {
     name: 'press',
     description: 'Press a single keyboard key (Enter, Tab, Escape, ArrowDown, etc.).',
     input_schema: {

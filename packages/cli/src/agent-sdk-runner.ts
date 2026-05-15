@@ -509,6 +509,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
         const MUTATING_TOOLS = new Set([
           'click',
           'type',
+          'select_option',
           'navigate',
           'press',
           'back',
@@ -710,6 +711,10 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       'Stop normally — all planned goals satisfied or thorough exploration complete.',
       {},
       async () => {
+        const doneRejection = await rejectDoneIfGoalsRemain();
+        if (doneRejection) {
+          return { content: [{ type: 'text' as const, text: doneRejection }] };
+        }
         state.done = true;
         await emit('done', 'explorer', {});
         return { content: [{ type: 'text' as const, text: 'done — session will end' }] };
@@ -750,6 +755,8 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
   let pendingCutoverNotice: string | null = null;
   let activeQuery: SdkQueryHandle | undefined;
   let terminalGoalsReached = false;
+  let partialRetryPasses = 0;
+  const maxPartialRetryPasses = goalLedger.size > 0 ? 1 : 0;
   let termination: ExplorerSdkResult['termination'] = 'budget_steps';
 
   function currentPendingGoalId(): string | null {
@@ -787,9 +794,65 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     );
   }
 
-  async function finishIfAllAssignedGoalsTerminal(): Promise<boolean> {
-    if (terminalGoalsReached) return true;
-    if (maxExpansion > 0 || !allGoalsTerminal()) return false;
+  function retryablePartialGoalIds(): string[] {
+    return Array.from(goalLedger.entries())
+      .filter(([, entry]) => entry.status === 'partial')
+      .map(([id]) => id);
+  }
+
+  function pendingGoalIds(): string[] {
+    return Array.from(goalLedger.entries())
+      .filter(([, entry]) => entry.status === 'pending')
+      .map(([id]) => id);
+  }
+
+  async function maybeStartPartialRetryPass(): Promise<string | null> {
+    if (partialRetryPasses >= maxPartialRetryPasses) return null;
+    if (stepCount >= config.maxSteps) return null;
+    const ids = retryablePartialGoalIds();
+    if (ids.length === 0) return null;
+    partialRetryPasses++;
+    for (const id of ids) {
+      const entry = goalLedger.get(id);
+      if (entry) entry.status = 'pending';
+    }
+    await emit('budget_warn', 'system', {
+      reason: 'partial_retry',
+      pass: partialRetryPasses,
+      goals: ids,
+    });
+    return `[system] Budget remains, so Iris is retrying partial goals instead of ending. Retry only these goals: ${ids.join(', ')}. Use the strongest available evidence; for focus/layout/sidebar/theme goals, call ui_state with relevant selectors after interacting.`;
+  }
+
+  async function rejectDoneIfGoalsRemain(): Promise<string | null> {
+    if (goalLedger.size === 0 || stepCount >= config.maxSteps) return null;
+    const pending = pendingGoalIds();
+    const partial = retryablePartialGoalIds();
+    if (pending.length === 0 && partial.length === 0) return null;
+
+    if (pending.length === 0) {
+      const retryNotice = await maybeStartPartialRetryPass();
+      if (retryNotice) return retryNotice;
+      return null;
+    }
+
+    await emit('budget_warn', 'system', {
+      reason: 'done_rejected',
+      pending_goals: pending,
+      partial_goals: partial,
+      steps_remaining: Math.max(0, config.maxSteps - stepCount),
+    });
+    return `[system] Cannot finish yet: ${pending.length} assigned goal(s) are still pending (${pending.join(', ')})${
+      partial.length > 0 ? ` and ${partial.length} goal(s) are partial (${partial.join(', ')})` : ''
+    }. Continue with the pending goals, then call goal_status for each goal before ending.`;
+  }
+
+  async function finishIfAllAssignedGoalsTerminal(): Promise<string | null> {
+    if (terminalGoalsReached) return 'all_assigned_goals_terminal';
+    if (!allGoalsTerminal()) return null;
+    const retryNotice = await maybeStartPartialRetryPass();
+    if (retryNotice) return retryNotice;
+    if (maxExpansion > 0) return null;
     terminalGoalsReached = true;
     termination = 'done';
     state.done = true;
@@ -799,7 +862,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     } catch {
       // ignore; loop disposal handles cleanup
     }
-    return true;
+    return 'all_assigned_goals_terminal';
   }
 
   // Phase 10: propose_goal — Explorer adds a goal mid-run. Only available
@@ -818,6 +881,14 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
                 ),
               rationale: z.string().describe('why this matters / what you saw that prompted this'),
               priority: z.enum(['should', 'could']).default('should'),
+              surface_id: z
+                .string()
+                .optional()
+                .describe('Discovery surface id if this goal comes from a known surface'),
+              journey_id: z
+                .string()
+                .optional()
+                .describe('Discovery journey id if this goal extends a known journey'),
             },
             async (args) => {
               if (expansionCount >= maxExpansion) {
@@ -843,6 +914,8 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
                 description: args.description,
                 rationale: args.rationale,
                 priority: args.priority,
+                ...(args.surface_id ? { surface_id: args.surface_id } : {}),
+                ...(args.journey_id ? { journey_id: args.journey_id } : {}),
               });
               return {
                 content: [
@@ -861,7 +934,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     ? [
         tool(
           'goal_status',
-          'Mark a spec goal as verified/partial/blocked/skipped. For verified goals, evidence_event_ids is required and must cite the post-action observation, screenshot, or vision_describe action_result event id that visibly shows the user-facing outcome. Do not cite the action, action_result for the mutation, or goal_status event itself as verified evidence. partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable.',
+          'Mark a spec goal as verified/partial/blocked/skipped. For verified goals, evidence_event_ids is required and must cite the post-action observation, screenshot, or vision_describe action_result event id that visibly shows the user-facing outcome. Partial and blocked goals also require evidence_event_ids showing the incomplete outcome or blocker; do not close an unattempted goal as partial/blocked. Do not cite the action, action_result for the mutation, or goal_status event itself as verified evidence. partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable.',
           {
             id: z.string(),
             status: z.enum(['verified', 'partial', 'blocked', 'skipped']),
@@ -885,6 +958,19 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
                 ],
               };
             }
+            if (
+              (args.status === 'partial' || args.status === 'blocked') &&
+              evidenceEventIds.length === 0
+            ) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `ERROR: ${args.status} goal_status requires evidence_event_ids showing the incomplete outcome or blocker. If the goal has not been attempted, keep working on it instead of closing it.`,
+                  },
+                ],
+              };
+            }
             const entry = goalLedger.get(args.id);
             if (entry) {
               entry.status = args.status;
@@ -899,9 +985,17 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
               evidence_event_ids: evidenceEventIds,
               auto_cutover: false,
             });
-            await finishIfAllAssignedGoalsTerminal();
+            const terminalNotice = await finishIfAllAssignedGoalsTerminal();
             return {
-              content: [{ type: 'text' as const, text: `goal ${args.id}: ${args.status}` }],
+              content: [
+                {
+                  type: 'text' as const,
+                  text:
+                    terminalNotice && terminalNotice !== 'all_assigned_goals_terminal'
+                      ? `goal ${args.id}: ${args.status}\n${terminalNotice}`
+                      : `goal ${args.id}: ${args.status}`,
+                },
+              ],
             };
           },
         ),

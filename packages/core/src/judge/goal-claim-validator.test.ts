@@ -213,6 +213,134 @@ describe('validateGoalClaims', () => {
     expect(result.goals[0]?.status).toBe('verified');
   });
 
+  it('keeps verified when terse Judge notes have a substantive Explorer rationale', () => {
+    const trace: TraceEvent[] = [
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        rationale: 'The Terms of Use page loaded from the Wikimedia legal destination.',
+        evidence_event_ids: ['B'],
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'open terms',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Terms page loaded.',
+      },
+    ]);
+    const contract = stubContract({ G1: ['B'] });
+    const result = validateGoalClaims({ judge, trace, outcome_contract: contract });
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+    expect(result.goals[0]?.notes).toContain('Explorer rationale');
+  });
+
+  it('keeps verified when Judge cites goal_status that points to outcome evidence', () => {
+    const trace: TraceEvent[] = [
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['B'],
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'open a page',
+        status: 'verified',
+        evidence: ['C'],
+        notes: 'Goal status cites observation B showing the destination page.',
+      },
+    ]);
+    const contract = stubContract({ G1: ['B'] });
+    const result = validateGoalClaims({ judge, trace, outcome_contract: contract });
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('keeps verified when Judge evidence has a unique stable-prefix trace id typo', () => {
+    const actual = '01KRM5RG87DRXMHMXGXVVKAVGF';
+    const typo = '01KRM5RG87DRXMHMXGVVWXKAVGF';
+    const trace: TraceEvent[] = [
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev(actual, 'observation'),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: [actual],
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'open Japanese Wikipedia',
+        status: 'verified',
+        evidence: [typo],
+        notes: 'Japanese Wikipedia homepage loaded after choosing the language link.',
+      },
+    ]);
+    const contract = stubContract({ G1: [actual] });
+    const result = validateGoalClaims({ judge, trace, outcome_contract: contract });
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('keeps out-of-order verified goals when their cited observation is outcome-shaped', () => {
+    const trace: TraceEvent[] = [
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'action_result', { tool: 'click', ok: true }),
+      ev('D', 'observation'),
+      ev('E', 'goal_status', { id: 'G2', status: 'verified' }),
+      ev('F', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'open the main menu',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Observation B shows the opened menu after the click.',
+      },
+      {
+        id: 'G2',
+        description: 'open another page',
+        status: 'verified',
+        evidence: ['D'],
+        notes: 'Observation D shows another destination after clicking a link.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: {
+        kind: 'test',
+        collectOutcomeEvidence: ({ goal_events }) => {
+          const hasInteraction = goal_events.some(
+            (e) => e.kind === 'action_result' && e.payload.tool === 'click' && e.payload.ok === true,
+          );
+          if (!hasInteraction) return [];
+          return goal_events
+            .filter((e) => e.kind === 'observation')
+            .map((e) => ({ kind: 'screenshot' as const, ref: e.id }));
+        },
+      },
+    });
+
+    expect(result.summary).toEqual({ verified_kept: 2, downgraded: 0, downgrade_reasons: [] });
+    expect(result.goals.map((g) => g.status)).toEqual(['verified', 'verified']);
+  });
+
   it('leaves non-verified goals untouched', () => {
     const judge = judgeWithGoals([
       { id: 'G1', description: 'x', status: 'partial', evidence: [] },

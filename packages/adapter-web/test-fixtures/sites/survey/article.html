@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Article — Iris fixture</title>
+  </head>
+  <body>
+    <header>
+      <a href="/index.html">Home</a>
+      <button id="language-button" type="button">Article language</button>
+      <span id="language-status" role="status" aria-live="polite"></span>
+    </header>
+    <main>
+      <h1>OpenAI article</h1>
+      <nav aria-label="Contents">
+        <a href="#overview">Overview</a>
+        <a href="#references">References</a>
+      </nav>
+      <section id="overview">
+        <h2>Overview</h2>
+        <p>Article reading surface with sections, references, and language controls.</p>
+      </section>
+      <section id="references">
+        <h2>References</h2>
+        <ol>
+          <li><a href="/source.html">Example source</a></li>
+        </ol>
+      </section>
+      <a href="/history.html">View history</a>
+      <a href="/edit.html">Edit</a>
+    </main>
+    <script>
+      document.getElementById('language-button').addEventListener('click', () => {
+        document.getElementById('language-status').textContent = 'Language controls opened';
+      });
+    </script>
+  </body>
+</html>

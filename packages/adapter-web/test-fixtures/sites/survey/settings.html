@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Settings — Iris fixture</title>
+  </head>
+  <body>
+    <header>
+      <a href="/index.html">Home</a>
+    </header>
+    <main>
+      <h1>Settings</h1>
+      <form>
+        <label>
+          Theme
+          <select name="theme">
+            <option>System</option>
+            <option>Dark</option>
+          </select>
+        </label>
+        <button type="button">Save settings</button>
+      </form>
+      <p id="settings-status" role="status" aria-live="polite"></p>
+    </main>
+    <script>
+      const select = document.querySelector('select[name="theme"]');
+      const button = document.querySelector('button');
+      const status = document.getElementById('settings-status');
+      button.addEventListener('click', () => {
+        document.documentElement.dataset.theme = select.value.toLowerCase();
+        status.textContent = `Settings saved: ${select.value} theme`;
+      });
+    </script>
+  </body>
+</html>

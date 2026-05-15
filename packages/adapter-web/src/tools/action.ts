@@ -42,6 +42,28 @@ export async function type(
   return toToolResult(outcome);
 }
 
+export async function selectOption(
+  page: Page,
+  args: { selector: string; value?: string; label?: string; index?: number },
+): Promise<ToolResult> {
+  const option =
+    args.index !== undefined
+      ? { index: args.index }
+      : args.label
+        ? { label: args.label }
+        : args.value
+          ? { value: args.value }
+          : null;
+  if (!option) return { ok: false, error: 'select_option requires value, label, or index' };
+  const outcome = await actionWithRetry(
+    page,
+    args.selector,
+    (l) => l.selectOption(option, { timeout: SHORT_TIMEOUT_MS }),
+    { timeoutMs: SHORT_TIMEOUT_MS, allowRetry: false },
+  );
+  return toToolResult(outcome);
+}
+
 export async function press(page: Page, args: { key: string }): Promise<ToolResult> {
   try {
     await page.keyboard.press(args.key);

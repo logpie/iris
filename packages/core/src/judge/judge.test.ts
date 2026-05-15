@@ -5,7 +5,7 @@ import type { RubricProfile } from '@iris/rubrics';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type LlmCallInput, LlmClient, type LlmRawResponse } from '../llm/client.js';
 import type { TraceEvent } from '../trace/schema.js';
-import { Judge } from './judge.js';
+import { Judge, JudgeOutputSchema } from './judge.js';
 import { buildTraceDigest } from './prompts.js';
 
 function fakeRsp(text: string): LlmRawResponse {
@@ -38,6 +38,27 @@ describe('Judge', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'iris-judge-'));
     tracePath = join(dir, 'trace.jsonl');
+  });
+
+  it('accepts discarded findings that use rationale instead of reason', () => {
+    const out = JudgeOutputSchema.parse({
+      v: 1,
+      findings: [],
+      discarded_findings: [
+        {
+          id: 'D-001',
+          title: 'Expected error state',
+          rationale: 'This was expected behavior for the assigned goal.',
+        },
+      ],
+      scores: { overall: { score: 7, weighted_from: [] }, profiles: {} },
+      spec_compliance: { applicable: false, goals: [], summary: '' },
+      coverage_review: { surfaces_explored: 0, surfaces_unexplored: 0, judgement: '' },
+      meta: { confidence_overall: 0.8, confidence_caveats: [], would_re_explore_with: [] },
+    });
+    expect(out.discarded_findings[0]?.reason).toBe(
+      'This was expected behavior for the assigned goal.',
+    );
   });
 
   afterEach(() => {
@@ -154,6 +175,31 @@ describe('Judge', () => {
     await expect(
       judge.run({ trace_path: tracePath, rubric_profiles: [sampleProfile] }),
     ).rejects.toThrow();
+  });
+
+  it('normalizes discarded findings that omit tentative_event_id', () => {
+    const out = JudgeOutputSchema.parse({
+      v: 1,
+      findings: [],
+      discarded_findings: [{ title: 'Axe violations', reason: 'No serious violations were found.' }],
+      scores: {
+        overall: { score: 8, weighted_from: ['usability'] },
+        profiles: {
+          usability: {
+            score: 8,
+            dimensions: { clarity: { score: 8, rationale: 'r', evidence: [] } },
+          },
+        },
+      },
+      spec_compliance: { applicable: false, goals: [], summary: 'no spec' },
+      coverage_review: { surfaces_explored: 1, surfaces_unexplored: 0, judgement: 'fine' },
+      meta: { confidence_overall: 0.8, confidence_caveats: [], would_re_explore_with: [] },
+    });
+
+    expect(out.discarded_findings[0]).toEqual({
+      tentative_event_id: 'judge:Axe violations',
+      reason: 'No serious violations were found.',
+    });
   });
 
   it('buildTraceDigest produces one line per event with id and kind', () => {

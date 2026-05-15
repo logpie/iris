@@ -33,6 +33,21 @@ export const WEB_PROBE_SPECS: ProbeSpec[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'ui_state',
+    description:
+      'Deterministically inspect UI state: URL/hash/scroll, active element, and selected elements visibility, bounds, ARIA attributes, checked state, and computed styles. Use after focus-skip, layout, appearance/theme, sidebar, disclosure, or collapse interactions to prove the visible state changed without relying on text observation alone.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        selectors: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'CSS selectors to inspect, such as "#bodyContent" or ".vector-appearance".',
+        },
+      },
+    },
+  },
+  {
     name: 'lighthouse',
     description:
       'Run Lighthouse against the current URL. HEAVY — uses ~10-30s and spawns its own headless Chromium. Returns Performance/Accessibility/Best-Practices/SEO scores. Cached per URL for 10 minutes.',

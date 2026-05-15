@@ -9,13 +9,30 @@ export function buildReportMd(report: ReportJson): string {
   lines.push(
     `**Target:** ${report.run.target.url}  •  **Mode:** ${report.run.mode}  •  **Duration:** ${formatDuration(report.run.duration_s)}  •  **Cost:** $${report.run.cost_usd.toFixed(2)}`,
   );
+  if (report.run.usage?.total) {
+    const usage = report.run.usage.total;
+    const nonCached =
+      usage.non_cached_input_tokens ??
+      Math.max(0, usage.input_tokens - (usage.cached_input_tokens ?? 0));
+    const cached = usage.cached_input_tokens ?? 0;
+    lines.push(
+      `**Tokens:** input ${usage.input_tokens.toLocaleString()}  •  cached ${cached.toLocaleString()}  •  non-cached ${nonCached.toLocaleString()}  •  output ${usage.output_tokens.toLocaleString()}`,
+    );
+  }
   lines.push('');
 
   if (report.spec_compliance.applicable && report.spec_compliance.goals.length > 0) {
-    const sat = report.spec_compliance.goals.filter((g) => g.status === 'satisfied').length;
+    const sat = report.spec_compliance.goals.filter(
+      (g) => g.status === 'satisfied' || g.status === 'verified',
+    ).length;
     lines.push(`## Spec compliance — ${sat} / ${report.spec_compliance.goals.length}`);
     for (const g of report.spec_compliance.goals) {
-      const icon = g.status === 'satisfied' ? '✅' : g.status === 'partial' ? '🟡' : '❌';
+      const icon =
+        g.status === 'satisfied' || g.status === 'verified'
+          ? '✅'
+          : g.status === 'partial'
+            ? '🟡'
+            : '❌';
       const notes = g.notes ? ` *(${g.notes})*` : '';
       lines.push(`- ${icon} ${g.id}: ${g.description}${notes}`);
     }
@@ -40,7 +57,34 @@ export function buildReportMd(report: ReportJson): string {
   lines.push('| Profile | Score |');
   lines.push('|---|---|');
   for (const [name, profile] of Object.entries(report.scores.profiles)) {
-    lines.push(`| ${name} | ${profile.score} |`);
+    lines.push(`| ${mdCell(name)} | ${profileScoreLabel(profile)} |`);
+  }
+  for (const name of missingWeightedProfiles(report)) {
+    lines.push(`| ${mdCell(name)} | missing |`);
+  }
+  lines.push('');
+
+  lines.push('## Score matrix');
+  lines.push('| Profile | Dimension | Score | Rationale |');
+  lines.push('|---|---|---|---|');
+  for (const [profileName, profile] of Object.entries(report.scores.profiles)) {
+    const dimensions = Object.entries(profile.dimensions);
+    if (dimensions.length === 0) {
+      lines.push(
+        `| ${mdCell(profileName)} | (profile) | ${profileScoreLabel(profile)} | No dimension scores returned. |`,
+      );
+      continue;
+    }
+    for (const [dimensionName, dimension] of dimensions) {
+      lines.push(
+        `| ${mdCell(profileName)} | ${mdCell(dimensionName)} | ${formatScore(dimension.score)} | ${mdCell(truncate(dimension.rationale))} |`,
+      );
+    }
+  }
+  for (const name of missingWeightedProfiles(report)) {
+    lines.push(
+      `| ${mdCell(name)} | (profile) | missing | Listed in weighted_from but absent from scores.profiles. |`,
+    );
   }
   lines.push('');
 
@@ -57,4 +101,31 @@ function formatDuration(s: number): string {
   const m = Math.floor(s / 60);
   const sec = Math.floor(s % 60);
   return `${m}m ${sec}s`;
+}
+
+function missingWeightedProfiles(report: ReportJson): string[] {
+  const present = new Set(Object.keys(report.scores.profiles));
+  return report.scores.overall.weighted_from.filter((name) => !present.has(name));
+}
+
+function profileScoreLabel(profile: ReportJson['scores']['profiles'][string]): string {
+  const dimensions = Object.values(profile.dimensions);
+  if (dimensions.length > 0 && dimensions.every((dimension) => dimension.score === null)) {
+    return 'n/a';
+  }
+  return formatScore(profile.score);
+}
+
+function formatScore(score: number | null): string {
+  if (score === null || !Number.isFinite(score)) return 'n/a';
+  return Number.isInteger(score) ? String(score) : score.toFixed(1).replace(/\.0$/, '');
+}
+
+function mdCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
+}
+
+function truncate(value: string, maxLength = 180): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 3).trimEnd()}...`;
 }

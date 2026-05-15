@@ -28,7 +28,8 @@ export class WebLifecycle {
     if (this.opts.trace_out_path) {
       await this.context.tracing.start({ snapshots: true, screenshots: true, sources: true });
     }
-    this.page = await this.context.newPage();
+    this.context.on('page', (page) => this.activatePage(page));
+    this.activatePage(await this.context.newPage());
   }
 
   getPage(): Page {
@@ -39,6 +40,15 @@ export class WebLifecycle {
   getContext(): BrowserContext {
     if (!this.context) throw new Error('WebLifecycle: not running');
     return this.context;
+  }
+
+  private activatePage(page: Page): void {
+    this.page = page;
+    page.once('close', () => {
+      if (this.page !== page) return;
+      const fallback = this.context?.pages().find((candidate) => !candidate.isClosed()) ?? null;
+      this.page = fallback;
+    });
   }
 
   async stop(): Promise<void> {
