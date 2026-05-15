@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { PerceptionState } from '@iris/adapter-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type FixtureServerHandle, startFixtureServer } from '../test-fixtures/server.js';
 import { WebTargetAdapter } from './index.js';
@@ -28,6 +29,13 @@ describe('WebTargetAdapter (end-to-end against fixture)', () => {
     const obs = await adapter.observe();
     expect(obs.observation_ref).toBeTruthy();
     expect(obs.summary).toContain('Sign in');
+    const state = obs.payload?.perception_state as PerceptionState | undefined;
+    expect(state?.v).toBe(1);
+    expect(state?.url).toContain('/index.html');
+    const signIn = state?.elements.find((el) => el.name === 'Sign in' || el.text === 'Sign in');
+    expect(signIn?.stable_hash).toMatch(/^h[0-9a-f]{8}$/);
+    expect(signIn?.visible).toBe(true);
+    expect(signIn?.bounds?.width).toBeGreaterThan(0);
 
     const tools = adapter.listTools();
     expect(tools.map((t) => t.name)).toEqual(

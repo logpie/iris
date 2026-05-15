@@ -78,6 +78,44 @@ export const ProbeResultSchema = z.union([
 ]);
 export type ProbeResult = z.infer<typeof ProbeResultSchema>;
 
+export interface PerceptionBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface PerceptionElement {
+  id: string;
+  stable_hash: string;
+  tag?: string;
+  role?: string;
+  name?: string;
+  text?: string;
+  href?: string;
+  type?: string;
+  value?: string;
+  checked?: boolean;
+  disabled?: boolean;
+  expanded?: boolean;
+  visible: boolean;
+  bounds?: PerceptionBounds;
+}
+
+export interface PerceptionState {
+  v: 1;
+  url: string;
+  title: string;
+  captured_at: string;
+  screenshot_ref?: string;
+  viewport?: { width: number; height: number };
+  scroll?: { x: number; y: number };
+  active_element?: PerceptionElement;
+  elements: PerceptionElement[];
+  text_sample?: string;
+  outline_sample?: string;
+}
+
 export interface Observation {
   observation_ref: string;
   summary: string;

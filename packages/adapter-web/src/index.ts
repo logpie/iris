@@ -15,6 +15,7 @@ import type {
   InteractionKit,
   Observation,
   OutcomeContract,
+  PerceptionState,
   PreflightProbe,
   ProbeResult,
   ProbeSpec,
@@ -380,6 +381,13 @@ export class WebTargetAdapter implements TargetAdapter {
     // never appeared in observations before this change.
     const richItems = await richContent(page).catch(() => []);
     const richSection = formatRichContent(richItems);
+    const perceptionState = await buildPerceptionState(page, {
+      url,
+      title,
+      screenshotRef: screenshotPath,
+      bodyText,
+      outline,
+    }).catch(() => null);
 
     const outlinePart = outline.slice(0, 2500);
     const textPart = bodyText.slice(0, 3000);
@@ -396,6 +404,7 @@ export class WebTargetAdapter implements TargetAdapter {
         outline,
         body_text: bodyText,
         rich_content: richItems,
+        ...(perceptionState ? { perception_state: perceptionState } : {}),
       },
     };
   }
@@ -753,6 +762,161 @@ function surveyControl(control: {
     ...(control.ariaExpanded ? { ariaExpanded: control.ariaExpanded } : {}),
     ...(control.checked !== undefined ? { checked: control.checked } : {}),
     ...(control.disabled !== undefined ? { disabled: control.disabled } : {}),
+  };
+}
+
+async function buildPerceptionState(
+  page: Page,
+  opts: {
+    url: string;
+    title: string;
+    screenshotRef: string;
+    bodyText: string;
+    outline: string;
+  },
+): Promise<PerceptionState> {
+  const viewport = page.viewportSize() ?? undefined;
+  const snapshot = await page.evaluate(() => {
+    type SnapshotElement = NonNullable<PerceptionState['active_element']>;
+
+    const isVisible = (el: Element) => {
+      const html = el as HTMLElement;
+      const rect = html.getBoundingClientRect();
+      const style = window.getComputedStyle(html);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number(style.opacity || '1') > 0
+      );
+    };
+
+    const textFor = (el: Element) =>
+      ((el as HTMLElement).innerText || el.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 160);
+
+    const nameFor = (el: Element) =>
+      (
+        el.getAttribute('aria-label') ||
+        el.getAttribute('title') ||
+        el.getAttribute('placeholder') ||
+        textFor(el)
+      )
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 160);
+
+    const stableHref = (href: string | null) => {
+      if (!href) return '';
+      try {
+        const parsed = new URL(href, location.href);
+        return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+      } catch {
+        return href;
+      }
+    };
+
+    const hashString = (input: string) => {
+      let hash = 2166136261;
+      for (let i = 0; i < input.length; i++) {
+        hash ^= input.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return `h${(hash >>> 0).toString(16).padStart(8, '0')}`;
+    };
+
+    const serializeElement = (el: Element, id: string): SnapshotElement => {
+      const html = el as HTMLElement;
+      const input = el as HTMLInputElement;
+      const anchor = el as HTMLAnchorElement;
+      const rect = html.getBoundingClientRect();
+      const tag = el.tagName.toLowerCase();
+      const role = el.getAttribute('role') ?? undefined;
+      const name = nameFor(el) || undefined;
+      const text = textFor(el) || undefined;
+      const href = anchor.href ? stableHref(anchor.href) : undefined;
+      const type = el instanceof HTMLInputElement ? input.type : undefined;
+      const value =
+        el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+          ? input.value.slice(0, 160)
+          : undefined;
+      const checked = el instanceof HTMLInputElement ? input.checked : undefined;
+      const disabled =
+        el instanceof HTMLButtonElement ||
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLSelectElement ||
+        el instanceof HTMLTextAreaElement
+          ? el.disabled
+          : undefined;
+      const expanded = el.getAttribute('aria-expanded');
+      const hashInput = [tag, role ?? '', name ?? '', href ?? '', type ?? '', text ?? ''].join('|');
+      return {
+        id,
+        stable_hash: hashString(hashInput),
+        ...(tag ? { tag } : {}),
+        ...(role ? { role } : {}),
+        ...(name ? { name } : {}),
+        ...(text ? { text } : {}),
+        ...(href ? { href } : {}),
+        ...(type ? { type } : {}),
+        ...(value ? { value } : {}),
+        ...(checked !== undefined ? { checked } : {}),
+        ...(disabled !== undefined ? { disabled } : {}),
+        ...(expanded !== null ? { expanded: expanded === 'true' } : {}),
+        visible: isVisible(el),
+        bounds: {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+      };
+    };
+
+    const candidates = Array.from(
+      document.querySelectorAll(
+        [
+          'a',
+          'button',
+          'input',
+          'select',
+          'textarea',
+          'summary',
+          '[role]',
+          '[contenteditable="true"]',
+        ].join(','),
+      ),
+    )
+      .filter(isVisible)
+      .slice(0, 80)
+      .map((el, index) => serializeElement(el, `E${String(index + 1).padStart(3, '0')}`));
+
+    const active = document.activeElement && document.activeElement !== document.body
+      ? serializeElement(document.activeElement, 'ACTIVE')
+      : undefined;
+
+    return {
+      scroll: { x: Math.round(window.scrollX), y: Math.round(window.scrollY) },
+      elements: candidates,
+      active,
+    };
+  });
+
+  return {
+    v: 1,
+    url: opts.url,
+    title: opts.title,
+    captured_at: new Date().toISOString(),
+    screenshot_ref: opts.screenshotRef,
+    ...(viewport ? { viewport } : {}),
+    scroll: snapshot.scroll,
+    ...(snapshot.active ? { active_element: snapshot.active } : {}),
+    elements: snapshot.elements,
+    text_sample: opts.bodyText.slice(0, 1200),
+    outline_sample: opts.outline.slice(0, 1800),
   };
 }
 
