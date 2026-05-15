@@ -5,6 +5,7 @@ import {
   tool,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { TargetAdapter } from '@iris/adapter-types';
+import { adapter as irisAdapter } from '@iris/core';
 import type { trace as iristrace } from '@iris/core';
 import { ulid } from 'ulid';
 import { type ZodRawShape, z } from 'zod';
@@ -538,10 +539,11 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
             const obs = await config.adapter.observe();
             observationCounter++;
             postActionObservationSummary = obs.summary.slice(0, 1500);
-            postActionObservationEventId = await emit('observation', 'adapter', {
-              ref: obs.observation_ref,
-              summary: obs.summary.slice(0, 4000),
-            });
+            postActionObservationEventId = await emit(
+              'observation',
+              'adapter',
+              irisAdapter.observationTracePayload(obs),
+            );
           } catch {
             // observation failed; continue
           }
@@ -608,10 +610,11 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       async () => {
         const obs = await config.adapter.observe();
         observationCounter++;
-        const observationEventId = await emit('observation', 'adapter', {
-          ref: obs.observation_ref,
-          summary: obs.summary.slice(0, 4000),
-        });
+        const observationEventId = await emit(
+          'observation',
+          'adapter',
+          irisAdapter.observationTracePayload(obs),
+        );
         return {
           content: [
             {

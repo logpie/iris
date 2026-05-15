@@ -7,6 +7,7 @@ import type {
   DiscoveryJourney,
   DiscoverySurface,
 } from '../discovery/discovery.js';
+import { type TaskRun, buildTaskRuns } from '../task-runs/task-runs.js';
 
 export interface ReportRunMeta {
   id: string;
@@ -107,6 +108,7 @@ export interface ReportJson {
   coverage_review: JudgeOutput['coverage_review'];
   meta: JudgeOutput['meta'];
   discovery?: DiscoveryReport;
+  task_runs?: TaskRun[];
   artifacts?: ReportArtifacts;
   preflight?: PreflightReport;
   evidence_validation?: { verified: number; downgraded: number; discarded: number };
@@ -229,6 +231,10 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     finding_hash: findingHash(f, eventIndex),
   }));
   const discovery = extractDiscoveryReport(inp.trace_events);
+  const taskRuns =
+    inp.trace_events && inp.judge.spec_compliance.applicable
+      ? buildTaskRuns({ goals: inp.judge.spec_compliance.goals, trace: inp.trace_events })
+      : [];
 
   const for_builder = findingsWithHash
     .map((f, idx) => ({ f, idx }))
@@ -272,6 +278,7 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     coverage_review: inp.judge.coverage_review,
     meta: inp.judge.meta,
     ...(discovery ? { discovery } : {}),
+    ...(taskRuns.length > 0 ? { task_runs: taskRuns } : {}),
     ...(inp.artifacts ? { artifacts: inp.artifacts } : {}),
     ...(inp.preflight ? { preflight: inp.preflight } : {}),
     ...(inp.judge.evidence_validation

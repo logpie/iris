@@ -1,4 +1,5 @@
 import type { TargetAdapter } from '@iris/adapter-types';
+import { adapter as irisAdapter } from '@iris/core';
 import type { trace as iristrace } from '@iris/core';
 import { ulid } from 'ulid';
 import { CodexAppServerClient, type JsonRpcNotification } from './codex-app-server-client.js';
@@ -353,10 +354,11 @@ export async function runCodexAppServerExplorer(
 
   const initialObservation = await config.adapter.observe();
   observationSummaryChars += initialObservation.summary.slice(0, 4000).length;
-  const initialObservationEventId = await emit('observation', 'adapter', {
-    ref: initialObservation.observation_ref,
-    summary: initialObservation.summary.slice(0, 4000),
-  });
+  const initialObservationEventId = await emit(
+    'observation',
+    'adapter',
+    irisAdapter.observationTracePayload(initialObservation),
+  );
 
   const currentPendingGoalId = (): string | null => {
     for (const [id, entry] of goalLedger) if (entry.status === 'pending') return id;
@@ -490,10 +492,11 @@ export async function runCodexAppServerExplorer(
       try {
         const obs = await config.adapter.observe();
         observationSummaryChars += obs.summary.slice(0, 4000).length;
-        const obsEventId = await emit('observation', 'adapter', {
-          ref: obs.observation_ref,
-          summary: obs.summary.slice(0, 4000),
-        });
+        const obsEventId = await emit(
+          'observation',
+          'adapter',
+          irisAdapter.observationTracePayload(obs),
+        );
         observationHint = `\npost_action_observation_event_id=${obsEventId}\npost_action_observation_summary:\n${obs.summary.slice(0, 1500)}`;
       } catch {
         // Keep the underlying action result.
@@ -539,10 +542,11 @@ export async function runCodexAppServerExplorer(
     if (name === 'observe') {
       const obs = await config.adapter.observe();
       observationSummaryChars += obs.summary.slice(0, 4000).length;
-      const eventId = await emit('observation', 'adapter', {
-        ref: obs.observation_ref,
-        summary: obs.summary.slice(0, 4000),
-      });
+      const eventId = await emit(
+        'observation',
+        'adapter',
+        irisAdapter.observationTracePayload(obs),
+      );
       return {
         text: `${obs.summary.slice(0, 1500)}\n\n(observation_ref=${obs.observation_ref}, trace_event_id=${eventId})`,
         success: true,

@@ -178,6 +178,97 @@ describe('buildReportJson', () => {
     expect(r.discovery?.coverage_plan?.rationale).toBe('Search is the core journey.');
   });
 
+  it('includes trace-derived task runs with replay metadata', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.spec_compliance.goals = [
+      {
+        id: 'G1',
+        description: 'Search content',
+        status: 'verified',
+        evidence: ['OBS2'],
+        notes: 'Observation shows the article.',
+      },
+    ];
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'A1',
+          ts: 1,
+          step: 1,
+          target_kind: 'web',
+          kind: 'action',
+          actor: 'explorer',
+          payload: { tool: 'click', args: { selector: '#search' } },
+        },
+        {
+          v: 1,
+          id: 'R1',
+          ts: 2,
+          step: 1,
+          target_kind: 'web',
+          kind: 'action_result',
+          actor: 'adapter',
+          payload: { tool: 'click', ok: true },
+        },
+        {
+          v: 1,
+          id: 'OBS2',
+          ts: 3,
+          step: 1,
+          target_kind: 'web',
+          kind: 'observation',
+          actor: 'adapter',
+          payload: {
+            ref: 'OBS-000002',
+            summary: 'Article loaded',
+            perception_state: {
+              v: 1,
+              url: 'https://example.com/article',
+              title: 'Article',
+              screenshot_ref: 'evidence/screenshots/step-0002.png',
+              elements: [{ id: 'E001', stable_hash: 'habc12345', name: 'Article', visible: true }],
+            },
+          },
+        },
+        {
+          v: 1,
+          id: 'GS1',
+          ts: 4,
+          step: 1,
+          target_kind: 'web',
+          kind: 'goal_status',
+          actor: 'explorer',
+          payload: {
+            id: 'G1',
+            status: 'verified',
+            rationale: 'Article loaded',
+            evidence_event_ids: ['OBS2'],
+          },
+        },
+      ],
+    });
+    expect(r.task_runs?.[0]).toMatchObject({
+      id: 'TR-G1',
+      goal_id: 'G1',
+      status: 'verified',
+      evidence_event_ids: ['OBS2'],
+      replay: { replayable: true, action_count: 1, successful_action_count: 1 },
+    });
+    expect(r.task_runs?.[0]?.actions[0]).toMatchObject({
+      tool: 'click',
+      result_event_id: 'R1',
+      post_observation_event_id: 'OBS2',
+    });
+    expect(r.task_runs?.[0]?.observations[0]).toMatchObject({
+      event_id: 'OBS2',
+      element_hashes: ['habc12345'],
+    });
+  });
+
   it('next_actions.for_builder is sorted by severity', () => {
     const r = buildReportJson({ judge: fakeJudge(), run: fakeRun() });
     expect(r.next_actions.for_builder[0]?.finding_id).toBe('F-001');

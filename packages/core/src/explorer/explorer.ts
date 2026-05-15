@@ -1,5 +1,6 @@
 import type { TargetAdapter } from '@iris/adapter-types';
 import { ulid } from 'ulid';
+import { observationTracePayload } from '../adapter/observation-payload.js';
 import type { LlmCallInput, LlmClient } from '../llm/client.js';
 import type { TraceEvent } from '../trace/schema.js';
 import type { TraceWriter } from '../trace/writer.js';
@@ -286,10 +287,11 @@ export class Explorer {
 
       // Observe
       const observation = await this.deps.adapter.observe();
-      const obsEventId = await this.emit('observation', 'adapter', {
-        ref: observation.observation_ref,
-        summary: observation.summary.slice(0, 4000),
-      });
+      const obsEventId = await this.emit(
+        'observation',
+        'adapter',
+        observationTracePayload(observation),
+      );
 
       // Loop detection on observation_ref (proxy for dom_digest in P3)
       const loopState = this.loopDetector.record(observation.observation_ref);
