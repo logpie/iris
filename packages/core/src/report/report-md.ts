@@ -1,10 +1,19 @@
+import { deriveReportEvaluationForReport } from './evaluation.js';
 import type { ReportJson } from './report-json.js';
 
 export function buildReportMd(report: ReportJson): string {
-  const passEmoji = report.headline.threshold_passed ? '✅' : '❌';
+  const evaluation = report.evaluation ?? deriveReportEvaluationForReport(report);
+  const passEmoji =
+    report.headline.threshold_passed && evaluation.product_score.authority === 'authoritative'
+      ? '✅'
+      : report.headline.threshold_passed
+        ? '⚠'
+        : '❌';
   const lines: string[] = [];
 
-  lines.push(`# Iris run — ${report.headline.score} / 10  ${passEmoji}`);
+  lines.push(
+    `# Iris run — ${evaluation.product_score.label}: ${report.headline.score} / 10  ${passEmoji}`,
+  );
   lines.push('');
   const runMeta = [
     `**Target:** ${report.run.target.url}`,
@@ -27,16 +36,64 @@ export function buildReportMd(report: ReportJson): string {
       `**Tokens:** input ${usage.input_tokens.toLocaleString()}  •  cached ${cached.toLocaleString()}  •  non-cached ${nonCached.toLocaleString()}  •  output ${usage.output_tokens.toLocaleString()}`,
     );
   }
-  if (report.discovery?.product_use_contract) {
-    const contract = report.discovery.product_use_contract;
-    const kinds =
-      contract.product_kinds.length > 0 ? contract.product_kinds.join(', ') : 'unknown';
-    const artifacts =
-      contract.core_artifacts.length > 0
-        ? contract.core_artifacts.join('; ')
-        : 'visible value-producing artifact or state change';
-    lines.push(`**Real-use contract:** ${mdCell(contract.primary_value_loop || 'not recorded')}`);
-    lines.push(`**Product kind:** ${mdCell(kinds)}  •  **Expected artifact:** ${mdCell(artifacts)}`);
+  lines.push(
+    `**Evidence confidence:** ${evaluation.evidence_confidence.level} (${Math.round(evaluation.evidence_confidence.score * 100)}%) — ${mdCell(evaluation.product_score.interpretation)}`,
+  );
+  if (evaluation.evidence_confidence.reasons.length > 0) {
+    lines.push(`**Why:** ${mdCell(evaluation.evidence_confidence.reasons.slice(0, 4).join('; '))}`);
+  }
+  if (report.testing_plan) {
+    const plan = report.testing_plan;
+    const primaryJourney =
+      plan.journeys.find((journey) => journey.id === plan.primary_journey_id) ?? plan.journeys[0];
+    const successSignals = [...new Set(plan.journeys.map((journey) => journey.success_state))]
+      .filter(Boolean)
+      .join('; ');
+    lines.push(
+      `**Overall mission:** ${mdCell(plan.overall_mission || plan.main_outcome || primaryJourney?.user_goal || plan.product_summary || 'not recorded')}`,
+    );
+    if (plan.journeys.length > 0) {
+      lines.push('**User journeys checked:**');
+      for (const journey of plan.journeys) {
+        lines.push(
+          `- ${mdCell(journey.id)}: ${mdCell(journey.title)} (${journey.scenario_ids.length} task${journey.scenario_ids.length === 1 ? '' : 's'})`,
+        );
+      }
+    }
+    if (successSignals) {
+      lines.push(`**Success criteria:** ${mdCell(successSignals)}`);
+    }
+    if (plan.scenarios.length > 0) {
+      lines.push('**Tested scenarios:**');
+      for (const scenario of plan.scenarios) {
+        const brief = scenario.scenario_brief ? ` Brief: ${mdCell(scenario.scenario_brief)}.` : '';
+        const testData =
+          scenario.test_data.length > 0 ? ` Use: ${mdCell(scenario.test_data.join('; '))}.` : '';
+        const actions =
+          scenario.actions.length > 0 ? ` Actions: ${mdCell(scenario.actions.join('; '))}.` : '';
+        const requiredOutputs =
+          scenario.required_outputs.length > 0
+            ? ` Expected output: ${mdCell(scenario.required_outputs.join('; '))}.`
+            : ` Expected result: ${mdCell(scenario.expected_result)}.`;
+        const quality =
+          scenario.quality_bar.length > 0
+            ? ` Quality bar: ${mdCell(scenario.quality_bar.join('; '))}.`
+            : '';
+        const mergedChecks =
+          (scenario.source_goal_ids?.length ?? 0) > 1
+            ? ` Checks: ${mdCell(scenario.source_goal_ids?.join(', ') ?? '')}.`
+            : '';
+        lines.push(
+          `- ${mdCell(scenario.id)}: ${mdCell(scenario.title)}.${brief}${mergedChecks}${testData}${actions}${requiredOutputs}${quality}`,
+        );
+      }
+    }
+    if (plan.deferred.length > 0) {
+      lines.push('**Deferred areas:**');
+      for (const area of plan.deferred) {
+        lines.push(`- ${mdCell(area.title)}: ${mdCell(area.reason)}`);
+      }
+    }
   }
   lines.push('');
 
@@ -44,7 +101,7 @@ export function buildReportMd(report: ReportJson): string {
     const sat = report.spec_compliance.goals.filter(
       (g) => g.status === 'satisfied' || g.status === 'verified',
     ).length;
-    lines.push(`## Spec compliance — ${sat} / ${report.spec_compliance.goals.length}`);
+    lines.push(`## Task checks — ${sat} / ${report.spec_compliance.goals.length}`);
     for (const g of report.spec_compliance.goals) {
       const icon =
         g.status === 'satisfied' || g.status === 'verified'

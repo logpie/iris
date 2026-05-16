@@ -65,10 +65,11 @@ export class NetworkProbe {
     }
     if (name === 'network_all_since') {
       const all = this.consume(false);
+      const failures = all.filter((e) => !e.ok);
       return {
         ok: true,
         probe: name,
-        summary: { count: all.length },
+        summary: { count: all.length, failure_count: failures.length },
         data: all,
       };
     }

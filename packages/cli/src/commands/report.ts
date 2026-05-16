@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { WebTargetAdapter } from '@iris/adapter-web';
 import { judge as judgeMod, report as reportMod, trace as traceMod } from '@iris/core';
 import { Command } from 'commander';
+import { parseJudgeOutput } from '../codex-app-server-orchestrator.js';
 
 type ReportJson = ReturnType<typeof reportMod.buildReportJson>;
 
@@ -33,22 +34,17 @@ export function reportCommand(): Command {
       if (traceEvents) {
         report = await addTraceStoryboards(report, traceEvents, dir);
       }
-      const confidenceCaveats = uniqueStrings([
-        ...report.meta.confidence_caveats,
-        ...reportMod.deriveProbeConfidenceCaveats(traceEvents),
-      ]);
+      const meta = reportMod.normalizeReportMeta(report.meta, traceEvents);
       const renderedReport: ReportJson = {
         ...report,
         run: enrichRunMetadata(report.run, traceEvents, dir),
-        meta: {
-          ...report.meta,
-          confidence_caveats: confidenceCaveats,
-        },
+        meta,
         scores: reportMod.normalizeReportScores(report.scores, {
           ...(traceEvents ? { traceEvents } : {}),
-          confidenceCaveats,
+          confidenceCaveats: meta.confidence_caveats,
         }),
       };
+      renderedReport.evaluation = reportMod.deriveReportEvaluationForReport(renderedReport);
       writeFileSync(join(dir, 'report.md'), reportMod.buildReportMd(renderedReport));
       if (opts.html !== false) {
         writeFileSync(
@@ -58,11 +54,33 @@ export function reportCommand(): Command {
       }
       if (opts.revalidate === true) {
         writeFileSync(reportPath, `${JSON.stringify(renderedReport, null, 2)}\n`);
+        writeFileSync(
+          join(dir, 'findings.json'),
+          `${JSON.stringify(findingsSnapshotFromReport(renderedReport), null, 2)}\n`,
+        );
       }
       process.stdout.write(
         `iris report: ${opts.revalidate === true ? 'revalidated and ' : ''}re-rendered ${runDir}/report.{md,html}\n`,
       );
-  });
+    });
+}
+
+export function findingsSnapshotFromReport(report: ReportJson): {
+  findings: ReportJson['findings'];
+  discarded_findings: NonNullable<ReportJson['discarded_findings']>;
+  evidence_validation: NonNullable<ReportJson['evidence_validation']>;
+  _written_at: string;
+} {
+  return {
+    findings: report.findings,
+    discarded_findings: report.discarded_findings ?? [],
+    evidence_validation: report.evidence_validation ?? {
+      verified: report.findings.length,
+      downgraded: 0,
+      discarded: report.discarded_findings?.length ?? 0,
+    },
+    _written_at: new Date().toISOString(),
+  };
 }
 
 async function addTraceStoryboards(
@@ -130,10 +148,7 @@ function revalidateStoredReport(
   let judge: judgeMod.JudgeOutput = {
     ...rawJudge,
     findings: findingValidation.kept,
-    discarded_findings: [
-      ...(rawJudge.discarded_findings ?? []),
-      ...findingValidation.discarded,
-    ],
+    discarded_findings: [...(rawJudge.discarded_findings ?? []), ...findingValidation.discarded],
     evidence_validation: findingValidation.summary,
   };
   if (report.run.target.kind === 'web') {
@@ -145,16 +160,58 @@ function revalidateStoredReport(
     });
     judge = judgeMod.applyGoalClaimValidationToJudgeOutput(judge, goalClaimResult);
   }
+  const preserveBlocked = shouldPreserveBlockedState(report);
   return reportMod.buildReportJson({
     judge,
-    run: enrichRunMetadata(report.run, traceEvents, runDir),
+    run: normalizeRevalidatedRunMetadata(report.run, traceEvents, runDir, preserveBlocked),
     ...(report.artifacts ? { artifacts: report.artifacts } : {}),
     ...(report.preflight ? { preflight: report.preflight } : {}),
-    ...(report.headline.blocked
-      ? { blocked: { reasons: report.headline.blocked_reasons ?? [] } }
-      : {}),
+    ...(preserveBlocked ? { blocked: { reasons: report.headline.blocked_reasons ?? [] } } : {}),
     trace_events: traceEvents,
   });
+}
+
+function shouldPreserveBlockedState(report: ReportJson): boolean {
+  if (!report.headline.blocked) return false;
+  const reasons = report.headline.blocked_reasons ?? [];
+  if (reasons.length === 0) return true;
+  return !reasons.every((reason) =>
+    /judge returned no json object|judge did not complete/i.test(reason),
+  );
+}
+
+export function normalizeRevalidatedRunMetadata(
+  run: ReportJson['run'],
+  traceEvents: traceMod.TraceEvent[] | undefined,
+  runDir: string,
+  preserveBlocked: boolean,
+): ReportJson['run'] {
+  const enriched = enrichRunMetadata(run, traceEvents, runDir);
+  if (preserveBlocked || enriched.termination !== 'judge_failed') {
+    return enriched;
+  }
+  const traceTermination = latestTraceRunTermination(traceEvents);
+  return {
+    ...enriched,
+    termination:
+      traceTermination && traceTermination !== 'judge_failed'
+        ? traceTermination
+        : 'done',
+  };
+}
+
+function latestTraceRunTermination(traceEvents: traceMod.TraceEvent[] | undefined): string | undefined {
+  if (!traceEvents) return undefined;
+  for (let i = traceEvents.length - 1; i >= 0; i -= 1) {
+    const event = traceEvents[i];
+    if (event?.kind !== 'run_end') continue;
+    const payload = event.payload as Record<string, unknown>;
+    const termination = payload.termination;
+    if (typeof termination === 'string' && termination.trim()) {
+      return termination;
+    }
+  }
+  return undefined;
 }
 
 function readRawJudgeOutput(runDir: string): judgeMod.JudgeOutput | undefined {
@@ -163,18 +220,7 @@ function readRawJudgeOutput(runDir: string): judgeMod.JudgeOutput | undefined {
   const raw = readFileSync(rawPath, 'utf8');
   const jsonStart = raw.indexOf('{');
   if (jsonStart < 0) return undefined;
-  return JSON.parse(raw.slice(jsonStart)) as judgeMod.JudgeOutput;
-}
-
-function uniqueStrings(values: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const value of values) {
-    if (!value || seen.has(value)) continue;
-    seen.add(value);
-    out.push(value);
-  }
-  return out;
+  return parseJudgeOutput(raw.slice(jsonStart));
 }
 
 function enrichRunMetadata(
@@ -185,7 +231,10 @@ function enrichRunMetadata(
   const runStart = traceEvents?.find((event) => event.kind === 'run_start');
   const runStartPayload = (runStart?.payload ?? {}) as Record<string, unknown>;
   const config = readRunConfig(runDir);
-  const transport = stringValue(run.transport) ?? stringValue(config.transport) ?? stringValue(runStartPayload.transport);
+  const transport =
+    stringValue(run.transport) ??
+    stringValue(config.transport) ??
+    stringValue(runStartPayload.transport);
   const discoveryModel =
     stringValue(run.models.discovery) ??
     run.models.explorer ??

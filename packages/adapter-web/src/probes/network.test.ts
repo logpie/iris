@@ -36,4 +36,26 @@ describe('NetworkProbe', () => {
       expect(r.summary.failure_count).toBeGreaterThanOrEqual(1);
     }
   });
+
+  it('reports all responses with a failure count', async () => {
+    server = await startFixtureServer('hello');
+    const page = lc.getPage();
+    const probe = new NetworkProbe(page);
+    probe.attach();
+    await page.goto(`${server.url}/index.html`);
+    await page.evaluate(async (base) => {
+      try {
+        await fetch(`${base}/no-such.html`);
+      } catch {}
+    }, server.url);
+    await page.waitForTimeout(100);
+
+    const r = await probe.runProbe('network_all_since', {});
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.summary.count).toBeGreaterThanOrEqual(1);
+      expect(r.summary.failure_count).toBeGreaterThanOrEqual(1);
+      expect(Array.isArray(r.data)).toBe(true);
+    }
+  });
 });

@@ -106,7 +106,7 @@ function looksLikeToolFrictionFinding(f: JudgeFinding): boolean {
   const text = `${f.title} ${f.rationale}`.toLowerCase();
   return (
     (f.category === 'ux' || f.category === 'a11y') &&
-    /\b(intermittent|retry|retries|first-try|first try|click\/focus|click|focus|locator|selector|targeting|timed out|timeout|tool failure|controls? failed|keyboard traversal|affordance|opaque|friction)\b/.test(
+    /\b(intermittent|retry|retries|repeated attempts?|first-try|first try|click\/focus|click|focus|locator|selector|target|targeting|timed out|timeout|tool failure|controls? failed|hard to target|keyboard traversal|affordance|opaque|friction)\b/.test(
       text,
     ) &&
     !/\b(error message|lost|blank|crash|crashed|saved|submitted|created|deleted|downloaded|exported|user-facing|user facing)\b/.test(
@@ -124,7 +124,7 @@ function citesOnlyActionEvents(validIds: string[], eventById: Map<string, TraceE
     validIds.length > 0 &&
     validIds.every((id) => {
       const kind = eventById.get(id)?.kind;
-      return kind === 'action' || kind === 'action_result';
+      return kind === 'action' || kind === 'action_result' || kind === 'retry_attempt';
     })
   );
 }
@@ -148,6 +148,54 @@ const NO_CONFIRMATION_TITLE_PATTERNS: RegExp[] = [
 
 function looksLikeNoConfirmationFinding(title: string): boolean {
   return NO_CONFIRMATION_TITLE_PATTERNS.some((p) => p.test(title));
+}
+
+const TIMING_CLAIM_PATTERNS: RegExp[] = [
+  /\b(slow|slowly|sluggish|lag|laggy|latency|delayed?|delay|takes?|took)\b/i,
+  /\b(long|noticeable)\s+(wait|pause|delay|time)\b/i,
+  /\ba\s+moment\b/i,
+];
+
+function looksLikeTimingClaim(f: JudgeFinding): boolean {
+  const text = `${f.title} ${f.rationale}`;
+  return TIMING_CLAIM_PATTERNS.some((p) => p.test(text));
+}
+
+function hasTimingEvidence(validIds: string[], eventById: Map<string, TraceEvent>): boolean {
+  return validIds.some((id) => {
+    const event = eventById.get(id);
+    if (!event) return false;
+    if (event.kind === 'probe_result') {
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      const probe = String(payload.probe ?? '').toLowerCase();
+      if (probe === 'lighthouse' || probe.includes('perf') || probe.includes('timing')) {
+        return true;
+      }
+    }
+    return payloadContainsTimingEvidence(event.payload);
+  });
+}
+
+function payloadContainsTimingEvidence(value: unknown, depth = 0): boolean {
+  if (depth > 3 || value == null) return false;
+  if (typeof value === 'number') return false;
+  if (typeof value === 'string') {
+    return /\b\d+(\.\d+)?\s*(ms|msec|milliseconds?|s|sec|secs|seconds?)\b/i.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => payloadContainsTimingEvidence(item, depth + 1));
+  }
+  if (typeof value !== 'object') return false;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (
+      typeof child === 'number' &&
+      /(?:duration|elapsed|latency|timing|time_ms|ms)$/i.test(key)
+    ) {
+      return true;
+    }
+    if (payloadContainsTimingEvidence(child, depth + 1)) return true;
+  }
+  return false;
 }
 
 function notificationsProbeShowedSomething(trace: TraceEvent[]): boolean {
@@ -313,6 +361,14 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
       continue;
     }
 
+    if (looksLikeTimingClaim(f) && !hasTimingEvidence(validIds, eventById)) {
+      discarded.push({
+        tentative_event_id: f.id,
+        reason: 'timing_claim_without_timing_evidence',
+      });
+      continue;
+    }
+
     if (
       dismissalFindingContradictedByCitedPostCloseObservation(f, validIds, trace, traceIndexById)
     ) {
@@ -327,6 +383,14 @@ export function validateFindings(findings: JudgeFinding[], trace: TraceEvent[]):
       discarded.push({
         tentative_event_id: f.id,
         reason: 'machine_only_probe_no_user_visible_impact',
+      });
+      continue;
+    }
+
+    if (destructiveActionFailureLacksPrecondition(f, validIds, eventById)) {
+      discarded.push({
+        tentative_event_id: f.id,
+        reason: 'destructive_action_precondition_not_established',
       });
       continue;
     }
@@ -536,6 +600,70 @@ function hasVisibleUserImpactLanguage(f: JudgeFinding): boolean {
   return /\b(user|reader|customer|cannot|can't|unable|blocked|blank|crash|crashed|broken|visible|error message|lost|failed to save|cannot complete|can't complete)\b/.test(
     text,
   );
+}
+
+function destructiveActionFailureLacksPrecondition(
+  f: JudgeFinding,
+  validIds: string[],
+  eventById: Map<string, TraceEvent>,
+): boolean {
+  const claim = `${f.title} ${f.rationale}`.toLowerCase();
+  const destructiveFailure =
+    /\b(delete|deleted|remove|removed|duplicate|duplicated|undo|redo)\b/.test(claim) &&
+    /\b(fail|failed|never|did not|does not|could not|cannot|blocked|no visible|without)\b/.test(
+      claim,
+    );
+  if (!destructiveFailure) return false;
+  const observationText = validIds
+    .map((id) => eventById.get(id))
+    .filter((event): event is TraceEvent => event?.kind === 'observation')
+    .map((event) => String((event.payload as Record<string, unknown> | undefined)?.summary ?? ''))
+    .join('\n')
+    .toLowerCase();
+  const observationEvents = validIds
+    .map((id) => eventById.get(id))
+    .filter((event): event is TraceEvent => event?.kind === 'observation');
+  if (!observationText) return false;
+  if (/\b(delete|deleted|remove|removed)\b/.test(claim)) {
+    return (
+      /\bdelete\b[\s\S]{0,240}\bdisabled\b/.test(observationText) ||
+      observationsShowDisabledControl(observationEvents, /\b(delete|remove)\b/)
+    );
+  }
+  if (/\bduplicate|duplicated\b/.test(claim)) {
+    return (
+      /\bduplicate\b[\s\S]{0,240}\bdisabled\b/.test(observationText) ||
+      observationsShowDisabledControl(observationEvents, /\bduplicate\b/)
+    );
+  }
+  if (/\bundo\b/.test(claim)) {
+    return (
+      /\bundo\b[\s\S]{0,240}\bdisabled\b/.test(observationText) ||
+      observationsShowDisabledControl(observationEvents, /\bundo\b/)
+    );
+  }
+  if (/\bredo\b/.test(claim)) {
+    return (
+      /\bredo\b[\s\S]{0,240}\bdisabled\b/.test(observationText) ||
+      observationsShowDisabledControl(observationEvents, /\bredo\b/)
+    );
+  }
+  return false;
+}
+
+function observationsShowDisabledControl(observations: TraceEvent[], namePattern: RegExp): boolean {
+  for (const event of observations) {
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    const perception = payload.perception_state as { elements?: unknown } | undefined;
+    if (!perception || !Array.isArray(perception.elements)) continue;
+    for (const rawElement of perception.elements) {
+      if (!rawElement || typeof rawElement !== 'object') continue;
+      const element = rawElement as { name?: unknown; disabled?: unknown };
+      const name = typeof element.name === 'string' ? element.name.toLowerCase() : '';
+      if (namePattern.test(name) && element.disabled === true) return true;
+    }
+  }
+  return false;
 }
 
 interface BackingResult {

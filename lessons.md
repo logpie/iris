@@ -147,3 +147,63 @@ Do not attach the same Iris video as both verified-goal proof and finding proof.
 ## 2026-05-15 — Artifact products require artifact-depth evidence
 
 For canvas editors, document editors, builders, design tools, and similar creation products, "opened a menu" or "clicked a tool" is weak evidence unless the user-visible artifact changes. Discovery and Explorer should ask for a minimally meaningful artifact composed of multiple operations when feasible, and reports should make the resulting artifact clip central rather than showing static toolbar/menu footage.
+
+## 2026-05-15 — Never serve validation runs as report-quality evidence
+
+If an Iris run was launched with evidence-saving shortcuts such as `--no-clips`, do not share it as a user-facing report URL. Validation runs can prove code paths, but report-quality runs must have claim-scoped videos/screenshots verified over the same served URL the user will open.
+
+## 2026-05-15 — Skipped goals must mean not applicable
+
+Iris seed goals should not be marked `skipped` because the agent stopped early or claims budget ran out while steps remain. Treat "not attempted", "not exercised", "not tested", and "budget ran out" skipped rationales as invalid runner input; the agent must attempt the goal or mark it partial/blocked with evidence after a real attempt.
+
+## 2026-05-15 — Product score and evaluator confidence are different
+
+When Iris partially proves flows on a mature product, do not let the headline score read like a product-quality downgrade. Separate the Judge's observed product score from Iris's evidence confidence. Partial, untested, probe-blocked, or rubric-missing conditions should make the score provisional or insufficient, with explicit reasons, unless the evidence actually shows product failure.
+
+## 2026-05-15 — Provisional labels are guardrails, not capability fixes
+
+When an Iris run is provisional, audit the partial goals and trace logs for missing generic evaluator capabilities before stopping at report wording. If the product can perform the flow manually but Iris only reached a menu, toolbar, file picker, or download surface, add the missing browser/tool/oracle capability and validator support so future runs gather stronger evidence.
+
+## 2026-05-15 — Product-use contracts are hierarchies, not one journey
+
+Do not render `primary_value_loop` as if it were the whole real-use contract. It is the product promise; value-loop contracts and scenario checks are child structures that must be visible and countable in reports. If they are collapsed under generic artifact text or truncated, users will correctly think Iris discovered only one journey.
+
+## 2026-05-15 — Report language should match the user's mental model
+
+Avoid exposing internal Iris terms like product-use contract, value-loop contract, proof obligation, or weak evidence in the main report flow. Render the public report around user scenarios, user journeys, user actions, and expected results; keep deeper evaluator details behind disclosure rows or in JSON.
+
+## 2026-05-15 — Do not stack overlapping scenario terms in one report section
+
+Avoid layouts that show "user scenarios", "user journeys", and "tested scenarios" as sibling concepts. Pick one hierarchy for the page: primary journey at the top, scenario checklist for what actually ran, and optional area details behind a collapsed disclosure. If two labels sound like synonyms, users will read the structure as broken.
+
+## 2026-05-15 — Do not hide non-primary journey groups
+
+If Iris has one primary focus plus multiple journey groups, the report must not make the singular primary label look like the entire plan. Use "Main user outcome" for the top-line focus, show all journey groups visibly before the scenario checklist, and reserve collapsed disclosures for debug/deferred detail rather than the main coverage structure.
+
+## 2026-05-15 — Keep report concepts canonical for readers
+
+Iris reports should expose product areas and tested tasks as the main hierarchy. Raw goal ids, discovery journeys, surfaces, and repeated low-level checks are implementation details: merge duplicate checks under one task, group evidence by that canonical task, and keep raw ids in details/debug sections only.
+
+## 2026-05-16 — Report evidence order and labels must match reader expectations
+
+When a report has scenario ids like G1-G8, evidence cards must render in scenario order, not alphabetic title order. The public report should call the singular product loop an overall mission and make multiple user journeys/scenarios visible; labels like "Main user outcome", "source event", and repeated status pills make the report look internally inconsistent even when the underlying run is sound.
+
+## 2026-05-16 — Validate scenario proof from required outputs, not input metadata
+
+When Discovery emits both `test_data` and `required_outputs`, treat `required_outputs` as the proof checklist. `test_data` may contain prompt-authored labels, optional filenames, or setup context such as `Milestones:`, `Caption:`, or `Invite context:`; those strings should guide the Explorer but must not become literal screen requirements unless they appear in `required_outputs`.
+
+## 2026-05-16 — Product learning must create concrete user scenarios
+
+Do not treat "material artifact" as a generic after-the-fact requirement. Iris should first learn the product's real jobs, then generate concrete scenario briefs with named content/data, required visible outputs, and a quality bar. Capability checks like "add text", "use shape", or "open export" are only implementation steps; they should not be the primary user-facing scenarios unless the product itself is that narrow.
+
+## 2026-05-16 — Validator proof rules must preserve scenario scope
+
+Goal validation should canonicalize public observation refs like `OBS-000028` back to trace event ids before judging action history. Product value-loop capabilities are broad context, not mandatory steps for every child scenario; validators should require each scenario's own actions and use broad loop text only for materiality context. Scenario data extraction must also keep literal labels such as `Start` from phrases like `Rectangle labeled Start`, instead of requiring the whole object-description phrase as visible text.
+
+## 2026-05-16 — Cursor evidence should look like real user input
+
+Claim-scoped videos should show a recognizable pointer, not an abstract dot. If cursor visualization is needed for headless recordings, use a mouse-shaped overlay with a subtle fading movement trail so reviewers can follow intent without mistaking the overlay for product UI.
+
+## 2026-05-16 — Product breadth needs a separate denominator
+
+Do not infer product quality from a scenario pass rate alone. Iris needs a visible product-ability denominator that is distinct from UI surfaces and tested scenarios, and reports must label surface counts as UI coverage rather than product coverage. Unsupported timing or performance findings also need timing evidence, not just a static observation.

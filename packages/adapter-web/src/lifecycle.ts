@@ -23,6 +23,7 @@ export class WebLifecycle {
     try {
       this.browser = await chromium.launch({ headless: this.opts.headless ?? true });
       const contextOpts: Parameters<Browser['newContext']>[0] = {};
+      contextOpts.acceptDownloads = true;
       if (this.opts.viewport) contextOpts.viewport = this.opts.viewport;
       if (this.opts.user_agent) contextOpts.userAgent = this.opts.user_agent;
       if (this.opts.storage_state_path) contextOpts.storageState = this.opts.storage_state_path;

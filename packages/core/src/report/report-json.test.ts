@@ -10,6 +10,213 @@ describe('buildReportJson', () => {
     expect(r.headline.nits).toBe(1);
     expect(r.headline.score).toBe(6.5);
     expect(r.headline.threshold_passed).toBe(false);
+    expect(r.evaluation?.product_score.authority).toBe('provisional');
+  });
+
+  it('treats mature-product partial tasks as evaluator uncertainty, not product failure', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 7.5;
+    judge.meta.confidence_overall = 0.8;
+    judge.meta.confidence_caveats = [];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'create artifact', status: 'verified', evidence: ['T1'] },
+      { id: 'G2', description: 'edit artifact', status: 'verified', evidence: ['T2'] },
+      { id: 'G3', description: 'share artifact', status: 'verified', evidence: ['T3'] },
+      { id: 'G4', description: 'download artifact', status: 'verified', evidence: ['T4'] },
+      { id: 'G5', description: 'style artifact', status: 'partial', evidence: ['T5'] },
+      { id: 'G6', description: 'duplicate artifact', status: 'partial', evidence: ['T6'] },
+      { id: 'G7', description: 'insert media', status: 'partial', evidence: ['T7'] },
+      { id: 'G8', description: 'export image', status: 'partial', evidence: ['T8'] },
+    ];
+    const r = buildReportJson({ judge, run: fakeRun() });
+    expect(r.evaluation?.product_score.label).toBe('Provisional product score');
+    expect(r.evaluation?.product_score.interpretation).toContain('Iris proof gaps');
+    expect(r.evaluation?.evidence_confidence.reasons).toContain(
+      '4 partial tasks indicate Iris did not fully prove outcomes',
+    );
+    expect(r.evaluation?.evidence_confidence.reasons).toContain('No confirmed product findings');
+  });
+
+  it('caps score authority when selected scenarios cover too little of the learned product denominator', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 9.0;
+    judge.meta.confidence_overall = 0.95;
+    judge.meta.confidence_caveats = [];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'Create a diagram', status: 'verified', evidence: ['OBS-1'] },
+    ];
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'DISCOVERY_1',
+          ts: 1,
+          step: 0,
+          target_kind: 'web',
+          kind: 'discovery',
+          actor: 'system',
+          payload: {
+            capabilities: [
+              {
+                id: 'C1',
+                label: 'Create visible canvas content',
+                product_kind: 'canvas_editor',
+                importance: 'core',
+                status: 'selected',
+                confidence: 0.9,
+                source: 'product_kind_prior',
+                scenario_ids: ['G1'],
+                journey_ids: ['J1'],
+                surface_ids: ['S1'],
+                evidence: [],
+                denominator_reason: 'Canvas creation is core.',
+                coverage_gap: '',
+              },
+              {
+                id: 'C2',
+                label: 'Add readable text or notes',
+                product_kind: 'canvas_editor',
+                importance: 'core',
+                status: 'deferred',
+                confidence: 0.8,
+                source: 'product_kind_prior',
+                scenario_ids: [],
+                journey_ids: [],
+                surface_ids: [],
+                evidence: [],
+                denominator_reason: 'Labels are core.',
+                coverage_gap: 'Not selected.',
+              },
+              {
+                id: 'C3',
+                label: 'Connect or draw relationships',
+                product_kind: 'canvas_editor',
+                importance: 'core',
+                status: 'deferred',
+                confidence: 0.8,
+                source: 'product_kind_prior',
+                scenario_ids: [],
+                journey_ids: [],
+                surface_ids: [],
+                evidence: [],
+                denominator_reason: 'Connectors are core.',
+                coverage_gap: 'Not selected.',
+              },
+              {
+                id: 'C4',
+                label: 'Style or format canvas objects',
+                product_kind: 'canvas_editor',
+                importance: 'core',
+                status: 'deferred',
+                confidence: 0.8,
+                source: 'product_kind_prior',
+                scenario_ids: [],
+                journey_ids: [],
+                surface_ids: [],
+                evidence: [],
+                denominator_reason: 'Styling is core.',
+                coverage_gap: 'Not selected.',
+              },
+              {
+                id: 'C5',
+                label: 'Revise existing objects',
+                product_kind: 'canvas_editor',
+                importance: 'core',
+                status: 'deferred',
+                confidence: 0.8,
+                source: 'product_kind_prior',
+                scenario_ids: [],
+                journey_ids: [],
+                surface_ids: [],
+                evidence: [],
+                denominator_reason: 'Revision is core.',
+                coverage_gap: 'Not selected.',
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(r.evaluation?.capability_coverage?.summary).toBe(
+      '1/5 core capabilities covered; 1/5 total capabilities covered.',
+    );
+    expect(r.evaluation?.product_score.authority).toBe('insufficient');
+    expect(r.evaluation?.evidence_confidence.reasons).toContain(
+      '1/5 core product capabilities covered',
+    );
+  });
+
+  it('synthesizes capability coverage for older discovery events that lack capabilities', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'Search for OpenAI and read the article', status: 'verified', evidence: ['OBS-1'] },
+    ];
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'DISCOVERY_1',
+          ts: 1,
+          step: 0,
+          target_kind: 'web',
+          kind: 'discovery',
+          actor: 'system',
+          payload: {
+            product_description: 'Searchable content.',
+            product_use_contract: {
+              product_kinds: ['search_content'],
+              primary_value_loop: 'Search and read content.',
+              core_artifacts: ['loaded article'],
+              value_loops: [],
+              user_jobs: [],
+            },
+            surfaces: [
+              { id: 'S1', label: 'Search input', kind: 'search', url: 'https://example.com', source: 'initial', value: 'core', confidence: 0.9 },
+              { id: 'S2', label: 'Article content and table of contents', kind: 'content', url: 'https://example.com/wiki/OpenAI', source: 'primary_journey', value: 'core', confidence: 0.9 },
+            ],
+            journeys: [
+              {
+                id: 'J1',
+                title: 'Search and read',
+                priority: 'must',
+                goal_class: 'core',
+                surface_ids: ['S1', 'S2'],
+                user_intent: 'Find content.',
+                suggested_goal: 'Search for OpenAI and read the article.',
+                expected_evidence: ['article content'],
+                risk: 'high',
+              },
+            ],
+            coverage_plan: {
+              selected_journey_ids: ['J1'],
+              deferred_surface_ids: [],
+              rationale: 'Primary content flow.',
+              coverage_risk: 'low',
+            },
+            goals: [
+              {
+                id: 'G1',
+                description: 'Search for OpenAI and read the article.',
+                priority: 'must',
+                journey_id: 'J1',
+                surface_ids: ['S1', 'S2'],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(r.discovery?.capabilities?.map((capability) => capability.label)).toContain(
+      'Search for specific content',
+    );
+    expect(r.evaluation?.capability_coverage?.total).toBeGreaterThan(0);
   });
 
   it('threshold_passed remains false when score >= threshold but blocker present (Phase 12)', () => {
@@ -88,14 +295,17 @@ describe('buildReportJson', () => {
     const judge = fakeJudge();
     judge.findings = [];
     judge.scores.overall.score = 91;
-    const profile = judge.scores.profiles.quality!;
+    const profile = judge.scores.profiles.quality;
+    if (!profile) throw new Error('fake judge is missing quality profile');
     profile.score = 88;
-    profile.dimensions.correctness!.score = 100;
+    const correctness = profile.dimensions.correctness;
+    if (!correctness) throw new Error('fake judge is missing quality.correctness dimension');
+    correctness.score = 100;
     const r = buildReportJson({ judge, run: fakeRun(), threshold: 9 });
     expect(r.headline.score).toBe(9.1);
     expect(r.scores.overall.score).toBe(9.1);
-    expect(r.scores.profiles.quality!.score).toBe(8.8);
-    expect(r.scores.profiles.quality!.dimensions.correctness!.score).toBe(10);
+    expect(r.scores.profiles.quality?.score).toBe(8.8);
+    expect(r.scores.profiles.quality?.dimensions.correctness?.score).toBe(10);
     expect(r.headline.threshold_passed).toBe(true);
   });
 
@@ -113,7 +323,9 @@ describe('buildReportJson', () => {
         rationale: 'A minor issue was observed.',
       },
     ];
-    judge.scores.profiles.quality!.dimensions.correctness!.evidence = [typo];
+    const correctness = judge.scores.profiles.quality?.dimensions.correctness;
+    if (!correctness) throw new Error('fake judge is missing quality.correctness dimension');
+    correctness.evidence = [typo];
     judge.spec_compliance.goals = [
       { id: 'G1', description: 'Verify thing', status: 'verified', evidence: [typo] },
     ];
@@ -293,6 +505,139 @@ describe('buildReportJson', () => {
     expect(r.scores.profiles.frontend_correctness?.dimensions.responsive_behavior?.score).toBe(8);
   });
 
+  it('keeps responsive scores when the mobile viewport was exercised by a probe', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.profiles.frontend_correctness = {
+      score: 8,
+      dimensions: {
+        responsive_behavior: {
+          score: 8,
+          rationale: 'Mobile viewport worked.',
+          evidence: ['MOBILE_PROBE'],
+        },
+      },
+    };
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'MOBILE_PROBE',
+          ts: 1,
+          step: 1,
+          target_kind: 'web',
+          kind: 'probe_result',
+          actor: 'system',
+          payload: {
+            probe: 'mobile_viewport',
+            ok: true,
+            summary: { viewport: { width: 390, height: 844 }, horizontal_overflow: false },
+            data: {},
+          },
+        },
+      ],
+    });
+
+    expect(r.scores.profiles.frontend_correctness?.dimensions.responsive_behavior?.score).toBe(8);
+  });
+
+  it('removes stale mobile and network caveats when trace probes ran', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.meta.confidence_caveats = [
+      'No mobile viewport pass was run.',
+      'No explicit network trace was collected.',
+      'Export follow-up was not attempted.',
+    ];
+    judge.meta.would_re_explore_with = [
+      'Run a mobile viewport pass.',
+      'Collect an explicit network trace.',
+      'Try export again.',
+    ];
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'MOBILE_PROBE',
+          ts: 1,
+          step: 1,
+          target_kind: 'web',
+          kind: 'probe_result',
+          actor: 'system',
+          payload: {
+            probe: 'mobile_viewport',
+            ok: true,
+            summary: { viewport: { width: 390, height: 844 }, horizontal_overflow: false },
+            data: {},
+          },
+        },
+        {
+          v: 1,
+          id: 'NET_PROBE',
+          ts: 2,
+          step: 1,
+          target_kind: 'web',
+          kind: 'probe_result',
+          actor: 'system',
+          payload: {
+            probe: 'network_all_since',
+            ok: true,
+            summary: { count: 5, failure_count: 0 },
+            data: [],
+          },
+        },
+      ],
+    });
+
+    expect(r.meta.confidence_caveats).toEqual(['Export follow-up was not attempted.']);
+    expect(r.meta.would_re_explore_with).toEqual(['Try export again.']);
+  });
+
+  it('normalizes clean network dimensions from the post-Explorer network probe', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.profiles.frontend_correctness = {
+      score: 7,
+      dimensions: {
+        network_clean: {
+          score: 6,
+          rationale: 'No explicit network trace was collected.',
+          evidence: [],
+        },
+      },
+    };
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        {
+          v: 1,
+          id: 'NET_PROBE',
+          ts: 1,
+          step: 1,
+          target_kind: 'web',
+          kind: 'probe_result',
+          actor: 'system',
+          payload: {
+            probe: 'network_all_since',
+            ok: true,
+            summary: { count: 5, failure_count: 0 },
+            data: [],
+          },
+        },
+      ],
+    });
+
+    expect(r.scores.profiles.frontend_correctness?.dimensions.network_clean?.score).toBe(10);
+    expect(r.scores.profiles.frontend_correctness?.dimensions.network_clean?.evidence).toEqual([
+      'NET_PROBE',
+    ]);
+  });
+
   it('preserves optional provider token usage in run metadata', () => {
     const run = {
       ...fakeRun(),
@@ -422,6 +767,17 @@ describe('buildReportJson', () => {
     expect(r.discovery?.product_use_contract?.user_jobs[0]?.weak_evidence).toContain(
       'search box visible',
     );
+    expect(r.testing_plan?.primary_journey_id).toBe('J1');
+    expect(r.testing_plan?.journeys[0]).toMatchObject({
+      title: 'Search content',
+      user_goal: 'Find content',
+    });
+    expect(r.testing_plan?.scenarios[0]).toMatchObject({
+      id: 'G1',
+      title: 'Find content',
+      expected_result: 'article content visible',
+      actions: ['enter query', 'open result'],
+    });
   });
 
   it('includes trace-derived task runs with replay metadata', () => {

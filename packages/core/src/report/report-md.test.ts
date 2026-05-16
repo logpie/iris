@@ -7,14 +7,15 @@ describe('buildReportMd', () => {
   it('produces a markdown header with score and pass/fail', () => {
     const r = buildReportJson({ judge: fakeJudge(), run: fakeRun(), threshold: 7.0 });
     const md = buildReportMd(r);
-    expect(md).toMatch(/# Iris run — 6\.5/);
+    expect(md).toMatch(/# Iris run — Provisional product score: 6\.5/);
+    expect(md).toContain('**Evidence confidence:**');
     expect(md).toMatch(/❌/);
   });
 
-  it('lists spec compliance goals when applicable', () => {
+  it('lists task checks when applicable', () => {
     const r = buildReportJson({ judge: fakeJudge(), run: fakeRun() });
     const md = buildReportMd(r);
-    expect(md).toMatch(/Spec compliance/);
+    expect(md).toMatch(/Task checks/);
     expect(md).toMatch(/G1: sign in/);
     expect(md).toMatch(/G2: export/);
   });
@@ -26,7 +27,7 @@ describe('buildReportMd', () => {
     ];
     const r = buildReportJson({ judge, run: fakeRun() });
     const md = buildReportMd(r);
-    expect(md).toMatch(/Spec compliance — 1 \/ 1/);
+    expect(md).toMatch(/Task checks — 1 \/ 1/);
     expect(md).toMatch(/✅ G1: load article/);
   });
 
@@ -74,7 +75,24 @@ describe('buildReportMd', () => {
     expect(md).toContain('judge gpt-5.4-mini (effort low)');
   });
 
-  it('renders product-use contract metadata from Discovery', () => {
+  it('does not show a clean pass marker for provisional product scores', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 7.5;
+    judge.meta.confidence_overall = 0.8;
+    judge.meta.confidence_caveats = [];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'create artifact', status: 'verified', evidence: ['T1'] },
+      { id: 'G2', description: 'edit artifact', status: 'verified', evidence: ['T2'] },
+      { id: 'G3', description: 'style artifact', status: 'partial', evidence: ['T3'] },
+      { id: 'G4', description: 'export artifact', status: 'partial', evidence: ['T4'] },
+    ];
+    const md = buildReportMd(buildReportJson({ judge, run: fakeRun(), threshold: 7 }));
+    expect(md.split('\n')[0]).toContain('⚠');
+    expect(md.split('\n')[0]).not.toContain('✅');
+  });
+
+  it('renders scenario-plan metadata from Discovery', () => {
     const r = buildReportJson({
       judge: fakeJudge(),
       run: fakeRun(),
@@ -92,6 +110,16 @@ describe('buildReportMd', () => {
               product_kinds: ['canvas_editor'],
               primary_value_loop: 'Create a durable drawing artifact.',
               core_artifacts: ['visible drawing on canvas'],
+              value_loops: [
+                {
+                  id: 'VL1',
+                  title: 'Create and refine drawing',
+                  artifact: 'visible drawing on canvas',
+                  required_capabilities: ['canvas creation', 'visible editing'],
+                  proof_obligations: ['drawing object remains visible after editing'],
+                  weak_evidence: ['toolbar selected'],
+                },
+              ],
               user_jobs: [
                 {
                   id: 'PU1',
@@ -109,9 +137,13 @@ describe('buildReportMd', () => {
       ],
     });
     const md = buildReportMd(r);
-    expect(md).toContain('**Real-use contract:** Create a durable drawing artifact.');
-    expect(md).toContain('**Product kind:** canvas_editor');
-    expect(md).toContain('**Expected artifact:** visible drawing on canvas');
+    expect(md).toContain('**Overall mission:** Create a durable drawing artifact.');
+    expect(md).toContain('**User journeys checked:**');
+    expect(md).toContain('VL1: Create and refine drawing');
+    expect(md).toContain('**Success criteria:** drawing object remains visible after editing');
+    expect(md).toContain('**Tested scenarios:**');
+    expect(md).toContain('PU1: Draw something');
+    expect(md).not.toContain('Product-use contract');
   });
 
   it('omits zero-cost metadata from markdown reports', () => {

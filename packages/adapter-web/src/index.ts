@@ -1,15 +1,14 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Page } from 'playwright';
 import type {
   AdapterArtifacts,
   AdapterConfig,
+  DiscoverySurfaceKind,
+  DiscoverySurfaceSource,
   DiscoverySurvey,
   DiscoverySurveyCapture,
   DiscoverySurveyControl,
   DiscoverySurveySurface,
-  DiscoverySurfaceKind,
-  DiscoverySurfaceSource,
   EvidenceFile,
   EvidenceRef,
   InteractionKit,
@@ -25,6 +24,7 @@ import type {
   ToolSpec,
 } from '@iris/adapter-types';
 import type { llm } from '@iris/core';
+import type { Page } from 'playwright';
 import { WEB_INTERACTION_KIT, WEB_OUTCOME_CONTRACT } from './contract.js';
 import { type RichContentItem, formatRichContent, richContent } from './dom/rich-content.js';
 export { richContent, formatRichContent, type RichContentItem };
@@ -35,11 +35,13 @@ import { ConsoleProbe } from './probes/console.js';
 import { runLighthouse } from './probes/lighthouse.js';
 import { NetworkProbe } from './probes/network.js';
 import { runNotificationsProbe } from './probes/notifications.js';
+import { runMobileViewport } from './probes/mobile-viewport.js';
 import { WEB_PROBE_SPECS } from './probes/probe-spec.js';
+import { runStateDelta } from './probes/state-delta.js';
 import { runUiState } from './probes/ui-state.js';
 import {
-  type StepScreenshotIndex,
   type ScreenshotFrame,
+  type StepScreenshotIndex,
   computeClipWindows,
   findRunVideo,
   sliceEvidenceClips,
@@ -55,7 +57,9 @@ import {
   visionHoverWait,
   visionRightClick,
 } from './tools/click-variants.js';
+import { clickDownload } from './tools/download.js';
 import { drag, visionDrag } from './tools/drag.js';
+import { clickUpload } from './tools/file-chooser.js';
 import { keyChord } from './tools/key-chord.js';
 import { back, forward, navigate, reload, scroll, waitFor } from './tools/navigation.js';
 import { paste, visionPaste } from './tools/paste.js';
@@ -93,10 +97,12 @@ export class WebTargetAdapter implements TargetAdapter {
   private evidenceDir = '';
   private screenshotsDir = '';
   private videoDir = '';
+  private downloadsDir = '';
   private tracePath = '';
   private observationCounter = 0;
   private screenshotIndex: StepScreenshotIndex = {};
   private screenshotTimeline: ScreenshotFrame[] = [];
+  private observationHistory: Observation[] = [];
   private consoleProbe: ConsoleProbe | null = null;
   private networkProbe: NetworkProbe | null = null;
   private eventTimestamps: Record<string, number> = {};
@@ -113,9 +119,11 @@ export class WebTargetAdapter implements TargetAdapter {
     this.evidenceDir = join(config.out_dir, 'evidence');
     this.screenshotsDir = join(this.evidenceDir, 'screenshots');
     this.videoDir = join(this.evidenceDir, 'videos');
+    this.downloadsDir = join(this.evidenceDir, 'downloads');
     this.tracePath = join(this.evidenceDir, 'trace.zip');
     mkdirSync(this.screenshotsDir, { recursive: true });
     mkdirSync(this.videoDir, { recursive: true });
+    mkdirSync(this.downloadsDir, { recursive: true });
 
     this.lifecycle = new WebLifecycle({
       headless: this.opts.headless ?? true,
@@ -337,6 +345,17 @@ export class WebTargetAdapter implements TargetAdapter {
         return visionHoverWait(page, args as { x: number; y: number; wait_ms?: number });
       case 'upload':
         return upload(page, args as { selector: string; file_path?: string; mime?: string });
+      case 'click_upload':
+        return clickUpload(
+          page,
+          args as { selector: string; file_path?: string; timeout_ms?: number; mime?: string },
+        );
+      case 'click_download':
+        return clickDownload(
+          page,
+          args as { selector: string; timeout_ms?: number; save_as?: string },
+          this.downloadsDir,
+        );
       default:
         return { ok: false, error: `unknown tool: ${name}` };
     }
@@ -394,7 +413,7 @@ export class WebTargetAdapter implements TargetAdapter {
     const richPart = richSection ? `\n\n## RICH CONTENT\n${richSection}` : '';
     const summary =
       `${title}\n\n## VISIBLE TEXT\n${textPart}${richPart}\n\n## OUTLINE\n${outlinePart}`.trim();
-    return {
+    const observation = {
       observation_ref: ref,
       summary,
       payload: {
@@ -407,6 +426,8 @@ export class WebTargetAdapter implements TargetAdapter {
         ...(perceptionState ? { perception_state: perceptionState } : {}),
       },
     };
+    this.observationHistory.push(observation);
+    return observation;
   }
 
   async discoverySurvey(opts: {
@@ -676,8 +697,14 @@ export class WebTargetAdapter implements TargetAdapter {
     const page = this.lifecycle.getPage();
     if (name === 'axe') return runAxe(page);
     if (name === 'lighthouse') return runLighthouse(page);
+    if (name === 'mobile_viewport') {
+      return runMobileViewport(page, args as { width?: number; height?: number });
+    }
     if (name === 'notifications_visible') return runNotificationsProbe(page);
     if (name === 'ui_state') return runUiState(page, args as { selectors?: string[] });
+    if (name === 'state_delta') {
+      return runStateDelta(this.observationHistory, args as { from_ref?: string; to_ref?: string });
+    }
     if (name.startsWith('console_') && this.consoleProbe) {
       return this.consoleProbe.runProbe(name, args);
     }

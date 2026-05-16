@@ -4,6 +4,7 @@ export * as llm from './llm/index.js';
 export * as specInterpreter from './spec-interpreter/index.js';
 export * as judge from './judge/index.js';
 export * as report from './report/index.js';
+export * as scenario from './scenario/index.js';
 export * as taskRuns from './task-runs/index.js';
 export * as orchestrator from './orchestrator/index.js';
 export * as explorer from './explorer/index.js';

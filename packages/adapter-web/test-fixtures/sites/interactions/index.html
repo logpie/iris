@@ -8,7 +8,7 @@
     #ctx-target { padding: 8px; background: #eee; display: inline-block; }
     #ctx-menu { display: none; position: absolute; background: white; border: 1px solid #888; padding: 4px; }
     #dbl-target { padding: 8px; background: #eef; display: inline-block; }
-    #right-click-log, #double-click-log, #key-chord-log, #paste-log, #upload-log, #hover-log { margin-top: 8px; font-family: monospace; }
+    #right-click-log, #double-click-log, #key-chord-log, #paste-log, #upload-log, #hidden-upload-log, #download-log, #hover-log { margin-top: 8px; font-family: monospace; }
     #hover-tip { display: none; background: yellow; padding: 4px; }
   </style>
   </head>
@@ -50,6 +50,19 @@
       <h2>Upload</h2>
       <input id="file-input" type="file">
       <div id="upload-log"></div>
+    </section>
+
+    <section>
+      <h2>Menu upload</h2>
+      <button id="hidden-upload-button">Upload via menu</button>
+      <input id="hidden-file-input" type="file" style="display: none">
+      <div id="hidden-upload-log"></div>
+    </section>
+
+    <section>
+      <h2>Download</h2>
+      <button id="download-button">Download artifact</button>
+      <div id="download-log"></div>
     </section>
 
     <section>
@@ -141,6 +154,36 @@
         f.addEventListener('change', () => {
           const file = f.files?.[0];
           log.textContent = file ? `uploaded:${file.name}:${file.size}` : 'no-file';
+        });
+      })();
+
+      // MENU UPLOAD: visible control opens a hidden native file chooser.
+      (function setupHiddenUpload() {
+        const b = document.getElementById('hidden-upload-button');
+        const f = document.getElementById('hidden-file-input');
+        const log = document.getElementById('hidden-upload-log');
+        b.addEventListener('click', () => f.click());
+        f.addEventListener('change', () => {
+          const file = f.files?.[0];
+          log.textContent = file ? `menu-uploaded:${file.name}:${file.size}` : 'no-file';
+        });
+      })();
+
+      // DOWNLOAD: creates a browser download event and records visible feedback.
+      (function setupDownload() {
+        const b = document.getElementById('download-button');
+        const log = document.getElementById('download-log');
+        b.addEventListener('click', () => {
+          const blob = new Blob(['iris artifact\n'], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'artifact.txt';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          log.textContent = 'download-started:artifact.txt';
         });
       })();
 

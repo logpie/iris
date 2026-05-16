@@ -17,6 +17,8 @@ describe('WEB_INTERACTION_KIT', () => {
     expect(names).toContain('double_click');
     expect(names).toContain('hover_wait');
     expect(names).toContain('upload');
+    expect(names).toContain('click_upload');
+    expect(names).toContain('click_download');
   });
 
   it('marks vision_drag with the canvas coverage note', () => {
@@ -113,5 +115,55 @@ describe('collectWebOutcomeEvidence', () => {
     const arts = collectWebOutcomeEvidence(events);
     expect(arts.map((a) => a.ref)).toContain('C');
     expect(arts.find((a) => a.ref === 'C')?.note).toContain('hash=#Services');
+  });
+
+  it('includes post-interaction state_delta probes that prove product state changed', () => {
+    const events = [
+      ev('A', 'action', { tool: 'key_chord', keys: ['CmdOrCtrl', 'd'] }),
+      ev('B', 'action_result', { tool: 'key_chord', ok: true }),
+      ev('C', 'probe_result', {
+        ok: true,
+        probe: 'state_delta',
+        summary: {
+          changed: true,
+          text_changed: true,
+          element_count_before: 5,
+          element_count_after: 6,
+        },
+      }),
+    ];
+    const arts = collectWebOutcomeEvidence(events);
+    expect(arts.map((a) => a.ref)).toContain('C');
+    expect(arts.find((a) => a.ref === 'C')?.note).toContain('state_delta');
+  });
+
+  it('does not include unchanged state_delta probes as outcome evidence', () => {
+    const events = [
+      ev('A', 'action', { tool: 'click' }),
+      ev('B', 'action_result', { tool: 'click', ok: true }),
+      ev('C', 'probe_result', { ok: true, probe: 'state_delta', summary: { changed: false } }),
+    ];
+    expect(collectWebOutcomeEvidence(events).map((a) => a.ref)).not.toContain('C');
+  });
+
+  it('includes downloaded files as outcome evidence', () => {
+    const events = [
+      ev('A', 'action', { tool: 'click_download', selector: 'button:has-text("Download")' }),
+      ev('B', 'action_result', {
+        tool: 'click_download',
+        ok: true,
+        evidence_refs: ['evidence/downloads/export.tldr'],
+      }),
+    ];
+    const arts = collectWebOutcomeEvidence(events);
+    expect(arts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'file_download',
+          ref: 'evidence/downloads/export.tldr',
+        }),
+        expect.objectContaining({ kind: 'file_download', ref: 'B' }),
+      ]),
+    );
   });
 });

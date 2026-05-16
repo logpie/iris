@@ -9,6 +9,10 @@ import { adapter as irisAdapter } from '@iris/core';
 import type { trace as iristrace } from '@iris/core';
 import { ulid } from 'ulid';
 import { type ZodRawShape, z } from 'zod';
+import {
+  ScenarioCompletionGateVerifier,
+  type ScenarioCompletionGate,
+} from './scenario-completion-gate.js';
 
 /**
  * Agent SDK-based runner. Uses the local Claude Code subscription via
@@ -50,6 +54,12 @@ async function sdkDisposeStep(fn: (() => Promise<unknown> | unknown) | undefined
 async function disposeSdkQuery(q: SdkQueryHandle): Promise<void> {
   await sdkDisposeStep(q.return?.bind(q));
   await sdkDisposeStep(q[Symbol.asyncDispose]?.bind(q));
+}
+
+function isUnattemptedSkipRationale(rationale: string): boolean {
+  return /\b(not (attempted|exercised|tested)|never reached|not reached|ran out|out of time|no time|before budget|budget ran out|budget was exhausted|did not (attempt|exercise|test|reach|visit)|not visited)\b/i.test(
+    rationale,
+  );
 }
 
 async function runSdkIteratorWithTimeout(
@@ -340,6 +350,7 @@ export interface ExplorerSdkConfig {
   /** When provided, registers a goal_status MCP tool and emits a final
    * `goal_status: untested` event for every goal the Explorer never closed. */
   goals?: Array<{ id: string; description: string }>;
+  scenarioGates?: ScenarioCompletionGate[];
   /** Phase 10: max number of expansion goals the Explorer can append via
    * propose_goal during the run. Defaults to 6. Set to 0 to disable expansion. */
   maxExpansionGoals?: number;
@@ -427,6 +438,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
   let stepCount = 0;
   let totalCost = 0;
   let observationCounter = 0;
+  const scenarioGate = new ScenarioCompletionGateVerifier(config.scenarioGates);
 
   const state: ExplorerState = {
     plan_stack: [],
@@ -444,16 +456,18 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     payload: Record<string, unknown>,
   ): Promise<string> => {
     const id = ulid();
-    await config.traceWriter.append({
-      v: 1,
+    const event = {
+      v: 1 as const,
       id,
       ts: Date.now() / 1000,
       step: stepCount,
-      target_kind: 'web',
+      target_kind: 'web' as const,
       kind,
       actor,
       payload,
-    });
+    };
+    await config.traceWriter.append(event);
+    scenarioGate.recordTraceEvent(id, kind, payload);
     return id;
   };
 
@@ -532,6 +546,8 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           'hover_wait',
           'vision_hover_wait',
           'upload',
+          'click_upload',
+          'click_download',
           // Phase 15: vision_click was missing — same state-change semantics
           // as click. Adding so post-coord-click state gets captured.
           'vision_click',
@@ -556,12 +572,16 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
         // burn the whole budget on selector retries.
         await checkAndApplyCutover();
         await finishIfAllAssignedGoalsTerminal();
+        const artifactHint =
+          result.ok && result.evidence_refs.length > 0
+            ? `\naction_result_event_id=${actionResultEventId}\nevidence_refs=${JSON.stringify(result.evidence_refs)}`
+            : '';
         const evidenceHint =
           postActionObservationEventId !== null
-            ? `\npost_action_observation_event_id=${postActionObservationEventId}\npost_action_observation_summary:\n${postActionObservationSummary}`
+            ? `${artifactHint}\npost_action_observation_event_id=${postActionObservationEventId}\npost_action_observation_summary:\n${postActionObservationSummary}`
             : spec.name === 'screenshot' || spec.name === 'vision_describe'
-              ? `\noutcome_action_result_event_id=${actionResultEventId}`
-              : '';
+              ? `${artifactHint}\noutcome_action_result_event_id=${actionResultEventId}`
+              : artifactHint;
         const baseText = result.ok
           ? description
             ? `OK — vision: ${description}${evidenceHint}`
@@ -760,7 +780,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
   // Cutover notice to be prepended to the next tool result so the agent
   // notices the system has moved on.
   let pendingCutoverNotice: string | null = null;
-  let activeQuery: SdkQueryHandle | undefined;
+  const activeQueryRef: { current?: SdkQueryHandle } = {};
   let terminalGoalsReached = false;
   let partialRetryPasses = 0;
   const maxPartialRetryPasses = goalLedger.size > 0 ? 1 : 0;
@@ -865,7 +885,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     state.done = true;
     await emit('done', 'system', { reason: 'all_assigned_goals_terminal' });
     try {
-      activeQuery?.interrupt?.();
+      activeQueryRef.current?.interrupt?.();
     } catch {
       // ignore; loop disposal handles cleanup
     }
@@ -879,7 +899,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       ? [
           tool(
             'propose_goal',
-            'Add a new goal mid-run when you discover a surface or behavior not covered by seed goals. Example: you found a Settings panel — propose "change theme and verify persistence." New goals are tagged as expansion goals (priority should/could, never must). Capped per run to keep scope finite.',
+            'Add a new goal mid-run when you discover a material product ability not covered by seed goals or listed capability gaps. Prefer product outcomes over raw surfaces: e.g. "Change theme and verify persistence", not "open settings". New goals are tagged as expansion goals (priority should/could, never must). Capped per run to keep scope finite.',
             {
               description: z
                 .string()
@@ -941,7 +961,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
     ? [
         tool(
           'goal_status',
-          'Mark a spec goal as verified/partial/blocked/skipped. For verified goals, evidence_event_ids is required and must cite the post-action observation, screenshot, or vision_describe action_result event id that visibly shows the user-facing outcome. Partial and blocked goals also require evidence_event_ids showing the incomplete outcome or blocker; do not close an unattempted goal as partial/blocked. Do not cite the action, action_result for the mutation, or goal_status event itself as verified evidence. partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable.',
+          `Mark a spec goal as verified/partial/blocked/skipped. For verified goals, evidence_event_ids is required and must cite the post-action observation, screenshot, or vision_describe action_result event id that visibly shows the user-facing outcome. Partial and blocked goals also require evidence_event_ids showing the incomplete outcome or blocker; do not close an unattempted goal as partial/blocked. Do not cite the action, action_result for the mutation, or goal_status event itself as verified evidence. partial = some evidence but incomplete; blocked = something prevents testing (e.g., modal); skipped = not applicable, not out of time.${scenarioGate.enabled ? ' Scenario completion gate is enabled: verified will be rejected unless cited evidence contains every required visible output for that goal.' : ''}`,
           {
             id: z.string(),
             status: z.enum(['verified', 'partial', 'blocked', 'skipped']),
@@ -965,6 +985,19 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
                 ],
               };
             }
+            if (args.status === 'verified' && scenarioGate.enabled) {
+              const check = scenarioGate.check(args.id, evidenceEventIds);
+              if (!check.ok) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `ERROR: scenario completion gate rejected verified for ${args.id}. Cited evidence is missing required visible output(s): ${check.missing.join('; ')}. Required checklist: ${check.required.join('; ')}. Repair the product state and call observe/vision_describe, then cite that evidence; otherwise mark the goal partial with evidence.`,
+                    },
+                  ],
+                };
+              }
+            }
             if (
               (args.status === 'partial' || args.status === 'blocked') &&
               evidenceEventIds.length === 0
@@ -974,6 +1007,20 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
                   {
                     type: 'text' as const,
                     text: `ERROR: ${args.status} goal_status requires evidence_event_ids showing the incomplete outcome or blocker. If the goal has not been attempted, keep working on it instead of closing it.`,
+                  },
+                ],
+              };
+            }
+            if (
+              args.status === 'skipped' &&
+              stepCount < config.maxSteps &&
+              isUnattemptedSkipRationale(args.rationale)
+            ) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: 'ERROR: skipped means the goal is not applicable to this product/run. Do not mark assigned goals skipped because time or budget remains; attempt it, or use partial/blocked with evidence after a real attempt.',
                   },
                 ],
               };
@@ -1058,7 +1105,7 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
       ...(config.model ? { model: config.model } : {}),
     },
   });
-  activeQuery = q as SdkQueryHandle;
+  activeQueryRef.current = q as SdkQueryHandle;
 
   try {
     for await (const msg of q) {

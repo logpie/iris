@@ -1,0 +1,445 @@
+import type { DiscoveryCapability } from '../discovery/discovery.js';
+import type { JudgeOutput } from '../judge/judge.js';
+
+type Scores = JudgeOutput['scores'];
+type Goal = JudgeOutput['spec_compliance']['goals'][number];
+type Finding = JudgeOutput['findings'][number];
+type Meta = JudgeOutput['meta'];
+
+export type ScoreAuthority = 'authoritative' | 'provisional' | 'insufficient';
+export type EvidenceConfidenceLevel = 'high' | 'medium' | 'low';
+
+export interface ReportEvaluation {
+  product_score: {
+    value: number;
+    label: string;
+    authority: ScoreAuthority;
+    interpretation: string;
+  };
+  evidence_confidence: {
+    score: number;
+    level: EvidenceConfidenceLevel;
+    label: string;
+    rationale: string;
+    reasons: string[];
+    goal_counts: GoalEvaluationCounts;
+  };
+  capability_coverage?: CapabilityCoverageSummary;
+}
+
+export interface GoalEvaluationCounts {
+  total: number;
+  attempted: number;
+  verified: number;
+  partial: number;
+  blocked: number;
+  skipped: number;
+  untested: number;
+}
+
+export interface CapabilityCoverageSummary {
+  total: number;
+  covered: number;
+  partial: number;
+  untested: number;
+  deferred: number;
+  core_total: number;
+  core_covered: number;
+  core_partial: number;
+  ratio: number;
+  core_ratio: number;
+  level: EvidenceConfidenceLevel;
+  label: string;
+  summary: string;
+  gaps: string[];
+}
+
+export interface DeriveReportEvaluationInput {
+  score: number;
+  scores: Scores;
+  goals: Goal[];
+  findings: Finding[];
+  meta: Meta;
+  capabilities?: DiscoveryCapability[] | undefined;
+}
+
+export function deriveReportEvaluation(inp: DeriveReportEvaluationInput): ReportEvaluation {
+  const goalCounts = countGoals(inp.goals);
+  const requestedRubrics = requestedRubricNames(inp.scores);
+  const scoredRubrics = requestedRubrics.filter((name) => rubricProfileIsScored(inp.scores, name));
+  const rubricCompleteness =
+    requestedRubrics.length > 0 ? scoredRubrics.length / requestedRubrics.length : 1;
+  const hasGoals = goalCounts.total > 0;
+  const attemptedRatio = hasGoals ? goalCounts.attempted / goalCounts.total : 0.6;
+  const verifiedRatio = hasGoals ? goalCounts.verified / goalCounts.total : 0.6;
+  const metaConfidence = clamp01(inp.meta.confidence_overall);
+  const capabilityCoverage = deriveCapabilityCoverage(inp.capabilities ?? [], inp.goals);
+  const evidenceScore = clamp01(
+    0.45 * verifiedRatio + 0.2 * attemptedRatio + 0.25 * metaConfidence + 0.1 * rubricCompleteness,
+  );
+  const level = confidenceLevel(evidenceScore);
+  const authority = scoreAuthority({
+    evidenceScore,
+    attemptedRatio,
+    goalCounts,
+    rubricCompleteness,
+    metaConfidence,
+    hasGoals,
+    capabilityCoverage,
+  });
+  const reasons = evaluationReasons({
+    goalCounts,
+    findings: inp.findings,
+    meta: inp.meta,
+    requestedRubrics,
+    scoredRubrics,
+    capabilityCoverage,
+  });
+  const label = productScoreLabel(authority);
+  const interpretation = productScoreInterpretation(authority, goalCounts, inp.findings);
+
+  return {
+    product_score: {
+      value: inp.score,
+      label,
+      authority,
+      interpretation,
+    },
+    evidence_confidence: {
+      score: Number(evidenceScore.toFixed(2)),
+      level,
+      label: `${capitalize(level)} evidence confidence`,
+      rationale: evidenceRationale(level, goalCounts, authority),
+      reasons,
+      goal_counts: goalCounts,
+    },
+    ...(capabilityCoverage ? { capability_coverage: capabilityCoverage } : {}),
+  };
+}
+
+export function deriveReportEvaluationForReport(report: {
+  headline: { score: number };
+  scores: Scores;
+  spec_compliance: { goals: Goal[] };
+  findings: Finding[];
+  meta: Meta;
+  discovery?: { capabilities?: DiscoveryCapability[] | undefined } | undefined;
+}): ReportEvaluation {
+  return deriveReportEvaluation({
+    score: report.headline.score,
+    scores: report.scores,
+    goals: report.spec_compliance.goals,
+    findings: report.findings,
+    meta: report.meta,
+    capabilities: report.discovery?.capabilities,
+  });
+}
+
+function countGoals(goals: Goal[]): GoalEvaluationCounts {
+  const counts: GoalEvaluationCounts = {
+    total: goals.length,
+    attempted: 0,
+    verified: 0,
+    partial: 0,
+    blocked: 0,
+    skipped: 0,
+    untested: 0,
+  };
+  for (const goal of goals) {
+    switch (goal.status) {
+      case 'verified':
+      case 'satisfied':
+        counts.verified++;
+        counts.attempted++;
+        break;
+      case 'partial':
+        counts.partial++;
+        counts.attempted++;
+        break;
+      case 'blocked':
+      case 'not_satisfied':
+        counts.blocked++;
+        counts.attempted++;
+        break;
+      case 'skipped':
+        counts.skipped++;
+        break;
+      default:
+        counts.untested++;
+        break;
+    }
+  }
+  return counts;
+}
+
+function requestedRubricNames(scores: Scores): string[] {
+  const requested =
+    scores.overall.weighted_from.length > 0
+      ? scores.overall.weighted_from
+      : Object.keys(scores.profiles);
+  return Array.from(new Set(requested));
+}
+
+function rubricProfileIsScored(scores: Scores, name: string): boolean {
+  const profile = scores.profiles[name];
+  if (!profile) return false;
+  const dimensions = Object.values(profile.dimensions);
+  return dimensions.length === 0 || dimensions.some((dimension) => dimension.score !== null);
+}
+
+function scoreAuthority(inp: {
+  evidenceScore: number;
+  attemptedRatio: number;
+  goalCounts: GoalEvaluationCounts;
+  rubricCompleteness: number;
+  metaConfidence: number;
+  hasGoals: boolean;
+  capabilityCoverage?: CapabilityCoverageSummary | undefined;
+}): ScoreAuthority {
+  const coverage = inp.capabilityCoverage;
+  if (
+    inp.evidenceScore < 0.45 ||
+    (inp.hasGoals && inp.attemptedRatio < 0.5) ||
+    inp.rubricCompleteness < 0.5 ||
+    inp.metaConfidence < 0.35 ||
+    (coverage && coverage.core_total >= 4 && coverage.core_ratio < 0.5)
+  ) {
+    return 'insufficient';
+  }
+  if (
+    inp.evidenceScore >= 0.8 &&
+    inp.goalCounts.partial === 0 &&
+    inp.goalCounts.untested === 0 &&
+    inp.goalCounts.skipped === 0 &&
+    inp.rubricCompleteness === 1 &&
+    inp.metaConfidence >= 0.7 &&
+    (!coverage || coverage.core_total === 0 || coverage.core_ratio >= 0.75)
+  ) {
+    return 'authoritative';
+  }
+  return 'provisional';
+}
+
+function evaluationReasons(inp: {
+  goalCounts: GoalEvaluationCounts;
+  findings: Finding[];
+  meta: Meta;
+  requestedRubrics: string[];
+  scoredRubrics: string[];
+  capabilityCoverage?: CapabilityCoverageSummary | undefined;
+}): string[] {
+  const reasons: string[] = [];
+  const counts = inp.goalCounts;
+  if (counts.total > 0) {
+    reasons.push(`${counts.verified}/${counts.total} tasks verified`);
+    if (counts.partial > 0) {
+      reasons.push(
+        `${countPhrase(counts.partial, 'partial task')} ${counts.partial === 1 ? 'indicates' : 'indicate'} Iris did not fully prove outcomes`,
+      );
+    }
+    if (counts.blocked > 0) {
+      reasons.push(`${countPhrase(counts.blocked, 'task')} showed blocked or failed outcomes`);
+    }
+    if (counts.untested > 0) {
+      reasons.push(
+        `${countPhrase(counts.untested, 'task')} ${counts.untested === 1 ? 'was' : 'were'} not exercised`,
+      );
+    }
+    if (counts.skipped > 0) {
+      reasons.push(
+        `${countPhrase(counts.skipped, 'task')} ${counts.skipped === 1 ? 'was' : 'were'} skipped as not applicable or out of scope`,
+      );
+    }
+  } else {
+    reasons.push('No product tasks were available to anchor the product score');
+  }
+
+  const highImpactFindings = inp.findings.filter(
+    (finding) => finding.severity === 'blocker' || finding.severity === 'major',
+  ).length;
+  if (inp.findings.length === 0) {
+    reasons.push('No confirmed product findings');
+  } else if (highImpactFindings > 0) {
+    reasons.push(countPhrase(highImpactFindings, 'high-impact product finding'));
+  }
+
+  const missingRubrics = inp.requestedRubrics.filter((name) => !inp.scoredRubrics.includes(name));
+  if (missingRubrics.length > 0) {
+    reasons.push(`${missingRubrics.length} requested rubric profiles missing or unscored`);
+  }
+  if (inp.capabilityCoverage) {
+    const coverage = inp.capabilityCoverage;
+    reasons.push(
+      `${coverage.core_covered}/${coverage.core_total} core product capabilities covered`,
+    );
+    if (coverage.gaps.length > 0) {
+      reasons.push(`Capability gaps: ${coverage.gaps.slice(0, 3).join('; ')}`);
+    }
+  }
+
+  for (const caveat of inp.meta.confidence_caveats.slice(0, 2)) {
+    reasons.push(caveat);
+  }
+  return uniqueStrings(reasons);
+}
+
+function countPhrase(count: number, singular: string): string {
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+function productScoreLabel(authority: ScoreAuthority): string {
+  switch (authority) {
+    case 'authoritative':
+      return 'Product score';
+    case 'insufficient':
+      return 'Not enough evidence to score fairly';
+    default:
+      return 'Provisional product score';
+  }
+}
+
+function productScoreInterpretation(
+  authority: ScoreAuthority,
+  counts: GoalEvaluationCounts,
+  findings: Finding[],
+): string {
+  if (authority === 'insufficient') {
+    return 'Iris did not gather enough evidence to grade product quality fairly.';
+  }
+  if (authority === 'authoritative') {
+    return 'The score is backed by completed task evidence for the exercised scope.';
+  }
+  if (findings.length === 0 && counts.partial > 0) {
+    return 'No product defects were confirmed; partial tasks should be read as Iris proof gaps, not product failures.';
+  }
+  if (findings.length === 0) {
+    return 'No product defects were confirmed, but the run still has coverage or confidence limits.';
+  }
+  return 'Product issues were found, but coverage or evidence limits make the numeric score provisional.';
+}
+
+function deriveCapabilityCoverage(
+  capabilities: DiscoveryCapability[],
+  goals: Goal[],
+): CapabilityCoverageSummary | undefined {
+  const relevant = capabilities.filter((capability) => capability.status !== 'not_applicable');
+  if (relevant.length === 0) return undefined;
+  const statusByGoalId = new Map(goals.map((goal) => [goal.id, goal.status]));
+  const classified = relevant.map((capability) => ({
+    capability,
+    coverage: capabilityRuntimeStatus(capability, statusByGoalId),
+  }));
+  const covered = classified.filter((item) => item.coverage === 'covered').length;
+  const partial = classified.filter((item) => item.coverage === 'partial').length;
+  const untested = classified.filter((item) => item.coverage === 'untested').length;
+  const deferred = classified.filter((item) => item.coverage === 'deferred').length;
+  const core = classified.filter((item) => item.capability.importance === 'core');
+  const coreCovered = core.filter((item) => item.coverage === 'covered').length;
+  const corePartial = core.filter((item) => item.coverage === 'partial').length;
+  const ratio = relevant.length > 0 ? covered / relevant.length : 1;
+  const coreRatio = core.length > 0 ? coreCovered / core.length : ratio;
+  const level = capabilityCoverageLevel(coreRatio, ratio);
+  const gaps = classified
+    .filter(
+      (item) =>
+        item.coverage !== 'covered' &&
+        (item.capability.importance === 'core' || item.capability.importance === 'important'),
+    )
+    .sort((a, b) => capabilityImportanceRank(a.capability) - capabilityImportanceRank(b.capability))
+    .map((item) => item.capability.label)
+    .slice(0, 8);
+  const summary =
+    core.length > 0
+      ? `${coreCovered}/${core.length} core capabilities covered; ${covered}/${relevant.length} total capabilities covered.`
+      : `${covered}/${relevant.length} capabilities covered.`;
+  return {
+    total: relevant.length,
+    covered,
+    partial,
+    untested,
+    deferred,
+    core_total: core.length,
+    core_covered: coreCovered,
+    core_partial: corePartial,
+    ratio: Number(ratio.toFixed(2)),
+    core_ratio: Number(coreRatio.toFixed(2)),
+    level,
+    label: `${capitalize(level)} product coverage`,
+    summary,
+    gaps,
+  };
+}
+
+function capabilityRuntimeStatus(
+  capability: DiscoveryCapability,
+  statusByGoalId: Map<string, Goal['status']>,
+): 'covered' | 'partial' | 'untested' | 'deferred' {
+  const statuses = capability.scenario_ids
+    .map((id) => statusByGoalId.get(id))
+    .filter((status): status is Goal['status'] => Boolean(status));
+  if (statuses.some((status) => status === 'verified' || status === 'satisfied')) return 'covered';
+  if (statuses.some((status) => status === 'partial' || status === 'blocked' || status === 'not_satisfied')) {
+    return 'partial';
+  }
+  if (capability.status === 'selected') return 'untested';
+  return 'deferred';
+}
+
+function capabilityCoverageLevel(coreRatio: number, ratio: number): EvidenceConfidenceLevel {
+  if (coreRatio >= 0.75 && ratio >= 0.55) return 'high';
+  if (coreRatio >= 0.5 && ratio >= 0.35) return 'medium';
+  return 'low';
+}
+
+function capabilityImportanceRank(capability: DiscoveryCapability): number {
+  switch (capability.importance) {
+    case 'core':
+      return 0;
+    case 'important':
+      return 1;
+    case 'secondary':
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+function evidenceRationale(
+  level: EvidenceConfidenceLevel,
+  counts: GoalEvaluationCounts,
+  authority: ScoreAuthority,
+): string {
+  if (authority === 'insufficient') {
+    return 'The run is useful for debugging Iris, but not for a fair product-quality judgement.';
+  }
+  if (counts.total > 0 && counts.partial > 0) {
+    return `${capitalize(level)} confidence because Iris attempted all or most tasks but left outcome proof incomplete.`;
+  }
+  return `${capitalize(level)} confidence in the observed product score.`;
+}
+
+function confidenceLevel(score: number): EvidenceConfidenceLevel {
+  if (score >= 0.8) return 'high';
+  if (score >= 0.55) return 'medium';
+  return 'low';
+}
+
+function capitalize(value: string): string {
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}

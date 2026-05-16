@@ -10,7 +10,10 @@ export function resolveTraceRefTypo(
   traceIndexById: Map<string, number> = buildTraceIndexById(trace),
   opts: { maxIdx?: number | undefined } = {},
 ): string | undefined {
-  if (traceIndexById.has(ref)) return ref;
+  const directIdx = traceIndexById.get(ref);
+  if (directIdx !== undefined) return trace[directIdx]?.id ?? ref;
+  const observationRef = resolveObservationRef(ref, trace, opts);
+  if (observationRef) return observationRef;
   if (!looksLikeTraceId(ref)) return undefined;
   const candidates = trace.filter((event, idx) => {
     if (opts.maxIdx !== undefined && idx > opts.maxIdx) return false;
@@ -18,6 +21,20 @@ export function resolveTraceRefTypo(
       return true;
     }
     return event.id.slice(0, 6) === ref.slice(0, 6) && editDistanceAtMostOne(event.id, ref);
+  });
+  return candidates.length === 1 ? candidates[0]?.id : undefined;
+}
+
+function resolveObservationRef(
+  ref: string,
+  trace: TraceEvent[],
+  opts: { maxIdx?: number | undefined },
+): string | undefined {
+  if (!/^OBS-\d+$/i.test(ref)) return undefined;
+  const candidates = trace.filter((event, idx) => {
+    if (opts.maxIdx !== undefined && idx > opts.maxIdx) return false;
+    const payload = event.payload as { ref?: unknown };
+    return event.kind === 'observation' && payload.ref === ref;
   });
   return candidates.length === 1 ? candidates[0]?.id : undefined;
 }

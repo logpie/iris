@@ -1,16 +1,20 @@
-import type { JudgeOutput } from '../judge/judge.js';
-import { findingHash } from '../trace/identity.js';
-import type { TraceEvent } from '../trace/schema.js';
 import type {
+  DiscoveryCapability,
   DiscoveryCoveragePlan,
   DiscoveryGoal,
   DiscoveryJourney,
-  ProductUseContract,
   DiscoverySurface,
+  ProductUseContract,
 } from '../discovery/discovery.js';
+import { deriveDiscoveryCapabilitiesForReport } from '../discovery/discovery.js';
+import type { JudgeOutput } from '../judge/judge.js';
 import { type TaskRun, buildTaskRuns } from '../task-runs/task-runs.js';
+import { findingHash } from '../trace/identity.js';
 import { buildTraceIndexById, resolveTraceRefTypo } from '../trace/ref-resolver.js';
-import { deriveProbeConfidenceCaveats, normalizeReportScores } from './score-normalization.js';
+import type { TraceEvent } from '../trace/schema.js';
+import { type ReportEvaluation, deriveReportEvaluation } from './evaluation.js';
+import { normalizeReportMeta, normalizeReportScores } from './score-normalization.js';
+import { type TestingPlan, deriveTestingPlan } from './testing-plan.js';
 
 export interface ReportRunMeta {
   id: string;
@@ -64,6 +68,7 @@ export interface DiscoveryReport {
   goals?: DiscoveryGoal[];
   surfaces?: DiscoverySurface[];
   journeys?: DiscoveryJourney[];
+  capabilities?: DiscoveryCapability[];
   coverage_plan?: DiscoveryCoveragePlan;
   product_use_contract?: ProductUseContract;
   survey_summary?: string;
@@ -113,7 +118,12 @@ export interface ReportJson {
   findings: JudgeOutput['findings'];
   coverage_review: JudgeOutput['coverage_review'];
   meta: JudgeOutput['meta'];
+  // Separates the Judge's product-quality score from Iris's confidence in the
+  // evidence gathered during this run. Partial/untested goals should lower
+  // evidence confidence, not be silently misread as product defects.
+  evaluation?: ReportEvaluation;
   discovery?: DiscoveryReport;
+  testing_plan?: TestingPlan;
   task_runs?: TaskRun[];
   artifacts?: ReportArtifacts;
   preflight?: PreflightReport;
@@ -179,13 +189,7 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     traceEvents: inp.trace_events,
     confidenceCaveats: judge.meta.confidence_caveats,
   });
-  const meta = {
-    ...judge.meta,
-    confidence_caveats: uniqueStrings([
-      ...judge.meta.confidence_caveats,
-      ...deriveProbeConfidenceCaveats(inp.trace_events),
-    ]),
-  };
+  const meta = normalizeReportMeta(judge.meta, inp.trace_events);
   const score = scores.overall.score;
   const coverage = countAttemptedGoals(judge);
   // Phase 12: threshold check is no longer just "score ≥ threshold." A high
@@ -216,6 +220,10 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     finding_hash: findingHash(f, eventIndex),
   }));
   const discovery = extractDiscoveryReport(inp.trace_events);
+  const testingPlan = deriveTestingPlan({
+    discovery,
+    goals: judge.spec_compliance.applicable ? judge.spec_compliance.goals : [],
+  });
   const taskRuns =
     inp.trace_events && judge.spec_compliance.applicable
       ? buildTaskRuns({ goals: judge.spec_compliance.goals, trace: inp.trace_events })
@@ -250,6 +258,14 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
       : {}),
     ...(inp.blocked ? { blocked: true, blocked_reasons: inp.blocked.reasons } : {}),
   };
+  const evaluation = deriveReportEvaluation({
+    score,
+    scores,
+    goals: judge.spec_compliance.goals,
+    findings: findingsWithHash,
+    meta,
+    capabilities: discovery?.capabilities,
+  });
 
   return {
     v: 2,
@@ -262,7 +278,9 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     findings: findingsWithHash,
     coverage_review: judge.coverage_review,
     meta,
+    evaluation,
     ...(discovery ? { discovery } : {}),
+    ...(testingPlan ? { testing_plan: testingPlan } : {}),
     ...(taskRuns.length > 0 ? { task_runs: taskRuns } : {}),
     ...(inp.artifacts ? { artifacts: inp.artifacts } : {}),
     ...(inp.preflight ? { preflight: inp.preflight } : {}),
@@ -278,17 +296,6 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
       for_re_evaluation: meta.would_re_explore_with,
     },
   };
-}
-
-function uniqueStrings(values: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const value of values) {
-    if (!value || seen.has(value)) continue;
-    seen.add(value);
-    out.push(value);
-  }
-  return out;
 }
 
 function resolveJudgeEvidenceRefs(
@@ -344,7 +351,7 @@ function extractDiscoveryReport(events: TraceEvent[] | undefined): DiscoveryRepo
   const discoveryEvent = [...(events ?? [])].reverse().find((event) => event.kind === 'discovery');
   if (!discoveryEvent) return undefined;
   const payload = discoveryEvent.payload as Record<string, unknown>;
-  return {
+  const discovery: DiscoveryReport = {
     ...(typeof payload.product_description === 'string'
       ? { product_description: payload.product_description }
       : {}),
@@ -354,6 +361,9 @@ function extractDiscoveryReport(events: TraceEvent[] | undefined): DiscoveryRepo
       : {}),
     ...(Array.isArray(payload.journeys)
       ? { journeys: payload.journeys as DiscoveryJourney[] }
+      : {}),
+    ...(Array.isArray(payload.capabilities)
+      ? { capabilities: payload.capabilities as DiscoveryCapability[] }
       : {}),
     ...(payload.coverage_plan && typeof payload.coverage_plan === 'object'
       ? { coverage_plan: payload.coverage_plan as DiscoveryCoveragePlan }
@@ -365,6 +375,15 @@ function extractDiscoveryReport(events: TraceEvent[] | undefined): DiscoveryRepo
       ? { survey_summary: payload.survey_summary }
       : {}),
   };
+  const capabilities = deriveDiscoveryCapabilitiesForReport({
+    capabilities: discovery.capabilities,
+    product_use_contract: discovery.product_use_contract,
+    journeys: discovery.journeys,
+    surfaces: discovery.surfaces,
+    coverage_plan: discovery.coverage_plan,
+    goals: discovery.goals,
+  });
+  return capabilities.length > 0 ? { ...discovery, capabilities } : discovery;
 }
 
 function countSeverities(findings: JudgeOutput['findings']): {

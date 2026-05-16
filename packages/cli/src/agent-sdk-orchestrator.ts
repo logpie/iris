@@ -18,6 +18,12 @@ import {
   runAgentSdkExplorer,
   runAgentSdkSingleShot,
 } from './agent-sdk-runner.js';
+import { runMissingPostExplorerProbes } from './post-explorer-probes.js';
+import {
+  buildScenarioCompletionGates,
+  formatScenarioGatePrompt,
+  type ScenarioCompletionGate,
+} from './scenario-completion-gate.js';
 
 /**
  * SDK-driven orchestrator. Runs the full iris pipeline (spec interp + Explorer + Judge + Report)
@@ -60,6 +66,7 @@ export interface AgentSdkRunConfig {
    * Capped at max_expansion_goals (default 6). */
   expand_goals?: boolean;
   max_expansion_goals?: number;
+  scenario_gate?: boolean;
   /** Phase 16: run N parallel Explorer sessions across goal partitions.
    * Default 1 (current single-session behavior). When >1, the orchestrator:
    *   1. Runs discovery on a warmup adapter
@@ -343,6 +350,7 @@ export async function runIrisViaSdk(
   let interpreted: specInterpreter.InterpretedSpec | undefined;
   let totalCost = 0;
   let discoveryExplorerContext = '';
+  let scenarioGates: ScenarioCompletionGate[] = [];
   if (config.mode === 'grounded' && specText) {
     process.stderr.write('iris: running spec interpreter via Agent SDK...\n');
     const r = await runAgentSdkSingleShot({
@@ -520,6 +528,7 @@ export async function runIrisViaSdk(
         process.stderr.write('iris: discovery skipped — no screenshot available\n');
       } else {
         const { visionDescribeViaSdk } = await import('./agent-sdk-runner.js');
+        let discoveryRawText = '';
         const discoveryResult = await discoveryMod.runDiscovery({
           url: config.target.url,
           observation_summary: obs.summary,
@@ -527,15 +536,21 @@ export async function runIrisViaSdk(
           ...(survey?.payload ? { survey_payload: survey.payload } : {}),
           screenshot_path: ssPath,
           model: config.explorer_model,
-          discoverer: async (i) =>
-            visionDescribeViaSdk({
+          discoverer: async (i) => {
+            const r = await visionDescribeViaSdk({
               systemPrompt: i.systemPrompt,
               imagePath: i.imagePath,
               textPrompt: i.userPrompt,
               ...(i.model ? { model: i.model } : {}),
-            }),
+            });
+            discoveryRawText = r.text;
+            return r;
+          },
         });
         if (!discoveryResult) {
+          if (discoveryRawText) {
+            writeFileSync(join(config.out_dir, 'discovery.raw.txt'), discoveryRawText);
+          }
           process.stderr.write('iris: discovery returned no parseable goals — falling back\n');
         } else {
           totalCost += discoveryResult.cost_usd;
@@ -556,6 +571,7 @@ export async function runIrisViaSdk(
               goals: out.goals,
               surfaces: out.surfaces,
               journeys: out.journeys,
+              capabilities: out.capabilities,
               ...(out.product_use_contract
                 ? { product_use_contract: out.product_use_contract }
                 : {}),
@@ -577,6 +593,7 @@ export async function runIrisViaSdk(
             `${JSON.stringify(out, null, 2)}\n`,
           );
           discoveryExplorerContext = discoveryMod.formatDiscoveryExplorerContext(out);
+          scenarioGates = config.scenario_gate ? buildScenarioCompletionGates(out) : [];
           // Shape into InterpretedSpec so downstream code paths converge.
           interpreted = {
             v: 1,
@@ -635,15 +652,19 @@ export async function runIrisViaSdk(
   const goalList = hasGoals ? goals.map((g, i) => `  G${i + 1}. ${g.description}`).join('\n') : '';
   const perGoalLine =
     stepsPerGoal && stepsPerGoal > 0
-      ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. For verified goals, include evidence_event_ids with the post-action observation/screenshot/vision_describe event id that shows the outcome. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on. Do not mark a goal partial until you have tried the strongest cheap proof available; for focus, layout, sidebar, collapse, selected-state, text-size, width, or color-mode goals, use the ui_state probe after interaction. If Iris reports that budget remains for partial retries, retry only those partial goals before stopping.`
+      ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished (verified, partial, blocked, or skipped), call \`mcp__iris__goal_status\` with that status and move to the next goal. For verified goals, include evidence_event_ids with the post-action observation/screenshot/vision_describe event id that shows the outcome. If you don't call it, the system will auto-mark the goal as partial after ~${Math.ceil(stepsPerGoal * 1.5)} turns and move on. Do not mark a goal partial until you have tried the strongest cheap proof available; for focus, layout, sidebar, collapse, selected-state, text-size, width, or color-mode goals, use the ui_state probe after interaction. Skipped means not applicable to this product/run; never use skipped because time or budget remains. If Iris reports that budget remains for partial retries, retry only those partial goals before stopping.`
+      : '';
+  const scenarioGatePrompt =
+    config.scenario_gate && scenarioGates.length > 0
+      ? `${formatScenarioGatePrompt(scenarioGates)}\n\n`
       : '';
 
   const initialUserPrompt = `Target: ${config.target.url}
 
-${hasGoals ? `What this app is supposed to do (from the spec):\n${goalList}\n\n${discoveryExplorerContext ? `${discoveryExplorerContext}\n\n` : ''}Your job: USE THIS APP. Verify each spec goal by performing it as a normal user would.\n\nFor each goal, in order:\n  1. Find the relevant UI element (input, button, link).\n  2. Interact with it normally — type text, click, submit. Don't just look.\n  3. Observe what changed.\n  4. Call \`mcp__iris__goal_status\` with the goal id (G1, G2, …), status (verified / partial / blocked / skipped), a one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome.\n  5. If you find a bug, ALSO call \`mcp__iris__note_finding\` with category="bug".\n\n${perGoalLine}\n` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons. Don't just look at the page.\n`}
+${hasGoals ? `What this app is supposed to do (from the spec):\n${goalList}\n\n${discoveryExplorerContext ? `${discoveryExplorerContext}\n\n` : ''}${scenarioGatePrompt}Your job: USE THIS APP. Verify each spec goal by performing it as a normal user would. If Discovery names scenario content/data, required outputs, or a quality bar, use that exact content in the product and verify the visible result; do not substitute generic filler.\n\nFor each goal, in order:\n  1. Find the relevant UI element (input, button, link).\n  2. Interact with it normally — type text, click, submit. Don't just look.\n  3. Observe what changed.\n  4. Call \`mcp__iris__goal_status\` with the goal id (G1, G2, …), status (verified / partial / blocked / skipped), a one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome. Use skipped only when the goal is not applicable, not when you have not tried it yet.\n  5. If you find a bug, ALSO call \`mcp__iris__note_finding\` with category="bug".\n\n${perGoalLine}\n` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons. Don't just look at the page.\n`}
 PRIORITY ORDER:
   1. HAPPY PATHS FIRST. Make the primary features work before anything else. If the app is a TODO list, your first action is to add a todo. If it's a sign-in form, your first action is to fill it in and submit.
-  2. AFTER happy paths complete, run \`mcp__iris__axe\` and \`mcp__iris__console_errors_since\` once to catch passive issues.
+  2. AFTER happy paths complete, continue with product edge cases. Iris automatically runs axe, console, network, and mobile viewport probes after Explorer.
   3. THEN try edge cases: empty submits, very long inputs, special characters, the destructive action.
 
 AVOID:
@@ -795,7 +816,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
             // Each session sees ALL goals in its prompt (for context) but is
             // only responsible for verifying its subset.
             const subsetIds = subset.map((g) => g.id).join(', ');
-            const subsetPrompt = `Target: ${config.target.url}\n\nAll discovered goals (for context):\n${goalList}\n\nYOUR ASSIGNED GOALS this session: ${subsetIds}\nOther sessions are independently handling the other goals — focus on yours.\n\nFor each assigned goal, in order:\n  1. Find the relevant UI element.\n  2. Interact with it normally.\n  3. Observe what changed via the auto-observation.\n  4. Call mcp__iris__goal_status with the goal id, status, one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome.\n  5. If you find a bug, ALSO call mcp__iris__note_finding.\n\n${perGoalLine}\n\nBUDGET: ${perSessionTimeout}s wall. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns.`;
+            const subsetPrompt = `Target: ${config.target.url}\n\nAll discovered goals (for context):\n${goalList}\n\n${scenarioGatePrompt}YOUR ASSIGNED GOALS this session: ${subsetIds}\nOther sessions are independently handling the other goals — focus on yours.\n\nFor each assigned goal, in order:\n  1. Find the relevant UI element.\n  2. Interact with it normally.\n  3. Observe what changed via the auto-observation.\n  4. Call mcp__iris__goal_status with the goal id, status, one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome. Use skipped only when the goal is not applicable, not when you have not tried it yet.\n  5. If you find a bug, ALSO call mcp__iris__note_finding.\n\n${perGoalLine}\n\nBUDGET: ${perSessionTimeout}s wall. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns.`;
             const perSessionMaxSteps = Math.max(
               30,
               Math.ceil(subset.length * (stepsPerGoal ?? 10) * 1.5) +
@@ -813,64 +834,15 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
               maxExpansionGoals: 0, // disable expansion in parallel mode for now
               ...(stepsPerGoal && stepsPerGoal > 0 ? { stepsPerGoal } : {}),
               goals: subset,
+              ...(config.scenario_gate ? { scenarioGates } : {}),
             });
 
-            // Auto-axe + console for this session
-            const sessionEvents = await iristrace.readTraceArray(sessionTracePath);
-            const ranAxe = sessionEvents.some(
-              (e) =>
-                e.kind === 'probe_result' && (e.payload as { probe?: string })?.probe === 'axe',
-            );
-            if (!ranAxe) {
-              const axeResult = await sessionAdapter.runProbe('axe', {}).catch((err) => ({
-                ok: false as const,
-                probe: 'axe',
-                error: err instanceof Error ? err.message : String(err),
-              }));
-              await sessionTrace.append({
-                v: 1,
-                id: ulid(),
-                ts: Date.now() / 1000,
-                step: 0,
-                target_kind: 'web',
-                kind: 'probe_result',
-                actor: 'system',
-                payload: axeResult.ok
-                  ? { probe: 'axe', summary: axeResult.summary, data: axeResult.data, ok: true }
-                  : { probe: 'axe', error: axeResult.error, ok: false },
-              });
-            }
-            const ranConsole = sessionEvents.some(
-              (e) =>
-                e.kind === 'probe_result' &&
-                (e.payload as { probe?: string })?.probe === 'console_errors_since',
-            );
-            if (!ranConsole) {
-              const cResult = await sessionAdapter
-                .runProbe('console_errors_since', {})
-                .catch((err) => ({
-                  ok: false as const,
-                  probe: 'console_errors_since',
-                  error: err instanceof Error ? err.message : String(err),
-                }));
-              await sessionTrace.append({
-                v: 1,
-                id: ulid(),
-                ts: Date.now() / 1000,
-                step: 0,
-                target_kind: 'web',
-                kind: 'probe_result',
-                actor: 'system',
-                payload: cResult.ok
-                  ? {
-                      probe: 'console_errors_since',
-                      summary: cResult.summary,
-                      data: cResult.data,
-                      ok: true,
-                    }
-                  : { probe: 'console_errors_since', error: cResult.error, ok: false },
-              });
-            }
+            await runMissingPostExplorerProbes({
+              adapter: sessionAdapter,
+              traceWriter: sessionTrace,
+              tracePath: sessionTracePath,
+              log: (message) => process.stderr.write(message),
+            });
 
             return { idx, result, tracePath: sessionTracePath };
           } finally {
@@ -971,69 +943,19 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
         ...(hasGoals
           ? { goals: goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description })) }
           : {}),
+        ...(config.scenario_gate ? { scenarioGates } : {}),
       });
       totalCost += explorerResult.cost_usd;
       process.stderr.write(
         `iris: Explorer done — termination=${explorerResult.termination}, ${explorerResult.steps_taken} steps, $${explorerResult.cost_usd.toFixed(2)}\n`,
       );
 
-      // Phase 14: programmatically run a11y + console_errors at end of
-      // Explorer session so the Judge always has these data points. The
-      // Explorer was instructed to run them but skipped on 4 of 5 P13 apps —
-      // making "0 findings" partly mean "Iris didn't look." Now Iris always
-      // looks, regardless of agent discipline.
-      const alreadyRanAxe = (await iristrace.readTraceArray(tracePath)).some(
-        (e) => e.kind === 'probe_result' && (e.payload as { probe?: string })?.probe === 'axe',
-      );
-      if (!alreadyRanAxe) {
-        process.stderr.write('iris: auto-running axe (post-Explorer)…\n');
-        const axeResult = await adapter.runProbe('axe', {}).catch((err) => ({
-          ok: false as const,
-          probe: 'axe',
-          error: err instanceof Error ? err.message : String(err),
-        }));
-        await traceWriter.append({
-          v: 1,
-          id: ulid(),
-          ts: Date.now() / 1000,
-          step: 0,
-          target_kind: 'web',
-          kind: 'probe_result',
-          actor: 'system',
-          payload: axeResult.ok
-            ? { probe: 'axe', summary: axeResult.summary, data: axeResult.data, ok: true }
-            : { probe: 'axe', error: axeResult.error, ok: false },
-        });
-      }
-      const alreadyRanConsole = (await iristrace.readTraceArray(tracePath)).some(
-        (e) =>
-          e.kind === 'probe_result' &&
-          (e.payload as { probe?: string })?.probe === 'console_errors_since',
-      );
-      if (!alreadyRanConsole) {
-        const cResult = await adapter.runProbe('console_errors_since', {}).catch((err) => ({
-          ok: false as const,
-          probe: 'console_errors_since',
-          error: err instanceof Error ? err.message : String(err),
-        }));
-        await traceWriter.append({
-          v: 1,
-          id: ulid(),
-          ts: Date.now() / 1000,
-          step: 0,
-          target_kind: 'web',
-          kind: 'probe_result',
-          actor: 'system',
-          payload: cResult.ok
-            ? {
-                probe: 'console_errors_since',
-                summary: cResult.summary,
-                data: cResult.data,
-                ok: true,
-              }
-            : { probe: 'console_errors_since', error: cResult.error, ok: false },
-        });
-      }
+      await runMissingPostExplorerProbes({
+        adapter,
+        traceWriter,
+        tracePath,
+        log: (message) => process.stderr.write(message),
+      });
     } // end of single-session else branch (Phase 16)
   } finally {
     // In single-session mode the traceWriter is still open; close it.

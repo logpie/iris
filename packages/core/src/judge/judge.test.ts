@@ -61,6 +61,26 @@ describe('Judge', () => {
     );
   });
 
+  it('normalizes string access blocks from compact provider output', () => {
+    const out = JudgeOutputSchema.parse({
+      v: 1,
+      findings: [],
+      discarded_findings: [],
+      scores: { overall: { score: 0, weighted_from: [] }, profiles: {} },
+      spec_compliance: { applicable: true, goals: [], summary: '' },
+      coverage_review: { surfaces_explored: 0, surfaces_unexplored: 0, judgement: '' },
+      meta: { confidence_overall: 0.8, confidence_caveats: [], would_re_explore_with: [] },
+      access_blocks: ['Browser interaction guard blocked all mutating actions.'],
+    });
+
+    expect(out.access_blocks?.[0]).toEqual({
+      kind: 'other',
+      surface: '',
+      description: 'Browser interaction guard blocked all mutating actions.',
+      evidence: [],
+    });
+  });
+
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   });
@@ -181,7 +201,9 @@ describe('Judge', () => {
     const out = JudgeOutputSchema.parse({
       v: 1,
       findings: [],
-      discarded_findings: [{ title: 'Axe violations', reason: 'No serious violations were found.' }],
+      discarded_findings: [
+        { title: 'Axe violations', reason: 'No serious violations were found.' },
+      ],
       scores: {
         overall: { score: 8, weighted_from: ['usability'] },
         profiles: {

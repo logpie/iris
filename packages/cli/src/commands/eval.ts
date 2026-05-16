@@ -89,6 +89,10 @@ export function evalCommand(): Command {
     .option('--out <dir>', 'run output directory')
     .option('--no-html', 'skip HTML report')
     .option('--no-clips', 'skip per-finding video clips')
+    .option(
+      '--scenario-gate',
+      'enable an opt-in scenario completion gate that rejects verified goal_status calls when cited evidence is missing required visible outputs',
+    )
     .option('--threshold <n>', 'exit non-zero if overall score below this', (s) =>
       Number.parseFloat(s),
     )
@@ -182,6 +186,7 @@ export function evalCommand(): Command {
               timeout_s: opts.timeout as number,
               discover: opts.discover !== false,
               expand_goals: opts.expand !== false,
+              scenario_gate: !!opts.scenarioGate,
               parallel: opts.parallel as number,
             },
             null,
@@ -314,6 +319,7 @@ export function evalCommand(): Command {
             discover: opts.discover !== false,
             expand_goals: opts.expand !== false,
             max_expansion_goals: opts.maxExpansionGoals as number,
+            scenario_gate: !!opts.scenarioGate,
             parallel: opts.parallel as number,
             ...(initialTasks.length > 0
               ? { initial_tasks: initialTasks.map((description) => ({ description })) }
@@ -352,6 +358,7 @@ export function evalCommand(): Command {
             discover: opts.discover !== false,
             expand_goals: opts.expand !== false,
             max_expansion_goals: opts.maxExpansionGoals as number,
+            scenario_gate: !!opts.scenarioGate,
             ...(initialTasks.length > 0
               ? { initial_tasks: initialTasks.map((description) => ({ description })) }
               : {}),

@@ -67,6 +67,50 @@ describe('validateFindings', () => {
     expect(out.kept[0]?.unverified_backing).toBe(false);
   });
 
+  it('discards timing claims without timing evidence', () => {
+    const trace = [
+      ev('OBS-1', 'observation', {
+        summary: 'The form shows an email field, password field, and submit button.',
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          category: 'ux',
+          severity: 'minor',
+          title: 'Result text appears slowly',
+          evidence: ['OBS-1'],
+          rationale: 'Result text took a moment after submit.',
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe('timing_claim_without_timing_evidence');
+  });
+
+  it('keeps timing claims when cited evidence includes a measured duration', () => {
+    const trace = [
+      ev('OBS-1', 'observation', {
+        summary: 'The submit result appeared after 2.4 seconds.',
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          category: 'ux',
+          severity: 'minor',
+          title: 'Submit feedback is delayed',
+          evidence: ['OBS-1'],
+          rationale: 'The visible result appeared after 2.4 seconds.',
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(1);
+    expect(out.kept[0]?.unverified_backing).toBe(false);
+  });
+
   it('discards machine-only axe findings with no visible user impact', () => {
     const trace = [ev('E1', 'probe_result', { probe: 'axe', summary: { violations: 1 } })];
     const out = validateFindings(
@@ -129,6 +173,34 @@ describe('validateFindings', () => {
     );
     expect(out.kept[0]?.severity).toBe('major');
     expect(out.kept[0]?.severity_calibrated).toBeUndefined();
+  });
+
+  it('discards destructive-action findings when cited UI shows the action was disabled', () => {
+    const trace = [
+      ev('O1', 'observation', {
+        summary:
+          'Canvas contains an ellipse. [button] "Delete — Backspace" disabled. [button] "Duplicate — Cmd D" visible.',
+      }),
+      ev('S1', 'goal_status', {
+        id: 'G1',
+        status: 'blocked',
+        rationale: 'Delete never removed the object.',
+        evidence_event_ids: ['O1'],
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Delete never removed the duplicated object',
+          rationale:
+            'Delete/backspace never caused a visible canvas reduction after the Explorer attempted it.',
+          evidence: ['O1', 'S1'],
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe('destructive_action_precondition_not_established');
   });
 
   it('keeps a finding backed by a failed action_result', () => {
@@ -511,6 +583,43 @@ describe('validateFindings', () => {
           severity: 'minor',
           evidence: ['E1', 'E2'],
           rationale: 'Visible CTAs needed retries, which adds friction.',
+        }),
+      ],
+      trace,
+    );
+    expect(out.kept).toHaveLength(0);
+    expect(out.discarded[0]?.reason).toBe('tool_friction_without_user_visible_impact');
+  });
+
+  it('discards repeated targeting attempts backed only by action and retry events', () => {
+    const trace = [
+      ev('A1', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error: 'locator.click: Timeout 5000ms exceeded.',
+        retried: true,
+      }),
+      ev('R1', 'retry_attempt', {
+        tool: 'click',
+        strategy: 'first',
+        ok: false,
+        error: 'locator.click: Timeout 5000ms exceeded.',
+      }),
+      ev('A2', 'action_result', {
+        tool: 'click',
+        ok: false,
+        error: 'locator.click: Timeout 5000ms exceeded.',
+        retried: true,
+      }),
+    ];
+    const out = validateFindings(
+      [
+        finding({
+          title: 'Some toolbar controls were hard to target',
+          category: 'ux',
+          severity: 'minor',
+          evidence: ['A1', 'R1', 'A2'],
+          rationale: 'Shape controls required repeated attempts before use.',
         }),
       ],
       trace,

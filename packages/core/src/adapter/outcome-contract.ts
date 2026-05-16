@@ -15,6 +15,7 @@ export type OutcomeArtifactKind =
   | 'stderr' // command error stream (CLI)
   | 'exit_code' // CLI exit code event
   | 'fs_diff' // filesystem state change (CLI)
+  | 'file_download' // browser-created download artifact (web)
   | 'http_response' // response body of the action call (API)
   | 'follow_up_read'; // confirming GET / list after a write (API)
 

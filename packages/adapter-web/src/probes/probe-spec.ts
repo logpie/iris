@@ -27,6 +27,18 @@ export const WEB_PROBE_SPECS: ProbeSpec[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'mobile_viewport',
+    description:
+      'Resize to a representative mobile viewport and report whether the current page has obvious horizontal overflow. Use after the primary flow to make responsive coverage explicit.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        width: { type: 'number', description: 'Mobile viewport width; default 390.' },
+        height: { type: 'number', description: 'Mobile viewport height; default 844.' },
+      },
+    },
+  },
+  {
     name: 'notifications_visible',
     description:
       'Sweep the page for toast/snackbar/banner/aria-live notifications currently visible. USE THIS after any action where the app would normally show a success/failure confirmation (form submit, export, delete, save). Cheap and broad — captures MUI, Chakra, Ant, Toastify, custom fixed-corner toasts, and any aria-live region. Returns the visible text of each, so you can confirm "Export succeeded" or similar without relying on vision_describe targeting the right region.',
@@ -44,6 +56,18 @@ export const WEB_PROBE_SPECS: ProbeSpec[] = [
           items: { type: 'string' },
           description: 'CSS selectors to inspect, such as "#bodyContent" or ".vector-appearance".',
         },
+      },
+    },
+  },
+  {
+    name: 'state_delta',
+    description:
+      'Compare two observations, defaulting to the last two, and report deterministic before/after changes: URL, text, active element, element count, and status/object-count lines such as "Image. 1 of 1". Use after edit, duplicate, delete, undo/redo, import/export setup, or other state-change goals to prove the product state actually changed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from_ref: { type: 'string' },
+        to_ref: { type: 'string' },
       },
     },
   },

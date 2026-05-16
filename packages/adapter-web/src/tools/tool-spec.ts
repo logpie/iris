@@ -4,7 +4,7 @@ export const WEB_TOOL_SPECS: ToolSpec[] = [
   {
     name: 'click',
     description:
-      'Click an element. Prefer accessible-name selectors like role=button[name="Sign in"].',
+      'Click an element. Prefer accessible-name selectors like role=button[name="Sign in"]. For file upload/download controls, use click_upload or click_download instead so Iris can capture file evidence.',
     input_schema: {
       type: 'object',
       properties: { selector: { type: 'string' } },
@@ -269,6 +269,35 @@ export const WEB_TOOL_SPECS: ToolSpec[] = [
         selector: { type: 'string' },
         file_path: { type: 'string' },
         mime: { type: 'string' },
+      },
+      required: ['selector'],
+    },
+  },
+  {
+    name: 'click_upload',
+    description:
+      'Click a visible control that opens a native file chooser, then upload a file. Use this for menu/button-based upload or media insert flows when no visible file input selector is available. If `file_path` is omitted, a synthetic 1x1 PNG fixture is generated.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string' },
+        file_path: { type: 'string' },
+        timeout_ms: { type: 'number' },
+        mime: { type: 'string' },
+      },
+      required: ['selector'],
+    },
+  },
+  {
+    name: 'click_download',
+    description:
+      'Click a visible control that should trigger a browser download/export and save the downloaded file as evidence. Use this for Download, Export, or Save-as-file flows; it is stronger proof than just seeing a menu or toast.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string' },
+        timeout_ms: { type: 'number' },
+        save_as: { type: 'string' },
       },
       required: ['selector'],
     },

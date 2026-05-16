@@ -3,8 +3,10 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { JudgeOutput } from '../judge/judge.js';
 import { resolveTraceRefTypo } from '../trace/ref-resolver.js';
 import type { TraceEvent } from '../trace/schema.js';
+import { type ReportEvaluation, deriveReportEvaluationForReport } from './evaluation.js';
 import type { ReportJson } from './report-json.js';
 import { scoreDimensionWithRunEvidence } from './score-normalization.js';
+import type { UserScenario } from './testing-plan.js';
 
 /**
  * Renders a self-contained HTML report.
@@ -60,20 +62,20 @@ export function buildReportHtml(report: ReportJson, opts: BuildReportHtmlOptions
     parts.push(renderTLDR(report, eventIndex));
     parts.push(renderAccessBlocks(report));
     parts.push(
-      renderGoalEvidenceSection(
-        report,
-        eventIndex,
-        screenshotForEvent,
-        clipPaths,
-        goalFindingLinks,
-      ),
-    );
-    parts.push(
       renderFindingsSection(
         report.findings,
         eventIndex,
         screenshotForEvent,
         runData?.events ?? [],
+        clipPaths,
+        goalFindingLinks,
+      ),
+    );
+    parts.push(
+      renderGoalEvidenceSection(
+        report,
+        eventIndex,
+        screenshotForEvent,
         clipPaths,
         goalFindingLinks,
       ),
@@ -225,12 +227,31 @@ const STYLES = `
     max-width: 760px;
   }
   .score-badge {
-    min-width: 132px;
+    min-width: 170px;
     padding: 10px 12px;
     border: 1px solid var(--rule-light);
     border-radius: 6px;
     text-align: right;
     background: var(--bg-soft);
+  }
+  .score-badge.score-authority-provisional {
+    background: #fffaf0;
+    border-color: #d4a72c;
+  }
+  .score-badge.score-authority-insufficient {
+    background: #ffebe9;
+    border-color: #ff8182;
+  }
+  .score-badge em {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-style: normal;
+    line-height: 1.2;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
   }
   .score-badge span {
     font-family: var(--mono);
@@ -255,6 +276,11 @@ const STYLES = `
     padding: 9px 10px;
     min-width: 0;
     background: #fff;
+    color: inherit;
+    text-decoration: none;
+  }
+  a.metric:hover {
+    border-color: var(--link);
   }
   .metric span {
     display: block;
@@ -279,9 +305,7 @@ const STYLES = `
     color: var(--text-dim);
     font-size: 12px;
     font-style: normal;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.35;
   }
   .integrity-strip {
     margin-top: 12px;
@@ -320,6 +344,10 @@ const STYLES = `
     color: var(--text);
     margin-right: 6px;
   }
+  .score-warning.insufficient {
+    background: #ffebe9;
+    border-left-color: var(--status-fail);
+  }
   .run-meta-panel {
     margin-top: 12px;
     border: 1px solid var(--rule-light);
@@ -327,9 +355,20 @@ const STYLES = `
     background: var(--bg-soft);
     padding: 10px;
   }
+  .run-meta-panel > summary {
+    cursor: pointer;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    list-style: none;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .run-meta-panel > summary::-webkit-details-marker { display: none; }
   .run-meta-title {
-    display: block;
-    margin-bottom: 8px;
+    display: inline-block;
+    margin-bottom: 0;
     color: var(--text-faint);
     font-family: var(--mono);
     font-size: 10px;
@@ -340,6 +379,7 @@ const STYLES = `
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 8px;
+    margin-top: 10px;
   }
   .run-meta-item {
     min-width: 0;
@@ -889,6 +929,355 @@ const STYLES = `
       grid-template-columns: 1fr;
     }
   }
+  .reader-plan {
+    margin-top: 14px;
+    border: 1px solid var(--rule-light);
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+  }
+  .reader-plan-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+    align-items: start;
+    padding: 15px 16px;
+    border-bottom: 1px solid var(--rule-light);
+    background: #fbfcfd;
+  }
+  .reader-kicker {
+    margin-bottom: 4px;
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .reader-mission {
+    margin: 0;
+    color: var(--text);
+    font-size: 16px;
+    line-height: 1.45;
+  }
+  .reader-plan-summary {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+    max-width: 340px;
+  }
+  .reader-plan-summary span {
+    border: 1px solid var(--rule-light);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--text-dim);
+    font-size: 12px;
+    padding: 3px 8px;
+    white-space: nowrap;
+  }
+  .reader-success {
+    display: grid;
+    grid-template-columns: 138px minmax(0, 1fr);
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--rule-light);
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+  .reader-success > strong {
+    color: var(--text);
+    font-size: 13px;
+  }
+  .reader-proof-list {
+    margin: 0;
+    padding-left: 18px;
+  }
+  .reader-proof-list li {
+    margin: 2px 0;
+  }
+  .reader-plan-details {
+    border-top: 1px solid var(--rule-light);
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+  .reader-plan-details > summary {
+    cursor: pointer;
+    padding: 11px 16px;
+    color: var(--link);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .reader-plan-details > div,
+  .reader-plan-details > ul {
+    margin: 0 16px 14px;
+  }
+  .reader-map-list {
+    display: grid;
+    gap: 8px;
+  }
+  .reader-map-row {
+    border: 1px solid var(--rule-light);
+    border-radius: 7px;
+    background: #fff;
+    padding: 10px 12px;
+  }
+  .reader-map-title {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .reader-map-title strong {
+    color: var(--text);
+    font-size: 14px;
+  }
+  .reader-map-title > span:not(.status-pill) {
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .reader-map-row p {
+    margin: 5px 0 0;
+    color: var(--text-dim);
+  }
+  .reader-map-scenarios {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .reader-map-scenarios a {
+    border: 1px solid var(--rule-light);
+    border-radius: 999px;
+    background: var(--bg-soft);
+    color: var(--link);
+    font-size: 12px;
+    padding: 2px 8px;
+    text-decoration: none;
+  }
+  .reader-subsection {
+    padding: 14px 16px 16px;
+    border-bottom: 1px solid var(--rule-light);
+  }
+  .reader-subsection:last-child {
+    border-bottom: none;
+  }
+  .reader-subhead {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .reader-subhead h3 {
+    margin: 0;
+    font-size: 15px;
+  }
+  .reader-subhead span {
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .reader-journey-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 10px;
+  }
+  .reader-journey-card {
+    border: 1px solid var(--rule-light);
+    border-left: 4px solid var(--text-faint);
+    border-radius: 7px;
+    background: #fff;
+    padding: 11px 12px;
+  }
+  .reader-journey-card.status-verified { border-left-color: var(--status-pass); }
+  .reader-journey-card.status-partial { border-left-color: var(--status-partial); }
+  .reader-journey-card.status-broken { border-left-color: var(--status-fail); }
+  .reader-card-title {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .reader-card-title strong {
+    font-size: 15px;
+    line-height: 1.3;
+  }
+  .reader-card-meta {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .reader-card-meta span {
+    border: 1px solid var(--rule-light);
+    border-radius: 999px;
+    background: var(--bg-soft);
+    color: var(--text-dim);
+    font-size: 11px;
+    padding: 1px 7px;
+  }
+  .reader-journey-card p {
+    margin: 8px 0 0;
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .reader-scenario-list {
+    display: grid;
+    gap: 8px;
+  }
+  .reader-scenario-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 16px;
+    align-items: start;
+    border: 1px solid var(--rule-light);
+    border-radius: 7px;
+    background: #fff;
+    padding: 11px 12px;
+  }
+  .reader-scenario-row.status-partial { background: #fffdf2; }
+  .reader-scenario-row.status-broken { background: #fff8f7; }
+  .reader-scenario-title {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .reader-scenario-title strong {
+    font-size: 15px;
+    line-height: 1.35;
+  }
+  .reader-scenario-main p {
+    margin: 4px 0 0;
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .reader-scenario-status {
+    justify-self: end;
+  }
+  .reader-mini-details {
+    grid-column: 1 / -1;
+    margin-top: 4px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .reader-mini-details > summary,
+  .reader-deferred > summary {
+    cursor: pointer;
+    color: var(--link);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .reader-mini-details div {
+    margin-top: 5px;
+  }
+  .reader-mini-details span {
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    margin-right: 6px;
+    text-transform: uppercase;
+  }
+  .reader-deferred {
+    padding: 12px 16px;
+    background: var(--bg-soft);
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .reader-deferred p {
+    margin: 8px 0 0;
+  }
+  .capability-panel {
+    margin-top: 14px;
+    border: 1px solid var(--rule-light);
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+  }
+  .capability-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+    align-items: start;
+    padding: 15px 16px;
+    border-bottom: 1px solid var(--rule-light);
+    background: #fbfcfd;
+  }
+  .capability-head h3 {
+    margin: 0;
+    font-size: 16px;
+  }
+  .capability-head p {
+    margin: 4px 0 0;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .capability-list {
+    display: grid;
+    gap: 8px;
+    padding: 12px 16px;
+  }
+  .capability-row {
+    border: 1px solid var(--rule-light);
+    border-left: 4px solid var(--text-faint);
+    border-radius: 7px;
+    padding: 10px 12px;
+    background: #fff;
+  }
+  .capability-row.capability-covered { border-left-color: var(--status-pass); }
+  .capability-row.capability-partial { border-left-color: var(--status-partial); background: #fffdf2; }
+  .capability-row.capability-untested,
+  .capability-row.capability-deferred { background: var(--bg-soft); }
+  .capability-title {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .capability-title strong {
+    font-size: 14px;
+  }
+  .capability-title span:not(.status-pill) {
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .capability-row p {
+    margin: 5px 0 0;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .capability-secondary .capability-list {
+    margin: 0;
+  }
+  .evidence-intro {
+    margin: 22px 0 10px;
+  }
+  .evidence-intro h2 {
+    margin: 0 0 3px;
+  }
+  .evidence-intro p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  @media (max-width: 760px) {
+    .reader-plan-head,
+    .capability-head,
+    .reader-success,
+    .reader-scenario-row {
+      grid-template-columns: 1fr;
+    }
+    .reader-plan-summary,
+    .reader-scenario-status {
+      justify-content: flex-start;
+      justify-self: start;
+    }
+  }
   .goal-proof-groups {
     display: grid;
     gap: 16px;
@@ -943,9 +1332,9 @@ const STYLES = `
   }
   .goal-proof-row {
     display: grid;
-    grid-template-columns: minmax(300px, 42%) minmax(0, 1fr);
-    gap: 16px;
-    padding: 16px;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 48%);
+    gap: 18px;
+    padding: 18px;
     border-top: 1px solid var(--rule-light);
     align-items: start;
   }
@@ -971,6 +1360,7 @@ const STYLES = `
     background: #fff8f7;
   }
   .goal-proof-media {
+    order: 2;
     min-width: 0;
     background: var(--bg-soft);
     border: 1px solid var(--rule-light);
@@ -1005,6 +1395,7 @@ const STYLES = `
     color: var(--link);
   }
   .goal-proof-copy {
+    order: 1;
     min-width: 0;
     padding-top: 1px;
   }
@@ -1017,15 +1408,37 @@ const STYLES = `
   }
   .goal-proof-title {
     font-weight: 600;
-    font-size: 16px;
+    font-size: 17px;
     line-height: 1.35;
     flex: 1 1 240px;
   }
   .goal-proof-context {
     margin-top: 2px;
     color: var(--text-dim);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .goal-proof-scenario,
+  .goal-proof-checkline {
+    margin-top: 8px;
+    color: var(--text-dim);
     font-size: 14px;
     line-height: 1.5;
+  }
+  .goal-proof-chip-list {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    vertical-align: top;
+  }
+  .goal-proof-chip-list span {
+    border: 1px solid var(--rule-light);
+    border-radius: 999px;
+    background: var(--bg-soft);
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.25;
+    padding: 3px 8px;
   }
   .goal-linked-findings {
     margin-top: 9px;
@@ -1049,6 +1462,8 @@ const STYLES = `
     font-weight: 600;
   }
   .goal-proof-context .label,
+  .goal-proof-scenario .label,
+  .goal-proof-checkline .label,
   .goal-proof-scope .label {
     display: inline-block;
     min-width: 76px;
@@ -1076,11 +1491,36 @@ const STYLES = `
     color: var(--text-dim);
     font-size: 13px;
   }
-  .goal-proof-origin > summary {
+  .goal-proof-origin > summary,
+  .goal-proof-debug > summary {
     cursor: pointer;
     color: var(--link);
     font-family: var(--mono);
     font-size: 11px;
+  }
+  .goal-proof-debug {
+    margin-top: 8px;
+  }
+  .goal-proof-quality ul {
+    margin: 6px 0 0;
+    padding-left: 18px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .goal-proof-check-details div {
+    margin-top: 6px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .goal-proof-check-details span {
+    display: inline-block;
+    min-width: 96px;
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    margin-right: 8px;
+    text-transform: uppercase;
   }
   .goal-proof-origin-body {
     display: grid;
@@ -1186,8 +1626,15 @@ const STYLES = `
     margin-top: 12px;
     border: 1px solid var(--rule-light);
     border-radius: 5px;
-    background: var(--bg-soft);
-    padding: 9px 10px;
+    background: #fff;
+    padding: 10px;
+  }
+  .product-use-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
   .product-use-title {
     color: var(--text-faint);
@@ -1202,14 +1649,26 @@ const STYLES = `
     font-weight: 600;
     max-width: 900px;
   }
-  .product-use-details {
-    margin-top: 6px;
+  .product-use-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
   }
-  .product-use-details > summary {
-    cursor: pointer;
-    color: var(--link);
-    font-family: var(--mono);
+  .product-use-summary span {
+    border: 1px solid var(--rule-light);
+    border-radius: 999px;
+    background: var(--bg-soft);
+    color: var(--text-dim);
     font-size: 11px;
+    padding: 2px 7px;
+  }
+  .product-use-basics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 8px 14px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rule-light);
   }
   .product-use-meta {
     margin-top: 4px;
@@ -1224,44 +1683,73 @@ const STYLES = `
     letter-spacing: 0.05em;
     margin-right: 6px;
   }
-  .product-use-jobs {
-    display: grid;
-    gap: 6px;
-    margin-top: 8px;
+  .product-use-signal-list {
+    margin: 5px 0 0;
+    padding-left: 18px;
+    color: var(--text-dim);
   }
-  .product-use-jobs-details {
-    margin-top: 8px;
+  .product-use-signal-list li {
+    margin: 2px 0;
   }
-  .product-use-jobs-details > summary {
+  .product-use-more-signals {
+    margin-top: 4px;
+  }
+  .product-use-more-signals > summary {
     cursor: pointer;
     color: var(--link);
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
   }
-  .product-use-job {
+  .product-use-jobs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .product-use-jobs-details {
+    margin-top: 10px;
+    padding-top: 8px;
     border-top: 1px solid var(--rule-light);
-    padding-top: 6px;
   }
-  .product-use-job:first-child {
-    border-top: none;
-    padding-top: 0;
+  .product-use-jobs-details > summary {
+    cursor: pointer;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
   }
+  .product-use-loop-card,
+  .product-use-job {
+    border: 1px solid var(--rule-light);
+    border-radius: 5px;
+    background: var(--bg-soft);
+    padding: 8px;
+  }
+  .product-use-loop-card > div:first-child,
   .product-use-job > div:first-child {
     display: flex;
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
   }
+  .product-use-loop-card strong,
   .product-use-job strong {
     color: var(--text);
   }
-  .product-use-job span {
-    color: var(--text-faint);
+  .product-use-card-details {
+    margin-top: 5px;
+  }
+  .product-use-card-details > summary {
+    cursor: pointer;
+    color: var(--link);
     font-family: var(--mono);
     font-size: 10px;
-    text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-right: 5px;
+    text-transform: uppercase;
   }
   .discovery-map {
     margin-top: 0;
@@ -1605,6 +2093,19 @@ const STYLES = `
   .score-profile-grid {
     display: grid;
     gap: 12px;
+    margin-top: 10px;
+  }
+  .score-details {
+    border: 1px solid var(--rule-light);
+    border-radius: 6px;
+    background: #fff;
+    padding: 10px 12px 12px;
+  }
+  .score-details > summary {
+    cursor: pointer;
+    color: var(--link);
+    font-family: var(--mono);
+    font-size: 12px;
   }
   .score-profile-card {
     border: 1px solid var(--rule-light);
@@ -1787,7 +2288,7 @@ const STYLES = `
     font-size: 12px;
   }
 
-  /* Cited source events */
+  /* Cited trace events */
   .trace-events { padding: 0 14px 14px; border-top: 1px solid var(--rule-light); font-family: var(--mono); font-size: 12px; }
   .cited-events {
     max-height: min(56vh, 520px);
@@ -1977,18 +2478,17 @@ function displayName(value: string): string {
 }
 
 function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): string {
+  const evaluation = report.evaluation ?? deriveReportEvaluationForReport(report);
   const counts = goalCounts(report, eventIndex);
   const totalFindings = totalFindingCount(report);
   const scoreCompleteness = scoreCompletenessSummary(report.scores);
   const toneClass = overviewTone(report, counts);
   const verdict = verdictLabel(report, counts);
-  const summary = overviewSummary(report, counts);
+  const summary = overviewSummary(report, counts, evaluation.product_score.interpretation);
   const evidenceLine = renderEvidenceIntegrity(report);
   const scoreWarning = renderScoreCompletenessWarning(scoreCompleteness);
-  const usage = report.run.usage?.total;
-  const nonCachedTokens =
-    usage?.non_cached_input_tokens ??
-    (usage ? Math.max(0, usage.input_tokens - (usage.cached_input_tokens ?? 0)) : undefined);
+  const evaluationWarning = renderEvaluationWarning(evaluation);
+  const capabilityMetric = renderCapabilityMetric(evaluation);
 
   return `<section class="report-hero tldr ${toneClass}">
     <div class="hero-main">
@@ -1997,29 +2497,23 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
         <h2>${escapeHtml(verdict)}</h2>
         <p>${escapeHtml(summary)}</p>
       </div>
-      <div class="score-badge" aria-label="Overall score ${report.headline.score.toFixed(1)} out of 10">
+      <div class="score-badge score-authority-${escapeAttr(evaluation.product_score.authority)}" aria-label="${escapeAttr(evaluation.product_score.label)} ${report.headline.score.toFixed(1)} out of 10">
+        <em>${escapeHtml(evaluation.product_score.label)}</em>
         <span>${report.headline.score.toFixed(1)}</span>
         <small>/10</small>
       </div>
     </div>
     <div class="metric-grid">
-      ${renderMetric('Tested goals', counts.total > 0 ? `${counts.sat}/${counts.total}` : 'n/a', counts.total > 0 ? goalMetricCaption(counts) : 'no scenario goals')}
-      ${renderMetric('Findings', totalFindings === 0 ? '0' : String(totalFindings), findingsMetricCaption(report))}
-      ${renderMetric('Runtime', formatDuration(report.run.duration_s), `${report.run.step_count} recorded steps`)}
-      ${renderMetric('Rubric', `${scoreCompleteness.scoredProfiles}/${scoreCompleteness.requestedProfiles}`, scoreCompleteness.caption)}
-      ${renderMetric('Run ended', report.run.termination, report.run.mode)}
-      ${
-        usage
-          ? renderMetric(
-              'Tokens',
-              formatCompactInteger(nonCachedTokens ?? usage.input_tokens),
-              `${formatCompactInteger(usage.input_tokens)} input, ${formatCompactInteger(usage.output_tokens)} output`,
-            )
-          : ''
-      }
-    </div>
+	      ${renderMetric('Tasks tested', counts.total > 0 ? `${counts.sat}/${counts.total}` : 'n/a', counts.total > 0 ? goalMetricCaption(counts) : 'no tasks')}
+	      ${renderMetric('Evidence confidence', evidenceConfidenceMetricValue(evaluation), evaluation.evidence_confidence.rationale)}
+	      ${capabilityMetric}
+	      ${renderMetric('Findings', totalFindings === 0 ? '0' : String(totalFindings), findingsMetricCaption(report), totalFindings > 0 ? '#findings' : undefined)}
+	      ${renderMetric('Runtime', formatDuration(report.run.duration_s), `${report.run.step_count} recorded steps`)}
+	      ${renderMetric('Rubric', `${scoreCompleteness.scoredProfiles}/${scoreCompleteness.requestedProfiles}`, scoreCompleteness.caption)}
+	    </div>
     ${renderRunMetadata(report)}
     ${scoreWarning}
+    ${evaluationWarning}
     ${evidenceLine}
   </section>`;
 }
@@ -2054,12 +2548,12 @@ function renderRunMetadata(report: ReportJson): string {
       ),
     ),
   ];
-  return `<div class="run-meta-panel" aria-label="Run metadata">
-    <span class="run-meta-title">Run metadata</span>
+  return `<details class="run-meta-panel" aria-label="Run metadata">
+    <summary><span class="run-meta-title">Run setup</span><span>${escapeHtml(`${transport} · ${report.run.models.explorer} · ${report.run.reasoning_efforts?.explorer ?? 'effort not recorded'}`)}</span></summary>
     <div class="run-meta-grid">
       ${items.join('')}
     </div>
-  </div>`;
+  </details>`;
 }
 
 function renderRunMetaItem(label: string, value: string, caption: string): string {
@@ -2081,7 +2575,7 @@ interface GoalCounts {
 
 function goalCounts(report: ReportJson, eventIndex: Map<string, TraceEvent>): GoalCounts {
   const effective = report.spec_compliance.applicable
-    ? report.spec_compliance.goals.map((g) => effectiveGoalStatus(g, eventIndex))
+    ? effectiveTaskStatuses(report, eventIndex)
     : [];
   return {
     sat: effective.filter((s) => s === 'verified' || s === 'satisfied').length,
@@ -2091,6 +2585,29 @@ function goalCounts(report: ReportJson, eventIndex: Map<string, TraceEvent>): Go
     untested: effective.filter((s) => s === 'untested').length,
     total: effective.length,
   };
+}
+
+function effectiveTaskStatuses(report: ReportJson, eventIndex: Map<string, TraceEvent>): string[] {
+  const statusByGoal = new Map(
+    report.spec_compliance.goals.map((goal) => [goal.id, effectiveGoalStatus(goal, eventIndex)]),
+  );
+  if (report.testing_plan?.scenarios.length) {
+    return report.testing_plan.scenarios.map((scenario) =>
+      effectiveScenarioStatus(scenario, statusByGoal),
+    );
+  }
+  return report.spec_compliance.goals.map((goal) => statusByGoal.get(goal.id) ?? 'untested');
+}
+
+function effectiveScenarioStatus(
+  scenario: UserScenario,
+  statusByGoal: Map<string, string>,
+): string {
+  const ids = scenario.source_goal_ids?.length ? scenario.source_goal_ids : [scenario.id];
+  const statuses = ids
+    .map((id) => statusByGoal.get(id))
+    .filter((status): status is string => Boolean(status));
+  return statuses.length > 0 ? summarizeStatuses(statuses) : 'untested';
 }
 
 function overviewTone(report: ReportJson, counts: GoalCounts): string {
@@ -2118,22 +2635,30 @@ function verdictLabel(report: ReportJson, counts: GoalCounts): string {
   return 'Passes current checks';
 }
 
-function overviewSummary(report: ReportJson, counts: GoalCounts): string {
+function overviewSummary(
+  report: ReportJson,
+  counts: GoalCounts,
+  scoreInterpretation?: string,
+): string {
   const parts: string[] = [];
   const scoreCompleteness = scoreCompletenessSummary(report.scores);
   if (counts.total > 0) {
-    parts.push(`${counts.sat} of ${counts.total} goals verified`);
+    parts.push(`${counts.sat} of ${counts.total} tasks verified`);
     if (counts.par > 0) parts.push(`${counts.par} partial`);
     if (counts.neg > 0) parts.push(`${counts.neg} broken`);
     if (counts.untested > 0) parts.push(`${counts.untested} untested`);
   } else {
-    parts.push('No explicit goals were supplied');
+    parts.push('No explicit tasks were supplied');
   }
   const findingText = findingsMetricCaption(report);
   if (findingText !== 'none') parts.push(findingText);
   if (!scoreCompleteness.complete) parts.push(scoreCompleteness.warningText);
   if (report.run.termination !== 'done' && report.run.termination !== 'goals_complete') {
     parts.push(`ended as ${report.run.termination}`);
+  }
+  if (scoreInterpretation) {
+    const lead = stripTrailingSentencePunctuation(scoreInterpretation);
+    return parts.length > 0 ? `${lead}. ${parts.join('; ')}.` : `${lead}.`;
   }
   return `${parts.join('; ')}.`;
 }
@@ -2186,12 +2711,53 @@ function renderScoreCompletenessWarning(summary: ScoreCompletenessSummary): stri
   </div>`;
 }
 
-function renderMetric(label: string, value: string, caption: string): string {
-  return `<div class="metric">
+function renderEvaluationWarning(evaluation: ReportEvaluation): string {
+  if (evaluation.product_score.authority === 'authoritative') return '';
+  const cls = evaluation.product_score.authority === 'insufficient' ? ' insufficient' : '';
+  const lead =
+    evaluation.product_score.authority === 'insufficient'
+      ? 'Not enough evidence.'
+      : 'Score is provisional.';
+  const reasons = evaluation.evidence_confidence.reasons
+    .slice(0, 4)
+    .map(stripTrailingSentencePunctuation)
+    .join('; ');
+  return `<div class="score-warning${cls}">
+    <strong>${escapeHtml(lead)}</strong>
+    <span>${escapeHtml(evaluation.product_score.interpretation)}${reasons ? ` ${escapeHtml(reasons)}.` : ''}</span>
+  </div>`;
+}
+
+function evidenceConfidenceMetricValue(evaluation: ReportEvaluation): string {
+  return `${evaluation.evidence_confidence.level} ${Math.round(evaluation.evidence_confidence.score * 100)}%`;
+}
+
+function renderCapabilityMetric(evaluation: ReportEvaluation): string {
+  const coverage = evaluation.capability_coverage;
+  if (!coverage) return renderMetric('Product coverage', 'n/a', 'capabilities not recorded');
+  const value =
+    coverage.core_total > 0
+      ? `${coverage.core_covered}/${coverage.core_total} core`
+      : `${coverage.covered}/${coverage.total}`;
+  const caption =
+    coverage.gaps.length > 0
+      ? `${coverage.level}; ${coverage.gaps.length} gaps`
+      : `${coverage.level}; no core gaps`;
+  return renderMetric('Product coverage', value, caption, '#capability-coverage');
+}
+
+function stripTrailingSentencePunctuation(value: string): string {
+  return value.trim().replace(/[.;:]+$/g, '');
+}
+
+function renderMetric(label: string, value: string, caption: string, href?: string): string {
+  const tag = href ? 'a' : 'div';
+  const hrefAttr = href ? ` href="${escapeAttr(href)}"` : '';
+  return `<${tag}${hrefAttr} class="metric">
     <span>${escapeHtml(label)}</span>
     <strong title="${escapeAttr(value)}">${escapeHtml(value)}</strong>
     <em>${escapeHtml(caption)}</em>
-  </div>`;
+  </${tag}>`;
 }
 
 function goalMetricCaption(counts: GoalCounts): string {
@@ -2200,7 +2766,7 @@ function goalMetricCaption(counts: GoalCounts): string {
   if (counts.neg > 0) parts.push(`${counts.neg} broken`);
   if (counts.untested > 0) parts.push(`${counts.untested} untested`);
   if (counts.skipped > 0) parts.push(`${counts.skipped} skipped`);
-  return parts.length > 0 ? parts.join(', ') : 'scenario checks';
+  return parts.length > 0 ? parts.join(', ') : 'tested tasks';
 }
 
 function findingsMetricCaption(report: ReportJson): string {
@@ -2246,9 +2812,7 @@ function renderEvidenceIntegrity(report: ReportJson): string {
   }
   const gcv = report.spec_compliance?.goal_claim_validation;
   if (gcv && gcv.verified_kept + gcv.downgraded > 0) {
-    const parts = [
-      `${gcv.verified_kept} goal-evidence claim${gcv.verified_kept === 1 ? '' : 's'} verified`,
-    ];
+    const parts = [`${gcv.verified_kept} task check${gcv.verified_kept === 1 ? '' : 's'} verified`];
     if (gcv.downgraded > 0) parts.push(`${gcv.downgraded} downgraded`);
     lines.push(parts.join(', '));
   }
@@ -2437,7 +3001,7 @@ function renderFindingsSection(
       ),
     )
     .join('');
-  return `<section>
+  return `<section id="findings">
     <h2>Findings (${findings.length})</h2>
     <p style="color: var(--text-dim); font-size: 13px; margin-top: -6px;">Findings that explain a tested goal reuse that goal's evidence instead of replaying duplicate clips.</p>
     <ul class="findings-list">${items}</ul>
@@ -2464,6 +3028,7 @@ interface VisualEvidenceCard {
   status?: string;
   title: string;
   context: string;
+  scenario?: UserScenario;
   details?: string[];
   origin?: DiscoveryGoalOrigin;
   screenshotPath?: string;
@@ -2499,14 +3064,15 @@ function renderGoalEvidenceSection(
       <div class="goal-review-overview">
         <div class="goal-review-topline">
           <div>
-            <h2>Tested goals &amp; evidence</h2>
-            <p>Each card pairs a real-use goal with the screenshot or clip Iris used to verify it.</p>
+            <h2>Scenario audit</h2>
+            <p>Iris groups observed UI and product abilities into user scenarios, then pairs each result with the proof used to judge it.</p>
           </div>
-          ${renderGoalReviewStats(counts, cards.length)}
+          ${renderGoalReviewStats(counts)}
         </div>
-        ${renderGoalReviewFacts(report, counts)}
-        ${renderProductUseContract(report)}
-      </div>
+	        ${report.testing_plan ? '' : renderGoalReviewFacts(report, counts)}
+	        ${renderTestingPlan(report, eventIndex)}
+	        ${renderCapabilityCoverage(report)}
+	      </div>
     </div>
     <div class="goal-proof-groups">
       ${groups.map((group) => renderGoalEvidenceGroup(group)).join('')}
@@ -2515,16 +3081,13 @@ function renderGoalEvidenceSection(
   </section>`;
 }
 
-function renderGoalReviewStats(counts: GoalCounts, proofRowCount: number): string {
+function renderGoalReviewStats(counts: GoalCounts): string {
   const chips = [
     renderStatusPill('verified', `${counts.sat}/${counts.total} verified`),
     counts.par > 0 ? renderStatusPill('partial', `${counts.par} partial`) : '',
     counts.neg > 0 ? renderStatusPill('blocked', `${counts.neg} broken`) : '',
     counts.untested > 0 ? renderStatusPill('untested', `${counts.untested} untested`) : '',
     counts.skipped > 0 ? renderStatusPill('skipped', `${counts.skipped} skipped`) : '',
-    proofRowCount === counts.total
-      ? ''
-      : renderStatusPill('neutral', `${proofRowCount} proof rows after dedupe`),
   ].filter(Boolean);
   return `<div class="goal-review-stats">${chips.join('')}</div>`;
 }
@@ -2538,15 +3101,127 @@ function renderGoalReviewFacts(report: ReportJson, counts: GoalCounts): string {
   const deferredCount = coveragePlan?.deferred_surface_ids.length ?? 0;
   const coverageText =
     surfaceCount > 0 && journeyCount > 0
-      ? `${surfaceCount} surfaces, ${journeyCount} journeys`
+      ? `${surfaceCount} UI items, ${journeyCount} journeys`
       : surfaceCount > 0
-        ? `${surfaceCount} surfaces`
+        ? `${surfaceCount} UI items`
         : 'not recorded';
+  const untestedText =
+    deferredCount > 0
+      ? `${deferredCount} deferred (${risk} risk)`
+      : risk === 'not recorded'
+        ? 'not recorded'
+        : `${risk} risk`;
   return `<div class="goal-review-facts">
-    <div class="goal-review-fact"><span>Goal outcome</span><strong>${escapeHtml(`${counts.sat}/${counts.total} verified${counts.par > 0 ? `, ${counts.par} partial` : ''}`)}</strong></div>
-    <div class="goal-review-fact"><span>Discovery coverage</span><strong>${escapeHtml(coverageText)}</strong></div>
-    <div class="goal-review-fact"><span>Coverage risk</span><strong>${escapeHtml(`${risk}${deferredCount > 0 ? `, ${deferredCount} deferred` : ''}`)}</strong></div>
+    <div class="goal-review-fact"><span>Task outcome</span><strong>${escapeHtml(`${counts.sat}/${counts.total} verified${counts.par > 0 ? `, ${counts.par} partial` : ''}`)}</strong></div>
+    <div class="goal-review-fact"><span>UI inventory</span><strong>${escapeHtml(coverageText)}</strong></div>
+    <div class="goal-review-fact"><span>Deferred areas</span><strong>${escapeHtml(untestedText)}</strong></div>
+	  </div>`;
+}
+
+function renderCapabilityCoverage(report: ReportJson): string {
+  const capabilities = report.discovery?.capabilities ?? [];
+  const coverage =
+    report.evaluation?.capability_coverage ?? deriveReportEvaluationForReport(report).capability_coverage;
+  if (capabilities.length === 0 || !coverage) return '';
+  const statusByGoal = new Map(report.spec_compliance.goals.map((goal) => [goal.id, goal.status]));
+  const rows = capabilities
+    .filter((capability) => capability.status !== 'not_applicable')
+    .sort((a, b) => capabilityReportRank(a) - capabilityReportRank(b))
+    .map((capability) => ({
+      capability,
+      status: capabilityReportStatus(capability, statusByGoal),
+    }));
+  const visibleRows = rows.filter(
+    (row) => row.capability.importance === 'core' || row.capability.importance === 'important',
+  );
+  const secondaryRows = rows.filter(
+    (row) => row.capability.importance !== 'core' && row.capability.importance !== 'important',
+  );
+  const summaryChips = [
+    `${coverage.core_covered}/${coverage.core_total} core covered`,
+    `${coverage.covered}/${coverage.total} total covered`,
+    coverage.partial > 0 ? `${coverage.partial} partial` : '',
+    coverage.deferred + coverage.untested > 0
+      ? `${coverage.deferred + coverage.untested} not covered`
+      : '',
+  ].filter(Boolean);
+  const readerSummary = coverage.summary.replace(/\bcapabilities\b/g, 'abilities');
+  return `<section id="capability-coverage" class="capability-panel">
+    <div class="capability-head">
+      <div>
+        <div class="reader-kicker">Product coverage</div>
+        <h3>Product abilities Iris counted</h3>
+        <p>${escapeHtml(readerSummary)} Passing every selected scenario is not the same as covering the whole product.</p>
+      </div>
+      <div class="reader-plan-summary">${summaryChips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>
+    </div>
+    <div class="capability-list">
+      ${visibleRows.map(renderCapabilityRow).join('')}
+    </div>
+    ${
+      secondaryRows.length > 0
+        ? `<details class="reader-plan-details capability-secondary"><summary>${escapeHtml(`${secondaryRows.length} secondary capabilities`)}</summary><div class="capability-list">${secondaryRows.map(renderCapabilityRow).join('')}</div></details>`
+        : ''
+    }
+  </section>`;
+}
+
+type ReportCapability = NonNullable<NonNullable<ReportJson['discovery']>['capabilities']>[number];
+
+function renderCapabilityRow(row: {
+  capability: ReportCapability;
+  status: 'covered' | 'partial' | 'untested' | 'deferred';
+}): string {
+  const { capability, status } = row;
+  const reason =
+    status === 'covered'
+      ? capability.scenario_ids.length > 0
+        ? `Covered by ${capability.scenario_ids.join(', ')}.`
+        : 'Covered by selected scenario evidence.'
+      : capability.coverage_gap || capability.denominator_reason;
+  return `<div class="capability-row ${escapeAttr(`capability-${status}`)}">
+    <div class="capability-title">
+      ${renderStatusPill(capabilityStatusPill(status))}
+      <strong>${escapeHtml(capability.label)}</strong>
+      <span>${escapeHtml(capability.importance)}</span>
+    </div>
+    <p>${escapeHtml(reason)}</p>
   </div>`;
+}
+
+function capabilityReportStatus(
+  capability: ReportCapability,
+  statusByGoal: Map<string, ReportJson['spec_compliance']['goals'][number]['status']>,
+): 'covered' | 'partial' | 'untested' | 'deferred' {
+  const statuses = capability.scenario_ids
+    .map((id) => statusByGoal.get(id))
+    .filter((status): status is ReportJson['spec_compliance']['goals'][number]['status'] =>
+      Boolean(status),
+    );
+  if (statuses.some((status) => status === 'verified' || status === 'satisfied')) return 'covered';
+  if (statuses.some((status) => status === 'partial' || status === 'blocked' || status === 'not_satisfied')) {
+    return 'partial';
+  }
+  return capability.status === 'selected' ? 'untested' : 'deferred';
+}
+
+function capabilityStatusPill(status: 'covered' | 'partial' | 'untested' | 'deferred'): string {
+  switch (status) {
+    case 'covered':
+      return 'verified';
+    case 'partial':
+      return 'partial';
+    default:
+      return 'untested';
+  }
+}
+
+function capabilityReportRank(
+  capability: ReportCapability,
+): number {
+  const importanceRank = { core: 0, important: 1, secondary: 2, diagnostic: 3 };
+  const statusRank = { selected: 0, deferred: 1, discovered: 2, not_applicable: 3 };
+  return importanceRank[capability.importance] * 10 + statusRank[capability.status];
 }
 
 function renderDiscoveryCoverageSummary(report: ReportJson): string {
@@ -2568,16 +3243,16 @@ function renderDiscoveryCoverageSummary(report: ReportJson): string {
   if (surfaceCount === 0 && journeyCount === 0 && deferredCount === 0 && !rationale) return '';
   const parts = [
     surfaceCount > 0 && journeyCount > 0
-      ? `${surfaceCount} surfaces -> ${journeyCount} journeys -> ${generatedGoalCount || report.spec_compliance.goals.length} goals`
+      ? `${surfaceCount} UI items observed -> ${journeyCount} candidate workflows -> ${generatedGoalCount || report.spec_compliance.goals.length} tasks`
       : surfaceCount > 0
-        ? `${surfaceCount} surfaces discovered`
+        ? `${surfaceCount} UI items observed`
         : '',
     surfaceCount > 0 && surfaceCoverage.covered.size > 0
       ? surfaceCoverage.context.size > 0
-        ? `${surfaceCoverage.covered.size}/${surfaceCount} surfaces covered (${surfaceCoverage.direct.size} direct, ${surfaceCoverage.context.size} page context)`
-        : `${surfaceCoverage.covered.size}/${surfaceCount} surfaces covered`
+        ? `${surfaceCoverage.covered.size}/${surfaceCount} UI areas covered (${surfaceCoverage.direct.size} direct, ${surfaceCoverage.context.size} page context)`
+        : `${surfaceCoverage.covered.size}/${surfaceCount} UI areas covered`
       : '',
-    deferredCount > 0 ? `${deferredCount} surfaces deferred` : '',
+    deferredCount > 0 ? `${deferredCount} UI areas deferred` : '',
     risk ? `coverage risk: ${risk}` : '',
   ].filter(Boolean);
   const selected = formatDiscoveryJourneyRefs(selectedJourneyIds, discovery.journeys ?? []);
@@ -2592,87 +3267,184 @@ function renderDiscoveryCoverageSummary(report: ReportJson): string {
   );
   return `<details class="discovery-summary">
     <summary>
-      <span class="discovery-summary-title">Discovery v2 coverage plan</span>
+      <span class="discovery-summary-title">Discovery map (debug)</span>
       <span class="discovery-summary-meta">${escapeHtml(parts.join(' · '))}</span>
     </summary>
     <div class="discovery-summary-body">
     ${renderDiscoveryCoverageMap(report, selectedJourneyIds, selected)}
     <div class="discovery-deferred">
-      <span class="discovery-deferred-label">Deferred surfaces</span>
+      <span class="discovery-deferred-label">Deferred UI areas</span>
       ${deferred ? renderDiscoveryChips(deferred) : '<div class="discovery-chip-list"><span class="discovery-chip">None</span></div>'}
     </div>
     ${rationale ? `<div class="discovery-rationale"><span>Why:</span> ${escapeHtml(rationale)}</div>` : ''}
     ${
       surfaceInventory.length > 0
-        ? `<details class="discovery-inventory"><summary>${escapeHtml(`Surface inventory (${surfaceInventory.length})`)}</summary>${renderDiscoveryChips(surfaceInventory)}</details>`
+        ? `<details class="discovery-inventory"><summary>${escapeHtml(`UI inventory (${surfaceInventory.length})`)}</summary>${renderDiscoveryChips(surfaceInventory)}</details>`
         : ''
     }
     </div>
   </details>`;
 }
 
-function renderProductUseContract(report: ReportJson): string {
-  const contract = report.discovery?.product_use_contract;
-  if (!contract) return '';
-  const generatedGoals = report.discovery?.goals ?? [];
-  const reportGoalsById = new Map(report.spec_compliance.goals.map((goal) => [goal.id, goal]));
-  const goalByJourney = new Map<string, NonNullable<ReportJson['discovery']>['goals']>();
-  for (const goal of generatedGoals) {
-    if (!goal.journey_id) continue;
-    const existing = goalByJourney.get(goal.journey_id) ?? [];
-    existing.push(goal);
-    goalByJourney.set(goal.journey_id, existing);
-  }
-  const jobs = (contract.user_jobs ?? []).slice(0, 5).map((job) => {
-    const linkedGoals = job.journey_id ? (goalByJourney.get(job.journey_id) ?? []) : [];
-    const statuses: string[] = [];
-    for (const goal of linkedGoals) {
-      const status = reportGoalsById.get(goal.id)?.status;
-      if (status) statuses.push(status);
+function renderTestingPlan(report: ReportJson, eventIndex: Map<string, TraceEvent>): string {
+  const plan = report.testing_plan;
+  if (!plan) return '';
+  const statusByGoal = new Map(
+    report.spec_compliance.goals.map((goal) => [goal.id, effectiveGoalStatus(goal, eventIndex)]),
+  );
+  const primaryJourney =
+    plan.journeys.find((journey) => journey.id === plan.primary_journey_id) ?? plan.journeys[0];
+  const mission =
+    plan.overall_mission ||
+    plan.main_outcome ||
+    primaryJourney?.user_goal ||
+    plan.product_summary ||
+    'Mission not recorded';
+  const scenarioStatusById = new Map(
+    plan.scenarios.map((scenario) => [
+      scenario.id,
+      effectiveScenarioStatus(scenario, statusByGoal),
+    ]),
+  );
+  const successSignals = uniqueStrings(
+    plan.journeys.flatMap((journey) => splitTestingPlanSignals(journey.success_state)),
+  );
+  const verifiedScenarioCount = plan.scenarios.filter(
+    (scenario) => scenarioStatusById.get(scenario.id) === 'verified',
+  ).length;
+  const summaryParts = [
+    `${verifiedScenarioCount}/${plan.scenarios.length} scenarios verified`,
+    pluralPhrase(plan.journeys.length, 'journey planned', 'journeys planned'),
+    plan.deferred.length > 0
+      ? pluralPhrase(plan.deferred.length, 'UI area deferred', 'UI areas deferred')
+      : '',
+  ].filter(Boolean);
+  return `<div class="reader-plan">
+    <div class="reader-plan-head">
+      <div>
+        <div class="reader-kicker">What Iris tried to prove</div>
+        <p class="reader-mission"><strong>Overall mission:</strong> ${escapeHtml(mission)}</p>
+      </div>
+      <div class="reader-plan-summary">${summaryParts.map((part) => `<span>${escapeHtml(part)}</span>`).join('')}</div>
+    </div>
+    ${
+      successSignals.length > 0
+        ? `<details class="reader-plan-details"><summary>Proof standard</summary>${renderTestingPlanSuccessSignals(successSignals)}</details>`
+        : ''
     }
-    const status = statuses.length > 0 ? summarizeStatuses(statuses) : 'not mapped';
-    const statusPill =
-      status === 'not mapped'
-        ? renderStatusPill('neutral', 'not mapped')
-        : renderStatusPill(status);
-    const required =
-      job.required_actions.length > 0 ? job.required_actions.join(', ') : 'normal user actions';
-    const weak =
-      job.weak_evidence.length > 0 ? job.weak_evidence.join('; ') : 'activation-only proof';
-    return `<div class="product-use-job">
-      <div><strong>${escapeHtml(job.title)}</strong> ${statusPill}</div>
-      <div class="product-use-meta"><span>Needs</span>${escapeHtml(required)}</div>
-      <div class="product-use-meta"><span>Proof</span>${escapeHtml(job.expected_artifact || 'visible artifact or state change')}</div>
-      <div class="product-use-meta"><span>Weak</span>${escapeHtml(weak)}</div>
-    </div>`;
-  });
-  const kinds = contract.product_kinds.length > 0 ? contract.product_kinds.join(', ') : 'unknown';
-  const artifacts =
-    contract.core_artifacts.length > 0
-      ? contract.core_artifacts.join('; ')
-      : 'visible value-producing artifact or state change';
-  return `<div class="product-use-contract">
-    <div class="product-use-title">Real-use contract</div>
-    <div class="product-use-loop">${escapeHtml(contract.primary_value_loop || 'Primary value loop not recorded')}</div>
-    <details class="product-use-details"><summary>Expected artifacts and checks</summary>
-      <div class="product-use-meta"><span>Kind</span>${escapeHtml(kinds)}</div>
-      <div class="product-use-meta"><span>Artifact</span>${escapeHtml(artifacts)}</div>
-      ${
-        jobs.length > 0
-          ? `<details class="product-use-jobs-details"><summary>${escapeHtml(`Acceptance checks (${jobs.length})`)}</summary><div class="product-use-jobs">${jobs.join('')}</div></details>`
-          : ''
-      }
-    </details>
+    ${renderReaderPlanMap(plan, scenarioStatusById)}
   </div>`;
 }
 
+function renderTestingPlanSuccessSignals(signals: string[]): string {
+  if (signals.length === 0) return '';
+  const visible = signals.slice(0, 3);
+  const extra = signals.slice(3);
+  return `<div>
+    <ul class="reader-proof-list">${visible.map((signal) => `<li>${escapeHtml(signal)}</li>`).join('')}</ul>
+    ${
+      extra.length > 0
+        ? `<details class="reader-mini-details"><summary>${escapeHtml(`${extra.length} more`)}</summary><ul class="reader-proof-list">${extra.map((signal) => `<li>${escapeHtml(signal)}</li>`).join('')}</ul></details>`
+        : ''
+    }
+  </div>`;
+}
+
+function splitTestingPlanSignals(value: string): string[] {
+  return value
+    .split(';')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function renderReaderPlanMap(
+  plan: NonNullable<ReportJson['testing_plan']>,
+  scenarioStatusById: Map<string, string>,
+): string {
+  if (plan.journeys.length === 0 && plan.deferred.length === 0) return '';
+  const scenariosById = new Map(plan.scenarios.map((scenario) => [scenario.id, scenario]));
+  const journeyRows = plan.journeys
+    .map((journey) => {
+      const scenarios = journey.scenario_ids
+        .map((id) => scenariosById.get(id))
+        .filter((scenario): scenario is UserScenario => Boolean(scenario));
+      const status = summarizeStatuses(
+        scenarios.map((scenario) => scenarioStatusById.get(scenario.id) ?? 'untested'),
+      );
+      return `<div class="reader-map-row">
+        <div class="reader-map-title">
+          ${renderStatusPill(status)}
+          <strong>${escapeHtml(journey.title)}</strong>
+          <span>${escapeHtml(pluralPhrase(scenarios.length, 'scenario', 'scenarios'))}</span>
+        </div>
+        ${journey.user_goal ? `<p>${escapeHtml(journey.user_goal)}</p>` : ''}
+        ${
+          scenarios.length > 0
+            ? `<div class="reader-map-scenarios">${scenarios
+                .map(
+                  (scenario) =>
+                    `<a href="#${escapeAttr(goalAnchorId(scenario.source_goal_ids?.[0] ?? scenario.id))}">${escapeHtml(scenario.id)} ${escapeHtml(scenario.title)}</a>`,
+                )
+                .join('')}</div>`
+            : ''
+        }
+      </div>`;
+    })
+    .join('');
+  return `<details class="reader-plan-details">
+    <summary>Scenario map${plan.deferred.length > 0 ? ` and ${escapeHtml(pluralPhrase(plan.deferred.length, 'deferred UI area', 'deferred UI areas'))}` : ''}</summary>
+    <div class="reader-map-list">${journeyRows}</div>
+    ${renderDeferredAreas(plan.deferred)}
+  </details>`;
+}
+
+function renderDeferredAreas(areas: NonNullable<ReportJson['testing_plan']>['deferred']): string {
+  if (areas.length === 0) return '';
+  const commonReason = commonDeferredReason(areas);
+  const visible = areas.slice(0, 12);
+  const hidden = areas.slice(12);
+  const chips = renderDiscoveryChips(
+    visible.map((area) => ({ id: area.id, label: area.title })),
+  );
+  const hiddenChips =
+    hidden.length > 0
+      ? `<details class="reader-mini-details"><summary>${escapeHtml(`${hidden.length} more`)}</summary>${renderDiscoveryChips(hidden.map((area) => ({ id: area.id, label: area.title })))}</details>`
+      : '';
+  const reasonHtml = commonReason
+    ? `<p>${escapeHtml(commonReason)}</p>`
+    : `<ul>${areas
+        .slice(0, 6)
+        .map((area) => `<li><strong>${escapeHtml(area.title)}:</strong> ${escapeHtml(area.reason)}</li>`)
+        .join('')}</ul>`;
+  return `<details class="reader-deferred">
+    <summary>Not checked in this run (${areas.length})</summary>
+    ${reasonHtml}
+    ${chips}
+    ${hiddenChips}
+  </details>`;
+}
+
+function commonDeferredReason(
+  areas: NonNullable<ReportJson['testing_plan']>['deferred'],
+): string | undefined {
+  if (areas.length === 0) return undefined;
+  const reasons = uniqueStrings(areas.map((area) => area.reason).filter(Boolean));
+  return reasons.length === 1 ? reasons[0] : undefined;
+}
+
+function pluralPhrase(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 function summarizeStatuses(statuses: string[]): string {
-  if (statuses.some((status) => status === 'blocked' || status === 'not_satisfied'))
+  if (statuses.some((status) => status === 'blocked' || status === 'not_satisfied')) {
     return 'blocked';
+  }
   if (statuses.some((status) => status === 'partial')) return 'partial';
   if (statuses.some((status) => status === 'untested')) return 'untested';
-  if (statuses.every((status) => status === 'verified' || status === 'satisfied'))
+  if (statuses.every((status) => status === 'verified' || status === 'satisfied')) {
     return 'verified';
+  }
   return statuses[0] ?? 'unknown';
 }
 
@@ -2727,11 +3499,11 @@ function renderDiscoveryCoverageMap(
           ${renderDiscoveryChips([journeyRef])}
         </div>
         <div class="discovery-map-field">
-          <span class="discovery-map-field-label">Goal checked</span>
+          <span class="discovery-map-field-label">Task checked</span>
           ${renderDiscoveryChips(goalRefs)}
         </div>
         <div class="discovery-map-field">
-          <span class="discovery-map-field-label">Surfaces covered</span>
+          <span class="discovery-map-field-label">UI areas covered</span>
           ${renderDiscoveryChips(surfaceRefs)}
         </div>
       </div>`;
@@ -2820,23 +3592,30 @@ function buildGoalEvidenceCards(
 ): VisualEvidenceCard[] {
   const cards: VisualEvidenceCard[] = [];
   const discovery = buildDiscoveryIndex(report);
+  const testingPlan = buildTestingPlanGoalIndex(report);
 
   for (const goal of report.spec_compliance.goals) {
     const resolved = resolveEvidenceEventIds(goal.evidence, eventIndex);
     const withScreenshot = resolved.find((eventId) => screenshotForEvent.has(eventId));
     const path = withScreenshot ? screenshotForEvent.get(withScreenshot) : undefined;
     const event = withScreenshot ? eventIndex.get(withScreenshot) : undefined;
-    const origin = discoveryOriginForGoal(goal.id, discovery);
+    const planEntry = testingPlan.get(goal.id);
+    const origin = goalOriginForPlanEntry(planEntry, discoveryOriginForGoal(goal.id, discovery));
     const title = goalEvidenceTitle(goal, origin, event);
     const effectiveStatus = effectiveGoalStatus(goal, eventIndex);
     const linkedFindings = goalFindingLinks.byGoalId.get(goal.id) ?? [];
-    const grouping = origin?.journey
-      ? { key: `journey:${origin.journey.id}`, label: origin.journey.label }
-      : classifyGoalEvidence(goal.description, title, goal.notes ?? '');
-    const key = path ? `goal:${path}` : `goal:${goal.id}`;
+    const grouping = planEntry
+      ? {
+          key: `scenario:${String(planEntry.order).padStart(3, '0')}:${planEntry.scenario.id}`,
+          label: planEntry.scenario.title,
+        }
+      : origin?.journey
+        ? { key: `journey:${origin.journey.id}`, label: origin.journey.label }
+        : classifyGoalEvidence(goal.description, title, goal.notes ?? '');
+    const key = `goal:${goal.id}`;
     const existing = cards.find((card) => card.key === key);
     if (existing) {
-      existing.claim = appendClaim(existing.claim, `Goal ${goal.id}`);
+      existing.claim = appendClaim(existing.claim, `Task ${goal.id}`);
       existing.status =
         existing.status === goalStatusLabel(effectiveStatus) ? existing.status : 'mixed';
       existing.details = [...(existing.details ?? []), `${goal.id}: ${goal.description}`];
@@ -2852,11 +3631,12 @@ function buildGoalEvidenceCards(
     }
     cards.push({
       key,
-      claim: `Goal ${goal.id}`,
+      claim: `Task ${goal.id}`,
       primaryGoalId: goal.id,
       status: goalStatusLabel(effectiveStatus),
       title,
       context: goal.notes ?? goal.description,
+      ...(planEntry ? { scenario: planEntry.scenario } : {}),
       details: [`${goal.id}: ${goal.description}`],
       ...(origin ? { origin } : {}),
       ...(path ? { screenshotPath: path } : {}),
@@ -2888,7 +3668,7 @@ function goalEvidenceTitle(
 ): string {
   if (goal.description.trim()) return goal.description.trim();
   if (origin?.journey?.label) return origin.journey.label;
-  return event ? eventTitle(event) : 'Goal evidence';
+  return event ? eventTitle(event) : 'Task evidence';
 }
 
 interface DiscoveryIndex {
@@ -2902,12 +3682,47 @@ interface DiscoveryGoalOrigin {
   surfaces: Array<{ id: string; label: string; kind?: string }>;
 }
 
+interface TestingPlanGoalEntry {
+  scenario: UserScenario;
+  journey?: { id: string; label: string } | undefined;
+  order: number;
+}
+
 function buildDiscoveryIndex(report: ReportJson): DiscoveryIndex {
   const discovery = report.discovery;
   return {
     goals: new Map((discovery?.goals ?? []).map((goal) => [goal.id, goal])),
     journeys: new Map((discovery?.journeys ?? []).map((journey) => [journey.id, journey])),
     surfaces: new Map((discovery?.surfaces ?? []).map((surface) => [surface.id, surface])),
+  };
+}
+
+function buildTestingPlanGoalIndex(report: ReportJson): Map<string, TestingPlanGoalEntry> {
+  const plan = report.testing_plan;
+  const out = new Map<string, TestingPlanGoalEntry>();
+  if (!plan || !report.discovery) return out;
+  const journeys = new Map(plan.journeys.map((journey) => [journey.id, journey]));
+  for (const [index, scenario] of plan.scenarios.entries()) {
+    const rawJourney = journeys.get(scenario.journey_id);
+    const entry: TestingPlanGoalEntry = {
+      scenario,
+      ...(rawJourney ? { journey: { id: rawJourney.id, label: rawJourney.title } } : {}),
+      order: index,
+    };
+    const goalIds = scenario.source_goal_ids?.length ? scenario.source_goal_ids : [scenario.id];
+    for (const goalId of goalIds) out.set(goalId, entry);
+  }
+  return out;
+}
+
+function goalOriginForPlanEntry(
+  entry: TestingPlanGoalEntry | undefined,
+  fallback: DiscoveryGoalOrigin | undefined,
+): DiscoveryGoalOrigin | undefined {
+  if (!entry?.journey) return fallback;
+  return {
+    journey: entry.journey,
+    surfaces: fallback?.surfaces ?? [],
   };
 }
 
@@ -2970,23 +3785,23 @@ function renderGoalEvidenceGroup(group: {
   label: string;
   cards: VisualEvidenceCard[];
 }): string {
-  const goalCount = group.cards.reduce((sum, card) => sum + card.goalCount, 0);
+  const checkCount = group.cards.reduce((sum, card) => sum + card.goalCount, 0);
   const groupStatus = summarizeStatuses(group.cards.map((card) => card.status ?? 'untested'));
-  const singleJourneyCard =
-    group.cards.length === 1 && group.cards[0]?.origin?.journey ? group.cards[0] : undefined;
-  const heading = singleJourneyCard?.title ?? group.label;
+  const singleCard = group.cards.length === 1 ? group.cards[0] : undefined;
+  const heading = singleCard?.title ?? group.label;
+  const groupStatusPill = groupStatus === 'verified' ? '' : renderStatusPill(groupStatus);
   return `<section class="goal-proof-group" data-group="${escapeAttr(group.key)}">
     <div class="goal-proof-group-head">
-      <h3>${singleJourneyCard ? renderGoalHeadingTitle(singleJourneyCard.claim, heading) : escapeHtml(heading)}</h3>
+      <h3>${singleCard ? renderGoalHeadingTitle(singleCard.claim, heading) : escapeHtml(heading)}</h3>
       <div class="goal-proof-group-meta">
-        ${renderStatusPill(groupStatus)}
-        ${goalCount > 1 ? `<span class="goal-proof-group-count">${escapeHtml(`${goalCount} goals`)}</span>` : ''}
+        ${groupStatusPill}
+        ${checkCount > 1 ? `<span class="goal-proof-group-count">${escapeHtml(`${checkCount} scenarios`)}</span>` : ''}
       </div>
     </div>
     <div class="goal-proof-list">
       ${group.cards
         .map((card) =>
-          renderGoalEvidenceCard(card, { suppressTitle: card.key === singleJourneyCard?.key }),
+          renderGoalEvidenceCard(card, { suppressTitle: card.key === singleCard?.key }),
         )
         .join('')}
     </div>
@@ -2999,15 +3814,18 @@ function renderGoalEvidenceCard(
 ): string {
   const idAttr = ` id="${escapeAttr(goalAnchorId(card.primaryGoalId))}"`;
   const statusClass = card.status ? ` ${goalStatusClass(card.status)}` : '';
-  const statusPill = card.status ? renderStatusPill(card.status) : '';
+  const statusPill = card.status && card.status !== 'verified' ? renderStatusPill(card.status) : '';
   const headingHtml = opts.suppressTitle
     ? ''
     : `<div class="goal-proof-card-heading">${renderGoalHeadingTitle(card.claim, card.title)}${statusPill}</div>`;
   if (!card.screenshotPath && !card.clipPath) {
     return `<div${idAttr} class="goal-proof-row no-frame${statusClass}">
       ${headingHtml || `<div class="goal-proof-card-heading">${renderGoalHeadingTitle(card.claim, 'Needs better visual evidence')}</div>`}
+      ${renderGoalScenarioBrief(card)}
       ${renderGoalScope(card, opts.suppressTitle === true)}
       ${renderGoalObservedResult(card)}
+      ${renderGoalExpectedOutputs(card)}
+      ${renderGoalScenarioCheckDetails(card)}
       ${renderGoalLinkedFindings(card.linkedFindings)}
       ${renderGoalOrigin(card)}
       ${renderGoalEvidenceActions(card)}
@@ -3024,8 +3842,11 @@ function renderGoalEvidenceCard(
     ${renderGoalProofMedia(card)}
     <div class="goal-proof-copy">
       ${headingHtml}
+      ${renderGoalScenarioBrief(card)}
       ${renderGoalScope(card, opts.suppressTitle === true)}
       ${renderGoalObservedResult(card)}
+      ${renderGoalExpectedOutputs(card)}
+      ${renderGoalScenarioCheckDetails(card)}
       ${renderGoalLinkedFindings(card.linkedFindings)}
       ${renderGoalOrigin(card)}
       ${renderGoalEvidenceActions(card, evidenceLink)}
@@ -3053,6 +3874,58 @@ function renderGoalLinkedFindings(links: FindingGoalLink[] | undefined): string 
     <span class="label">Issue from this evidence</span>
     ${items}
   </div>`;
+}
+
+function renderGoalScenarioBrief(card: VisualEvidenceCard): string {
+  const brief = card.scenario?.scenario_brief?.trim();
+  if (!brief) return '';
+  const normalizedBrief = normalizeGoalDetail(brief);
+  const normalizedTitle = normalizeGoalDetail(card.title);
+  const normalizedContext = normalizeGoalDetail(card.context);
+  if (normalizedBrief === normalizedTitle || normalizedBrief === normalizedContext) return '';
+  return `<div class="goal-proof-scenario"><span class="label">Scenario</span>${escapeHtml(brief)}</div>`;
+}
+
+function renderGoalExpectedOutputs(card: VisualEvidenceCard): string {
+  const outputs = uniqueStrings(card.scenario?.required_outputs ?? []);
+  const quality = uniqueStrings(card.scenario?.quality_bar ?? []);
+  if (outputs.length === 0 && quality.length === 0) return '';
+  const outputChips = outputs.slice(0, 8).map((item) => `<span>${escapeHtml(item)}</span>`).join('');
+  const hiddenOutputs = outputs.slice(8);
+  const outputBlock =
+    outputs.length > 0
+      ? `<div class="goal-proof-checkline"><span class="label">Expected</span><div class="goal-proof-chip-list">${outputChips}${
+          hiddenOutputs.length > 0
+            ? `<span>${escapeHtml(`+${hiddenOutputs.length} more`)}</span>`
+            : ''
+        }</div></div>`
+      : '';
+  const qualityBlock =
+    quality.length > 0
+      ? `<details class="goal-proof-debug goal-proof-quality"><summary>Quality bar</summary><ul>${quality.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></details>`
+      : '';
+  return `${outputBlock}${qualityBlock}`;
+}
+
+function renderGoalScenarioCheckDetails(card: VisualEvidenceCard): string {
+  const scenario = card.scenario;
+  if (!scenario) return '';
+  const rows = [
+    scenario.test_data.length > 0
+      ? `<div><span>Use</span>${escapeHtml(scenario.test_data.join(', '))}</div>`
+      : '',
+    scenario.actions.length > 0
+      ? `<div><span>Actions</span>${escapeHtml(scenario.actions.join(', '))}</div>`
+      : '',
+    scenario.strong_evidence.length > 0
+      ? `<div><span>Evidence needed</span>${escapeHtml(scenario.strong_evidence.join('; '))}</div>`
+      : '',
+    scenario.weak_evidence.length > 0
+      ? `<div><span>Not enough</span>${escapeHtml(scenario.weak_evidence.join('; '))}</div>`
+      : '',
+  ].filter(Boolean);
+  if (rows.length === 0) return '';
+  return `<details class="goal-proof-debug goal-proof-check-details"><summary>How Iris checked</summary>${rows.join('')}</details>`;
 }
 
 function renderGoalProofMedia(card: VisualEvidenceCard): string {
@@ -3084,17 +3957,17 @@ function renderGoalOrigin(card: VisualEvidenceCard): string {
     : '';
   const surfaces =
     card.origin.surfaces.length > 0
-      ? `<div class="goal-proof-origin-row"><span class="label">Surfaces</span>${renderDiscoveryChips(card.origin.surfaces)}</div>`
+      ? `<div class="goal-proof-origin-row"><span class="label">UI seen</span>${renderDiscoveryChips(card.origin.surfaces)}</div>`
       : '';
   const parts: string[] = [];
-  if (card.origin.journey) parts.push(card.origin.journey.id);
+  if (card.origin.journey) parts.push(card.origin.journey.label);
   if (card.origin.surfaces.length > 0) {
     parts.push(
-      `${card.origin.surfaces.length} surface${card.origin.surfaces.length === 1 ? '' : 's'}`,
+      `${card.origin.surfaces.length} UI area${card.origin.surfaces.length === 1 ? '' : 's'}`,
     );
   }
   return `<details class="goal-proof-origin">
-    <summary>Coverage: ${escapeHtml(parts.join(' · '))}</summary>
+    <summary>Where Iris looked: ${escapeHtml(parts.join(' · '))}</summary>
     <div class="goal-proof-origin-body">${journey}${surfaces}</div>
   </details>`;
 }
@@ -3110,7 +3983,7 @@ function renderGoalScope(card: VisualEvidenceCard, suppressDuplicateDetails = fa
     details.length === 1
       ? escapeHtml(details[0] ?? '')
       : `<ul>${details.map((detail) => `<li>${escapeHtml(detail)}</li>`).join('')}</ul>`;
-  return `<div class="goal-proof-scope"><span class="label">Scope</span>${content}</div>`;
+  return `<div class="goal-proof-scope"><span class="label">Checked</span>${content}</div>`;
 }
 
 function normalizeGoalDetail(value: string): string {
@@ -3123,18 +3996,18 @@ function normalizeGoalDetail(value: string): string {
 
 function renderGoalObservedResult(card: VisualEvidenceCard): string {
   if (!card.context) return '';
-  return `<div class="goal-proof-context"><span class="label">Observed</span>${escapeHtml(card.context)}</div>`;
+  return `<div class="goal-proof-context"><span class="label">Result</span>${escapeHtml(card.context)}</div>`;
 }
 
 function renderGoalEvidenceActions(card: VisualEvidenceCard, evidenceLink?: string): string {
   const sourceLabel = card.eventId
-    ? 'source event'
+    ? 'trace event'
     : card.screenshotPath
-      ? 'source image'
+      ? 'image file'
       : 'source clip';
   const source = evidenceLink ? `<a class="ev-chip" href="${evidenceLink}">${sourceLabel}</a>` : '';
   if (!source) return '';
-  return `<div class="goal-proof-actions">${source}</div>`;
+  return `<details class="goal-proof-debug"><summary>Debug source</summary><div class="goal-proof-actions">${source}</div></details>`;
 }
 
 function appendClaim(existing: string, next: string): string {
@@ -3237,10 +4110,12 @@ function classifyGoalEvidence(
   if (/\b(navigation|menu|footer|header|link|back|forward)\b/.test(text)) {
     return { key: 'navigation', label: 'Navigation' };
   }
-  return { key: 'other', label: 'Other checked surfaces' };
+  return { key: 'other', label: 'Other checked UI areas' };
 }
 
 function goalGroupRank(key: string): number {
+  const scenarioRank = key.match(/^scenario:(\d+):/);
+  if (scenarioRank?.[1]) return Number.parseInt(scenarioRank[1], 10);
   const ranks: Record<string, number> = {
     search: 10,
     article_nav: 20,
@@ -3362,7 +4237,7 @@ function renderFinding(
           </a>
           <div class="caption">
             <span>context frame near ${escapeHtml(fallback.label)}</span>
-            <a href="#evt-${escapeAttr(fallback.eventId)}">source event</a>
+            <a href="#evt-${escapeAttr(fallback.eventId)}">trace event</a>
           </div>
         </div>`;
       }
@@ -3395,7 +4270,7 @@ function renderFinding(
         ${f.suggested_fix ? renderSuggestedFix(f.suggested_fix) : ''}
         ${
           f.evidence.length > 0
-            ? `<div class="evidence-row"><span class="label">Evidence</span>${f.evidence.map((e) => renderEvidenceChip(e, eventIndex)).join('')}</div>`
+            ? `<details class="finding-evidence-detail"><summary>Debug evidence refs</summary><div class="evidence-row"><span class="label">Evidence</span>${f.evidence.map((e) => renderEvidenceChip(e, eventIndex)).join('')}</div></details>`
             : ''
         }
       </div>
@@ -3409,14 +4284,14 @@ function renderFindingLinkedMediaNote(linkedGoals: FindingGoalLink[], clipPath: 
   const goalLinks = linkedGoals
     .map(
       (link) =>
-        `<a href="#${escapeAttr(goalAnchorId(link.goalId))}">Goal ${escapeHtml(link.goalId)} (${escapeHtml(link.goalStatus)})</a>`,
+        `<a href="#${escapeAttr(goalAnchorId(link.goalId))}">Task ${escapeHtml(link.goalId)} (${escapeHtml(link.goalStatus)})</a>`,
     )
     .join(', ');
   const fullClip = /\.(webm|mp4)$/i.test(clipPath)
     ? `<div style="margin-top: 6px;"><a href="${escapeAttr(clipPath)}" target="_blank" rel="noopener">open underlying clip</a></div>`
     : '';
   return `<div class="finding-linked-media-note">
-    Evidence is shown with ${goalLinks || `Goal ${escapeHtml(first?.goalId ?? '')}`} to avoid a duplicate replay of the same journey.
+    Evidence is shown with ${goalLinks || `Task ${escapeHtml(first?.goalId ?? '')}`} to avoid a duplicate replay of the same journey.
     ${fullClip}
   </div>`;
 }
@@ -3426,11 +4301,11 @@ function renderFindingLinkedGoals(linkedGoals: FindingGoalLink[]): string {
   const goals = linkedGoals
     .map(
       (link) =>
-        `<a href="#${escapeAttr(goalAnchorId(link.goalId))}">Goal ${escapeHtml(link.goalId)} (${escapeHtml(link.goalStatus)})</a>`,
+        `<a href="#${escapeAttr(goalAnchorId(link.goalId))}">Task ${escapeHtml(link.goalId)} (${escapeHtml(link.goalStatus)})</a>`,
     )
     .join('');
   return `<div class="finding-linked-goals">
-    <span class="label">Explains tested goal</span>
+    <span class="label">Explains tested task</span>
     ${goals}
   </div>`;
 }
@@ -3640,8 +4515,8 @@ function renderAuditTrailSection(
   const sourceEvents =
     citedEvents.length > 0
       ? `<div class="audit-block">
-          <h3>Source events cited by this report</h3>
-          <p>Only events referenced by findings, goals, or score rationales are shown here. The complete trace stays in <a href="${escapeAttr(report.artifacts?.trace ?? './trace.jsonl')}" target="_blank" rel="noopener">trace.jsonl</a>.</p>
+          <h3>Trace events cited by this report</h3>
+          <p>Only events referenced by findings, tasks, or score rationales are shown here. The complete trace stays in <a href="${escapeAttr(report.artifacts?.trace ?? './trace.jsonl')}" target="_blank" rel="noopener">trace.jsonl</a>.</p>
           <div class="trace-events cited-events">${citedEvents.map((event) => renderTraceEvent(event, runData)).join('')}</div>
         </div>`
       : '';
@@ -3657,7 +4532,7 @@ function renderAuditTrailSection(
       <span>Audit trail</span>
       <span class="trace-meta">${escapeHtml(`${citedEvents.length} cited events, ${runData.events.length} total events`)}</span>
     </summary>
-    <p class="audit-note">The findings and tested goals above are the primary evidence. This appendix is for verification and debugging, so noisy raw artifacts are folded away.</p>
+    <p class="audit-note">The findings and tested tasks above are the primary evidence. This appendix is for verification and debugging, so noisy raw artifacts are folded away.</p>
     ${sourceEvents}
     ${walkthrough}
     ${recordings}
@@ -3736,7 +4611,7 @@ function renderWalkthroughPanel(runData: RunData): string {
 }
 
 // Raw videos are not claim-scoped evidence clips. They live in the audit
-// appendix, behind a debug label, so they do not compete with proof rows.
+// appendix, behind a debug label, so they do not compete with evidence rows.
 function renderVideoPanel(relPaths: string[], durationS: number): string {
   const videos = relPaths
     .map(
@@ -3757,7 +4632,7 @@ function renderVideoPanel(relPaths: string[], durationS: number): string {
       <span>Raw debug recordings</span>
       <span class="trace-meta">${relPaths.length} file${relPaths.length === 1 ? '' : 's'}, ${formatDuration(durationS)} run</span>
     </summary>
-    <p class="video-note">Raw recordings are unstitched browser-context files and may include static waits or incidental pages. Use claim clips and proof rows above for the report verdict.</p>
+    <p class="video-note">Raw recordings are unstitched browser-context files and may include static waits or incidental pages. Use claim clips and evidence rows above for the report verdict.</p>
     <div class="raw-video-scroll">
       <div class="raw-video-grid">${videos}</div>
     </div>
@@ -3787,13 +4662,16 @@ function renderScoreMatrixSection(
   return `<section class="score-section">
     <div class="section-head">
       <div>
-        <h2>Score matrix</h2>
-        <p>Cross-cutting rubric scores over the same evidence above. These are not parent buckets for the tested goals.</p>
+        <h2>Scoring</h2>
+         <p>Rubric scores summarize the same evidence above. They are separate from the user scenarios.</p>
       </div>
       <div class="overall-mini">${scores.overall.score.toFixed(1)}<span>/10</span></div>
     </div>
     <div class="profile-strip">${profileStrip}</div>
-    <div class="score-profile-grid">${profileCards}</div>
+    <details class="score-details">
+      <summary>Detailed score matrix</summary>
+      <div class="score-profile-grid">${profileCards}</div>
+    </details>
   </section>`;
 }
 
@@ -3900,7 +4778,7 @@ function scoreToneClass(score: number | null): string {
 function renderCaveatsSection(meta: JudgeOutput['meta']): string {
   if (meta.confidence_caveats.length === 0 && meta.would_re_explore_with.length === 0) return '';
   return `<aside class="caveats-section">
-    <h3>Caveats (confidence ${Math.round(meta.confidence_overall * 100)}%)</h3>
+    <h3>Caveats and follow-up checks</h3>
     ${
       meta.confidence_caveats.length > 0
         ? `<ul class="caveats-list">${meta.confidence_caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul>`
@@ -4072,13 +4950,6 @@ function formatDuration(s: number): string {
   const m = Math.floor(s / 60);
   const sec = Math.round(s % 60);
   return `${m}m ${sec}s`;
-}
-
-function formatCompactInteger(n: number): string {
-  if (!Number.isFinite(n)) return 'n/a';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 100_000 ? 0 : 1)}k`;
-  return String(Math.round(n));
 }
 
 function escapeHtml(s: string): string {

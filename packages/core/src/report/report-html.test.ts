@@ -14,8 +14,42 @@ describe('buildReportHtml', () => {
     expect(html).toMatch(/<!doctype html>/i);
     // Score rendered as "6.5 / 10" in TL;DR
     expect(html).toContain('6.5');
+    expect(html).toContain('Evidence confidence');
     // No Tailwind CDN reference (we use hand-crafted CSS)
     expect(html).not.toContain('cdn.tailwindcss');
+  });
+
+  it('labels partial-proof product scores as provisional in the hero', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 7.5;
+    judge.meta.confidence_overall = 0.8;
+    judge.meta.confidence_caveats = [];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'create artifact', status: 'verified', evidence: ['T1'] },
+      { id: 'G2', description: 'edit artifact', status: 'verified', evidence: ['T2'] },
+      { id: 'G3', description: 'share artifact', status: 'verified', evidence: ['T3'] },
+      { id: 'G4', description: 'download artifact', status: 'verified', evidence: ['T4'] },
+      { id: 'G5', description: 'style artifact', status: 'partial', evidence: ['T5'] },
+      { id: 'G6', description: 'duplicate artifact', status: 'partial', evidence: ['T6'] },
+      { id: 'G7', description: 'insert media', status: 'partial', evidence: ['T7'] },
+      { id: 'G8', description: 'export image', status: 'partial', evidence: ['T8'] },
+    ];
+    const html = buildReportHtml(buildReportJson({ judge, run: fakeRun() }));
+    expect(html).toContain('Provisional product score');
+    expect(html).toContain('No product defects were confirmed');
+    expect(html).toContain('Iris proof gaps');
+    expect(html).toContain('4 partial tasks indicate Iris did not fully prove outcomes');
+  });
+
+  it('does not show a second competing confidence percentage in caveats', () => {
+    const judge = fakeJudge();
+    judge.meta.confidence_overall = 0.62;
+    judge.meta.confidence_caveats = ['Mobile was not tested.'];
+    const html = buildReportHtml(buildReportJson({ judge, run: fakeRun() }));
+
+    expect(html).toContain('Caveats and follow-up checks');
+    expect(html).not.toContain('Caveats (confidence');
   });
 
   it('escapes HTML in titles and rationale', () => {
@@ -142,14 +176,15 @@ describe('buildReportHtml', () => {
       artifacts: { clips: { G1: join(runDir, 'evidence', 'clips', 'clip-001.webm') } },
     });
     const html = buildReportHtml(r, { runDir });
-    expect(html).toContain('Tested goals &amp; evidence');
-    expect(html).toContain('Search &amp; articles');
+    expect(html).toContain('Scenario audit');
+    expect(html).not.toContain('Evidence by scenario');
     expect(html).toContain('Audit trail');
     expect(html).toContain('Screenshot storyboard');
     expect(html).not.toContain('<h2>Run walkthrough</h2>');
     expect(html).toContain('G1');
-    expect(html).toContain('Goal G1, Goal G2');
-    expect(html).not.toContain('<span class="claim">Goal G2</span>');
+    expect(html).toContain('Task G1');
+    expect(html).toContain('Task G2');
+    expect(html).not.toContain('<span class="claim">Task G2</span>');
     expect(html).toContain('<span class="goal-proof-title">load article</span>');
     expect(html).not.toContain('<span class="goal-proof-title">OpenAI - Wikipedia</span>');
     expect(html).toContain('evidence/screenshots/step-0001.png');
@@ -313,9 +348,9 @@ describe('buildReportHtml', () => {
     });
     const html = buildReportHtml(report, { runDir });
 
-    expect(html.indexOf('Tested goals &amp; evidence')).toBeLessThan(html.indexOf('Findings (1)'));
+    expect(html.indexOf('Findings (1)')).toBeLessThan(html.indexOf('Scenario audit'));
     expect(html).toContain('Issue from this evidence');
-    expect(html).toContain('Explains tested goal');
+    expect(html).toContain('Explains tested task');
     expect(html).toContain('#goal-G3');
     expect(html).toContain('#finding-F-001');
     expect(html).toContain('Evidence is shown with');
@@ -541,11 +576,24 @@ describe('buildReportHtml', () => {
   it('renders tested goals with plain-English status labels', () => {
     const r = buildReportJson({ judge: fakeJudge(), run: fakeRun() });
     const html = buildReportHtml(r);
-    expect(html).toMatch(/Tested goals/);
+    expect(html).toMatch(/Scenario audit/);
     expect(html).toContain('G1');
     expect(html).toContain('G2');
     // Plain-English status labels: "verified", "partial", "broken", "untested"
     expect(html).toMatch(/verified|partial|broken|untested/);
+  });
+
+  it('keeps evidence cards in scenario order instead of alphabetizing titles', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'Create board content', status: 'verified', evidence: [] },
+      { id: 'G2', description: 'Add annotation', status: 'verified', evidence: [] },
+      { id: 'G3', description: 'Export board', status: 'verified', evidence: [] },
+    ];
+    const html = buildReportHtml(buildReportJson({ judge, run: fakeRun() }));
+    expect(html.indexOf('Task G1')).toBeLessThan(html.indexOf('Task G2'));
+    expect(html.indexOf('Task G2')).toBeLessThan(html.indexOf('Task G3'));
   });
 
   it('renders goal scope and observed result without product-specific inference', () => {
@@ -563,8 +611,8 @@ describe('buildReportHtml', () => {
     ];
     const r = buildReportJson({ judge, run: fakeRun() });
     const html = buildReportHtml(r);
-    expect(html).toContain('Scope');
-    expect(html).toContain('Observed');
+    expect(html).toContain('Checked');
+    expect(html).toContain('Result');
     expect(html).toContain('verify the authentication page loads with the expected return target');
     expect(html).toContain('Login page loaded with a return target');
     expect(html).not.toContain('no credentials were submitted');
@@ -584,7 +632,7 @@ describe('buildReportHtml', () => {
     ];
     const r = buildReportJson({ judge, run: fakeRun() });
     const html = buildReportHtml(r);
-    expect(html).toContain('Article navigation');
+    expect(html).toContain('Open an article and confirm its talk');
     expect(html).not.toContain('Language editions');
   });
 
@@ -647,6 +695,38 @@ describe('buildReportHtml', () => {
                 risk: 'high',
               },
             ],
+            capabilities: [
+              {
+                id: 'C1',
+                label: 'Search for specific content',
+                product_kind: 'search_content',
+                importance: 'core',
+                status: 'selected',
+                confidence: 0.9,
+                source: 'product_kind_prior',
+                scenario_ids: ['G1'],
+                journey_ids: ['J1'],
+                surface_ids: ['S1'],
+                evidence: [],
+                denominator_reason: 'Search is core.',
+                coverage_gap: '',
+              },
+              {
+                id: 'C2',
+                label: 'Navigate within content',
+                product_kind: 'search_content',
+                importance: 'important',
+                status: 'deferred',
+                confidence: 0.8,
+                source: 'surface',
+                scenario_ids: [],
+                journey_ids: [],
+                surface_ids: [],
+                evidence: [],
+                denominator_reason: 'Article navigation is visible.',
+                coverage_gap: 'Not selected for this run.',
+              },
+            ],
             coverage_plan: {
               selected_journey_ids: ['J1'],
               deferred_surface_ids: [],
@@ -657,6 +737,16 @@ describe('buildReportHtml', () => {
               product_kinds: ['search_content'],
               primary_value_loop: 'Search, open, and read a relevant content page.',
               core_artifacts: ['loaded content page'],
+              value_loops: [
+                {
+                  id: 'VL1',
+                  title: 'Find relevant content',
+                  artifact: 'loaded content page',
+                  required_capabilities: ['search', 'navigation'],
+                  proof_obligations: ['content page loaded after selecting result'],
+                  weak_evidence: ['search box visible'],
+                },
+              ],
               user_jobs: [
                 {
                   id: 'PU1',
@@ -675,20 +765,28 @@ describe('buildReportHtml', () => {
       ],
     });
     const html = buildReportHtml(r);
-    expect(html).toContain('Discovery v2 coverage plan');
-    expect(html).toContain('1 surfaces -&gt; 1 journeys -&gt; 1 goals');
-    expect(html).toContain('1/1 surfaces covered');
+    expect(html).toContain('Discovery map (debug)');
+    expect(html).toContain('1 UI items observed -&gt; 1 candidate workflows -&gt; 1 tasks');
+    expect(html).toContain('1/1 UI areas covered');
     expect(html).toContain('Coverage map');
-    expect(html).toContain('Goal checked');
-    expect(html).toContain('Surfaces covered');
-    expect(html).toContain('Surface inventory (1)');
-    expect(html).toContain('Real-use contract');
+    expect(html).toContain('Task checked');
+    expect(html).toContain('UI areas covered');
+    expect(html).toContain('UI inventory (1)');
+    expect(html).toContain('What Iris tried to prove');
+    expect(html).toContain('Overall mission');
+    expect(html).not.toContain('Tested scenarios');
+    expect(html).not.toContain('User journeys checked');
+    expect(html).toContain('Proof standard');
+    expect(html).toContain('Product abilities Iris counted');
+    expect(html).toContain('3/3 core covered');
+    expect(html).toContain('Navigate within content');
+    expect(html).toContain('Scenario map');
     expect(html).toContain('Search, open, and read a relevant content page.');
-    expect(html).toContain('search_content');
+    expect(html).toContain('Find relevant content');
     expect(html).toContain('Find and read content');
     expect(html).toContain('enter query, open result');
     expect(html).toContain('search box visible');
-    expect(html).toContain('<span class="goal-id-badge">Goal G1</span>');
+    expect(html).toContain('<span class="goal-id-badge">Task G1</span>');
     expect(html).toContain(
       '<span class="goal-proof-title">Search for OpenAI and verify content loads.</span>',
     );
@@ -696,7 +794,7 @@ describe('buildReportHtml', () => {
       '<div class="goal-proof-title">Search for OpenAI and verify content loads.</div>',
     );
     expect(html).not.toContain(
-      '<div class="goal-proof-scope"><span class="label">Scope</span>G1: Search for OpenAI and verify content loads.</div>',
+      '<div class="goal-proof-scope"><span class="label">Checked</span>G1: Search for OpenAI and verify content loads.</div>',
     );
     expect(html).toContain('<code>J1</code>Search content');
     expect(html).toContain('<code>G1</code>Search for OpenAI and verify content loads.');
@@ -814,7 +912,7 @@ describe('buildReportHtml', () => {
       },
     });
     const html = buildReportHtml(r);
-    expect(html).toContain('Run metadata');
+    expect(html).toContain('Run setup');
     expect(html).toContain('codex-appserver');
     expect(html).toContain('Discovery');
     expect(html).toContain('gpt-5.4-mini');
@@ -832,7 +930,7 @@ describe('buildReportHtml', () => {
     const html = buildReportHtml(r);
     expect(html).toContain('class="report-hero tldr');
     expect(html).toContain('Verdict');
-    expect(html).toContain('Tested goals');
+    expect(html).toContain('Tasks tested');
     expect(html).toContain('Findings');
   });
 });

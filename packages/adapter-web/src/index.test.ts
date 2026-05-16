@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type FixtureServerHandle, startFixtureServer } from '../test-fixtures/server.js';
 import { WebTargetAdapter } from './index.js';
 
+const BROWSER_E2E_TIMEOUT_MS = 15000;
+
 describe('WebTargetAdapter (end-to-end against fixture)', () => {
   let adapter: WebTargetAdapter;
   let server: FixtureServerHandle;
@@ -39,7 +41,14 @@ describe('WebTargetAdapter (end-to-end against fixture)', () => {
 
     const tools = adapter.listTools();
     expect(tools.map((t) => t.name)).toEqual(
-      expect.arrayContaining(['click', 'type', 'select_option', 'screenshot']),
+      expect.arrayContaining([
+        'click',
+        'type',
+        'select_option',
+        'screenshot',
+        'click_upload',
+        'click_download',
+      ]),
     );
 
     const r1 = await adapter.callTool('type', { selector: '#email', text: 'a@b.co' });
@@ -51,26 +60,32 @@ describe('WebTargetAdapter (end-to-end against fixture)', () => {
 
     const probes = adapter.listProbes();
     expect(probes.map((p) => p.name)).toEqual(
-      expect.arrayContaining(['axe', 'console_errors_since']),
+      expect.arrayContaining(['axe', 'console_errors_since', 'state_delta', 'mobile_viewport']),
     );
     const axeR = await adapter.runProbe('axe', {});
     expect(axeR.ok).toBe(true);
+    const mobileR = await adapter.runProbe('mobile_viewport', { width: 375, height: 667 });
+    expect(mobileR.ok).toBe(true);
+    if (mobileR.ok) {
+      expect(mobileR.summary.viewport).toMatchObject({ width: 375 });
+      expect(mobileR.data).toMatchObject({ viewport: { width: 375 } });
+    }
 
     const artifacts = await adapter.stop();
     expect(artifacts.evidence_dir).toContain(outDir);
-  });
+  }, BROWSER_E2E_TIMEOUT_MS);
 
   it('callTool with unknown name returns ok=false', async () => {
     await adapter.start({ kind: 'web', target: `${server.url}/index.html`, out_dir: outDir });
     const r = await adapter.callTool('telekinesis', {});
     expect(r.ok).toBe(false);
-  });
+  }, BROWSER_E2E_TIMEOUT_MS);
 
   it('runProbe with unknown name returns ok=false', async () => {
     await adapter.start({ kind: 'web', target: `${server.url}/index.html`, out_dir: outDir });
     const r = await adapter.runProbe('quantum', {});
     expect(r.ok).toBe(false);
-  });
+  }, BROWSER_E2E_TIMEOUT_MS);
 
   it('ui_state reports active element and selected element state', async () => {
     await adapter.start({ kind: 'web', target: `${server.url}/index.html`, out_dir: outDir });
@@ -90,7 +105,27 @@ describe('WebTargetAdapter (end-to-end against fixture)', () => {
         expect.objectContaining({ selector: 'button:has-text("Sign in")', found: true }),
       ]),
     );
-  });
+  }, BROWSER_E2E_TIMEOUT_MS);
+
+  it('state_delta reports deterministic before/after product state changes', async () => {
+    await adapter.start({ kind: 'web', target: `${server.url}/index.html`, out_dir: outDir });
+    const before = await adapter.observe();
+    await adapter.callTool('type', { selector: '#email', text: 'a@b.co' });
+    await adapter.callTool('type', { selector: '#password', text: 'pw' });
+    await adapter.callTool('click', { selector: '#submit' });
+    const after = await adapter.observe();
+
+    const r = await adapter.runProbe('state_delta', {
+      from_ref: before.observation_ref,
+      to_ref: after.observation_ref,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.summary.changed).toBe(true);
+    expect(r.summary.added_text).toEqual(
+      expect.arrayContaining([expect.stringContaining('Signed in as a@b.co')]),
+    );
+  }, BROWSER_E2E_TIMEOUT_MS);
 
   it('select_option changes native select controls by visible label', async () => {
     await server.close();
@@ -107,7 +142,7 @@ describe('WebTargetAdapter (end-to-end against fixture)', () => {
 
     const obs = await adapter.observe();
     expect(obs.summary).toContain('Settings saved: Dark theme');
-  });
+  }, BROWSER_E2E_TIMEOUT_MS);
 
   it('discoverySurvey sees menu and below-fold surfaces without mutating primary page', async () => {
     await server.close();
@@ -157,5 +192,5 @@ describe('WebTargetAdapter (end-to-end against fixture)', () => {
       (after.data as { selectors: Array<{ selector: string; visible: boolean }> }).selectors[0]
         ?.visible,
     ).toBe(false);
-  });
+  }, BROWSER_E2E_TIMEOUT_MS);
 });

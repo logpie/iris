@@ -2,7 +2,11 @@ import type { TargetAdapter } from '@iris/adapter-types';
 import { adapter as irisAdapter } from '@iris/core';
 import type { trace as iristrace } from '@iris/core';
 import { ulid } from 'ulid';
-import { CodexAppServerClient, type JsonRpcNotification } from './codex-app-server-client.js';
+import type { CodexAppServerClient, JsonRpcNotification } from './codex-app-server-client.js';
+import {
+  ScenarioCompletionGateVerifier,
+  type ScenarioCompletionGate,
+} from './scenario-completion-gate.js';
 
 type TraceWriter = iristrace.TraceWriter;
 type TraceEventKind = iristrace.TraceEventKind;
@@ -62,6 +66,12 @@ function outputText(text: string): { type: 'inputText'; text: string } {
   return { type: 'inputText', text };
 }
 
+function isUnattemptedSkipRationale(rationale: string): boolean {
+  return /\b(not (attempted|exercised|tested)|never reached|not reached|ran out|out of time|no time|before budget|budget ran out|budget was exhausted|did not (attempt|exercise|test|reach|visit)|not visited)\b/i.test(
+    rationale,
+  );
+}
+
 function matchesThreadTurn(
   params: Record<string, unknown> | undefined,
   threadId: string,
@@ -96,7 +106,9 @@ export function parseCodexReasoningEffort(input: string): CodexReasoningEffort {
   if (input === 'low' || input === 'medium' || input === 'high' || input === 'xhigh') {
     return input;
   }
-  throw new Error(`invalid Codex reasoning effort "${input}" (expected low, medium, high, or xhigh)`);
+  throw new Error(
+    `invalid Codex reasoning effort "${input}" (expected low, medium, high, or xhigh)`,
+  );
 }
 
 function normalizeUsage(usage?: TokenUsageBreakdown): CodexTokenUsage | undefined {
@@ -251,6 +263,7 @@ export interface CodexExplorerConfig {
   model?: string;
   reasoningEffort?: CodexReasoningEffort;
   goals?: Array<{ id: string; description: string }>;
+  scenarioGates?: ScenarioCompletionGate[];
   maxExpansionGoals?: number;
   stepsPerGoal?: number;
   cwd?: string;
@@ -299,6 +312,8 @@ const MUTATING_TOOLS = new Set([
   'hover_wait',
   'vision_hover_wait',
   'upload',
+  'click_upload',
+  'click_download',
   'vision_click',
 ]);
 
@@ -319,6 +334,7 @@ export async function runCodexAppServerExplorer(
   let deltaAgentText = '';
   let dynamicToolCallCount = 0;
   let observationSummaryChars = 0;
+  const scenarioGate = new ScenarioCompletionGateVerifier(config.scenarioGates);
 
   const goalLedger = new Map<string, GoalEntry>();
   for (const goal of config.goals ?? []) {
@@ -344,16 +360,18 @@ export async function runCodexAppServerExplorer(
     payload: Record<string, unknown>,
   ): Promise<string> => {
     const id = ulid();
-    await config.traceWriter.append({
-      v: 1,
+    const event = {
+      v: 1 as const,
       id,
       ts: Date.now() / 1000,
       step: stepCount,
-      target_kind: 'web',
+      target_kind: 'web' as const,
       kind,
       actor,
       payload,
-    });
+    };
+    await config.traceWriter.append(event);
+    scenarioGate.recordTraceEvent(id, kind, payload);
     return id;
   };
 
@@ -516,11 +534,15 @@ export async function runCodexAppServerExplorer(
     } else if (name === 'screenshot' || name === 'vision_describe') {
       observationHint = `\noutcome_action_result_event_id=${actionResultEventId}`;
     }
+    const artifactHint =
+      result.ok && result.evidence_refs.length > 0
+        ? `\naction_result_event_id=${actionResultEventId}\nevidence_refs=${JSON.stringify(result.evidence_refs)}`
+        : '';
     const cutoverNotice = await checkCutover();
     const text = result.ok
       ? description
-        ? `OK - vision: ${description}${observationHint}`
-        : `OK${observationHint}`
+        ? `OK - vision: ${description}${artifactHint}${observationHint}`
+        : `OK${artifactHint}${observationHint}`
       : `ERROR: ${result.error}`;
     return {
       text: cutoverNotice ? `${text}\n\n${cutoverNotice}` : text,
@@ -608,9 +630,24 @@ export async function runCodexAppServerExplorer(
           success: false,
         };
       }
+      if (status === 'verified' && scenarioGate.enabled) {
+        const check = scenarioGate.check(id, evidence);
+        if (!check.ok) {
+          return {
+            text: `ERROR: scenario completion gate rejected verified for ${id}. Cited evidence is missing required visible output(s): ${check.missing.join('; ')}. Required checklist: ${check.required.join('; ')}. Repair the product state and call observe/vision_describe, then cite that evidence; otherwise mark the goal partial with evidence.`,
+            success: false,
+          };
+        }
+      }
       if ((status === 'partial' || status === 'blocked') && evidence.length === 0) {
         return {
           text: `ERROR: ${status} goal_status requires evidence_event_ids showing the incomplete outcome or blocker. If the goal has not been attempted, keep working on it instead of closing it.`,
+          success: false,
+        };
+      }
+      if (status === 'skipped' && hasRetryBudget() && isUnattemptedSkipRationale(rationale)) {
+        return {
+          text: 'ERROR: skipped means the goal is not applicable to this product/run. Do not mark assigned goals skipped because time or budget remains; attempt it, or use partial/blocked with evidence after a real attempt.',
           success: false,
         };
       }
@@ -693,7 +730,7 @@ export async function runCodexAppServerExplorer(
       description: tool.description,
       inputSchema: tool.input_schema,
     })),
-    ...metaDynamicTools(goalLedger.size > 0, maxExpansion > 0),
+    ...metaDynamicTools(goalLedger.size > 0, maxExpansion > 0, scenarioGate.enabled),
   ];
   const dynamicToolSchemaChars = JSON.stringify(dynamicTools).length;
 
@@ -901,6 +938,7 @@ ${config.initialUserPrompt}`),
 function metaDynamicTools(
   hasGoals: boolean,
   allowExpansion: boolean,
+  scenarioGateEnabled = false,
 ): Array<{
   name: string;
   description: string;
@@ -999,7 +1037,7 @@ function metaDynamicTools(
     tools.push({
       name: 'goal_status',
       description:
-        'Mark a spec goal as verified, partial, blocked, or skipped. Verified goals require outcome evidence_event_ids. Partial and blocked goals also require evidence_event_ids showing the incomplete outcome or blocker; do not close an unattempted goal as partial/blocked.',
+        `Mark a spec goal as verified, partial, blocked, or skipped. Verified goals require outcome evidence_event_ids. Partial and blocked goals also require evidence_event_ids showing the incomplete outcome or blocker; do not close an unattempted goal as partial/blocked. Skipped means not applicable, not out of time.${scenarioGateEnabled ? ' Scenario completion gate is enabled: verified will be rejected unless cited evidence contains every required visible output for that goal.' : ''}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -1015,7 +1053,8 @@ function metaDynamicTools(
   if (allowExpansion) {
     tools.push({
       name: 'propose_goal',
-      description: 'Add a new discovered goal to this run.',
+      description:
+        'Add a new goal only for a material product ability not covered by seed goals or listed capability gaps. Prefer user-visible outcomes over raw surfaces; do not add promo/banner/legal/menu-only checks unless they block core use.',
       inputSchema: {
         type: 'object',
         properties: {

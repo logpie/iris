@@ -127,11 +127,40 @@ export function deriveProbeConfidenceCaveats(events: TraceEvent[] | undefined): 
   return caveats;
 }
 
+export function normalizeReportMeta(
+  meta: JudgeOutput['meta'],
+  events: TraceEvent[] | undefined,
+): JudgeOutput['meta'] {
+  return {
+    ...meta,
+    confidence_caveats: normalizeReportConfidenceCaveats(meta.confidence_caveats, events),
+    would_re_explore_with: normalizeWouldReExploreWith(meta.would_re_explore_with, events),
+  };
+}
+
+export function normalizeReportConfidenceCaveats(
+  caveats: string[],
+  events: TraceEvent[] | undefined,
+): string[] {
+  const withProbeCaveats = uniqueStrings([...caveats, ...deriveProbeConfidenceCaveats(events)]);
+  return filterStaleEvidenceGaps(withProbeCaveats, events);
+}
+
+export function normalizeWouldReExploreWith(
+  items: string[],
+  events: TraceEvent[] | undefined,
+): string[] {
+  return filterStaleEvidenceGaps(uniqueStrings(items), events);
+}
+
 function normalizeProbeBackedDimension(
   profileName: string,
   dimensionName: string,
   dimension: ScoreDimension,
-  opts: { traceEvents?: TraceEvent[] | undefined; traceEventById?: Map<string, TraceEvent> | undefined },
+  opts: {
+    traceEvents?: TraceEvent[] | undefined;
+    traceEventById?: Map<string, TraceEvent> | undefined;
+  },
 ): ScoreDimension | undefined {
   if (!opts.traceEvents || !opts.traceEventById) return undefined;
   const text = `${profileName} ${dimensionName}`.replace(/[_-]/g, ' ').toLowerCase();
@@ -166,6 +195,25 @@ function normalizeProbeBackedDimension(
     }
   }
 
+  if (isNetworkCleanDimension(text)) {
+    const evidenceNetworkEvents = events.filter(isNetworkProbeEvent);
+    const selectedEvents =
+      evidenceNetworkEvents.length > 0
+        ? evidenceNetworkEvents
+        : opts.traceEvents.filter(isNetworkProbeEvent);
+    if (
+      selectedEvents.length > 0 &&
+      selectedEvents.every((event) => networkProbeFailureCount(event) === 0)
+    ) {
+      return {
+        ...dimension,
+        score: 10,
+        rationale: 'No failing network responses were observed in the post-Explorer network probe.',
+        evidence: selectedEvents.map((event) => event.id),
+      };
+    }
+  }
+
   return undefined;
 }
 
@@ -177,9 +225,24 @@ function isConsoleCleanDimension(text: string): boolean {
   return /\bconsole clean\b|\bconsole\b/.test(text);
 }
 
+function isNetworkCleanDimension(text: string): boolean {
+  return (
+    /\bnetwork\b.*\b(clean|errors?|failures?|failed|requests?)\b/.test(text) ||
+    /\b(clean|errors?|failures?|failed)\b.*\bnetwork\b/.test(text)
+  );
+}
+
 function isProbeEvent(event: TraceEvent, probe: string): boolean {
   const payload = event.payload as Record<string, unknown>;
   return event.kind === 'probe_result' && payload.probe === probe;
+}
+
+function isNetworkProbeEvent(event: TraceEvent): boolean {
+  const payload = event.payload as Record<string, unknown>;
+  return (
+    event.kind === 'probe_result' &&
+    (payload.probe === 'network_all_since' || payload.probe === 'network_failures_since')
+  );
 }
 
 function probeOk(event: TraceEvent): boolean | undefined {
@@ -230,6 +293,19 @@ function numberFrom(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function networkProbeFailureCount(event: TraceEvent): number | undefined {
+  const payload = event.payload as Record<string, unknown>;
+  if (payload.ok === false) return undefined;
+  const summary = plainObject(payload.summary) ? payload.summary : {};
+  const explicit = summary.failure_count;
+  if (typeof explicit === 'number' && Number.isFinite(explicit)) return explicit;
+  const data = Array.isArray(payload.data) ? payload.data : [];
+  if (data.length > 0) {
+    return data.filter((entry) => plainObject(entry) && entry.ok === false).length;
+  }
+  return 0;
+}
+
 function normalizeScore(value: number | null): number | null {
   if (value === null) return null;
   if (!Number.isFinite(value)) return 0;
@@ -259,13 +335,24 @@ function traceHasMobileViewport(events: Iterable<TraceEvent>): boolean {
   return false;
 }
 
+function traceHasNetworkProbe(events: Iterable<TraceEvent>): boolean {
+  for (const event of events) {
+    if (isNetworkProbeEvent(event)) return true;
+  }
+  return false;
+}
+
 function viewportFromPayload(
   payload: Record<string, unknown>,
 ): { width: number; height?: number } | undefined {
   const direct = plainObject(payload.viewport) ? payload.viewport : undefined;
+  const summary = plainObject(payload.summary) ? payload.summary : undefined;
+  const summaryViewport = summary && plainObject(summary.viewport) ? summary.viewport : undefined;
+  const data = plainObject(payload.data) ? payload.data : undefined;
+  const dataViewport = data && plainObject(data.viewport) ? data.viewport : undefined;
   const perception = plainObject(payload.perception_state) ? payload.perception_state : undefined;
   const nested = perception && plainObject(perception.viewport) ? perception.viewport : undefined;
-  const raw = direct ?? nested;
+  const raw = direct ?? summaryViewport ?? dataViewport ?? nested;
   if (!raw) return undefined;
   const width = Number(raw.width);
   const height = Number(raw.height);
@@ -275,4 +362,45 @@ function viewportFromPayload(
 
 function plainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function filterStaleEvidenceGaps(values: string[], events: TraceEvent[] | undefined): string[] {
+  const hasMobile = events ? traceHasMobileViewport(events) : false;
+  const hasNetwork = events ? traceHasNetworkProbe(events) : false;
+  return values.filter((value) => {
+    if (hasMobile && mentionsMissingMobile(value)) return false;
+    if (hasNetwork && mentionsMissingNetwork(value)) return false;
+    return true;
+  });
+}
+
+function mentionsMissingMobile(value: string): boolean {
+  return (
+    /\bmobile\b|\bresponsive\b/i.test(value) &&
+    (/\b(no|not|missing|without|lack|lacks|untested|unverified|unexplored|unexercised)\b/i.test(
+      value,
+    ) ||
+      /\b(run|collect|test|check|exercise|pass)\b/i.test(value))
+  );
+}
+
+function mentionsMissingNetwork(value: string): boolean {
+  return (
+    /\bnetwork\b|\brequest\b/i.test(value) &&
+    (/\b(no|not|missing|without|lack|lacks|untested|unverified|unexplored|unexercised|explicit)\b/i.test(
+      value,
+    ) ||
+      /\b(run|collect|test|check|exercise|trace)\b/i.test(value))
+  );
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
 }

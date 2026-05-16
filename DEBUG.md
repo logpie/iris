@@ -925,3 +925,105 @@ Verification:
   - `pnpm --filter @iris/adapter-web run typecheck`
   - `pnpm --filter @iris/cli run typecheck`
   - `pnpm -r run build`
+
+## E17: Tldraw rerun was served without clips and still under-selected goals
+
+Timestamp: 2026-05-15 14:34:00 -0700
+
+Observation:
+
+- The shared tldraw report at `http://100.104.175.44:8774/report.html` came from `iris-runs/tldraw-artifact-contract-e2e4-20260515-135534`.
+- That run was launched with `--no-clips`, so the report could not show first-class per-goal videos even though evidence capture code supports them.
+- A fresh run without `--no-clips` at `iris-runs/tldraw-artifact-contract-e2e-clips-20260515-142751` generated `1` raw video, `5` per-goal clips, and `30+` screenshots.
+- The fresh run still proposed only `5` seed goals from `19` surfaces. It grouped many canvas capabilities into broad goals and included a low-value page-utility goal.
+- The 5 selected goals were: create object, style object, undo/delete/duplicate, share/sign-in, and generic page utilities.
+
+Hypotheses:
+
+- H1: Evidence videos are missing because the served run was launched with `--no-clips`.
+  - Supports: the latest clip-enabled run printed `iris: sliced 5 claim evidence files` and has files under `evidence/clips`.
+  - Conflicts: none.
+  - Test: inspect `report.json.artifacts.clips` and `find evidence/clips`.
+- H2: Goal count is low because Discovery prompt encourages value-ranked grouping and the normalizer trusts a compressed `coverage_plan`.
+  - Supports: `discovery.json` had 19 surfaces with rich toolbar controls but only 5 `coverage_plan.selected_journey_ids`.
+  - Conflicts: the prompt already says complex products need several material scenarios, so the model partly ignored intent.
+  - Test: add a deterministic artifact-editor expansion guardrail and a unit test with rich canvas surfaces.
+- H3: Goal count is low because Explorer failed to add expansion goals mid-run.
+  - Supports: Explorer can propose goals, but this run stayed at 5 seed goals.
+  - Conflicts: seed goal selection already failed before Explorer started; Explorer should not be the first line of defense for obvious surface coverage.
+  - Test: inspect discovery output before Explorer and fix discovery normalization first.
+
+Root cause:
+
+- I exposed a validation run as if it were report-quality evidence.
+- Discovery v2 still over-compresses rich artifact products: the prompt asks for value ranking, but the code lacks a deterministic guardrail that expands visible artifact capabilities into distinct user jobs when the model collapses them.
+
+Fix plan:
+
+- Do not serve `--no-clips` runs as report-quality Iris reports.
+- Add artifact-editor capability expansion in discovery normalization so visible canvas/editor controls become separate material journeys when Discovery under-selects them.
+- Demote broad page-menu utility journeys when concrete artifact/export/share goals cover the product value loop.
+- Add a regression test using tldraw-like rich canvas surfaces.
+
+Follow-up observation:
+
+- After artifact-editor expansion, a fresh tldraw run proposed `8` seed goals, but Explorer attempted only `5`.
+- The trace showed Explorer marked `G3`, `G6`, and `G7` as `skipped` with rationale `not exercised before budget ran out` at step `32/100`.
+- That was accepted by the runner and let the session finish as `done`, even though step/time budget remained.
+
+Additional root cause:
+
+- The runner contract allowed `skipped` to mean "not attempted because I stopped early." For Iris seed goals, `skipped` must mean "not applicable to this product/run." Otherwise the agent can silently drop hard goals and the report looks complete.
+
+Additional fix:
+
+- App Server and Agent SDK runners now reject skipped goal statuses whose rationale says not attempted, not exercised, not tested, not visited, ran out of time, or budget ran out while budget remains.
+- App Server and Agent SDK prompts now state that skipped is only for not-applicable goals.
+- Added an App Server regression test that first tries `skipped: Not exercised before budget ran out`, verifies no skipped trace is recorded, then verifies the goal normally.
+
+## E18: Discovery survey integration test timed out only under recursive workspace load
+
+Timestamp: 2026-05-16 14:09:49 -0700
+
+Observations:
+
+- `pnpm -r run test -- --pool=forks` failed in `packages/adapter-web/src/index.test.ts` on `discoverySurvey sees menu and below-fold surfaces without mutating primary page`.
+- The same test timed out at the default Vitest 5000ms threshold in two recursive package invocations, taking about 5.9s and 7.2s under load.
+- The focused reproduction passed with `pnpm --filter @iris/adapter-web exec vitest run src/index.test.ts --pool=forks --testNamePattern "discoverySurvey"` in 4.1s.
+- The test exercises a real browser, disposable discovery context, initial capture, primary search journey, menu peek, scroll sampling, and sample navigation.
+
+Hypotheses:
+
+- H1: The test timeout is unrealistically short for the intended browser integration work. Supports: focused run is already close to 5s, recursive run adds enough load to exceed it. Conflicts: none.
+- H2: Discovery survey has an accidental hang. Supports: browser workflows can stall on networkidle. Conflicts: the focused reproduction completes and returns the expected evidence.
+- H3: Recursive workspace execution is running the same root suite from multiple packages. Supports: `@iris/rubrics` and `@iris/adapter-types` both reported the adapter-web test. Conflicts: this amplifies load but does not make the survey logic incorrect.
+
+Root hypothesis:
+
+- H1. The default 5s test timeout is below the normal runtime envelope for this Discovery v2 integration test under workspace load.
+
+Conclusion:
+
+- Root cause confirmed. The focused test completes correctly but already consumes about 4.1s, leaving too little headroom for recursive workspace load.
+
+Fix:
+
+- Added an explicit 15000ms timeout to the Discovery v2 browser survey integration test only.
+- Focused verification passed: `pnpm --filter @iris/adapter-web exec vitest run src/index.test.ts --pool=forks --testNamePattern "discoverySurvey"`.
+
+Additional observation:
+
+- The exact recursive rerun then exposed the same 5000ms timeout on the sibling `start -> observe -> callTool -> runProbe -> stop full cycle` browser integration test.
+- This confirmed the broader timeout policy issue: `packages/adapter-web/src/index.test.ts` is an adapter e2e suite and should not inherit the unit-test default timeout per test.
+
+Additional fix:
+
+- Centralized a `BROWSER_E2E_TIMEOUT_MS = 15000` constant in `packages/adapter-web/src/index.test.ts`.
+- Applied it to all tests in that browser e2e describe block instead of whack-a-moling individual tests.
+
+Final verification:
+
+- Focused adapter e2e suite passed: `pnpm --filter @iris/adapter-web exec vitest run src/index.test.ts --pool=forks`.
+- Recursive workspace test suite passed: `pnpm -r run test -- --pool=forks`.
+- Recursive typecheck passed: `pnpm -r run typecheck`.
+- Recursive build passed: `pnpm -r run build`.

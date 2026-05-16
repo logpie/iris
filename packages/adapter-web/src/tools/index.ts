@@ -7,3 +7,5 @@ export * from './key-chord.js';
 export * from './paste.js';
 export * from './click-variants.js';
 export * from './upload.js';
+export * from './file-chooser.js';
+export * from './download.js';

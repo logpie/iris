@@ -249,6 +249,7 @@ export type OutcomeArtifactKind =
   | 'stderr'
   | 'exit_code'
   | 'fs_diff'
+  | 'file_download'
   | 'http_response'
   | 'follow_up_read';
 

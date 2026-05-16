@@ -94,6 +94,26 @@ describe('sliceGoalWindows', () => {
     expect(windows.get('G2')?.map((e) => e.id)).toEqual(['B1', 'B2', 'B3']);
   });
 
+  it('preserves earlier action evidence when a goal is later re-marked verified', () => {
+    const trace: TraceEvent[] = [
+      ev('A1', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('A2', 'observation'),
+      ev('A3', 'goal_status', { id: 'G1', status: 'partial' }),
+      ev('B1', 'action_result', { tool: 'paste', ok: true }),
+      ev('B2', 'goal_status', { id: 'G2', status: 'partial' }),
+      ev('A4', 'observation'),
+      ev('A5', 'goal_status', { id: 'G1', status: 'verified', evidence_event_ids: ['A4'] }),
+      ev('B3', 'goal_status', { id: 'G2', status: 'verified' }),
+    ];
+    const goals = [
+      { id: 'G1', description: '', status: 'verified' as const, evidence: ['A4'] },
+      { id: 'G2', description: '', status: 'verified' as const, evidence: ['B2'] },
+    ];
+    const windows = sliceGoalWindows(trace, goals);
+    expect(windows.get('G1')?.map((e) => e.id)).toEqual(['A1', 'A2', 'A3', 'A4', 'A5']);
+    expect(windows.get('G2')?.map((e) => e.id)).toEqual(['B1', 'B2', 'B3']);
+  });
+
   it('gives empty window to goals with no goal_status event', () => {
     const trace: TraceEvent[] = [ev('A', 'observation')];
     const goals = [{ id: 'G1', description: '', status: 'untested' as const, evidence: [] }];
@@ -265,6 +285,54 @@ describe('validateGoalClaims', () => {
     expect(result.goals[0]?.status).toBe('partial');
   });
 
+  it('does not require optional product-use actions', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Add a second content type', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create visible canvas content.',
+          core_artifacts: ['visible board content'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Add a second content type',
+              journey_id: 'J1',
+              required_actions: [
+                'create or place visible content on the canvas',
+                'add readable text or a note',
+                'optionally insert media or an embed',
+              ],
+              expected_artifact: 'visible second content type',
+              acceptable_evidence: ['post-action screenshot showing content'],
+              weak_evidence: ['toolbar selected'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('B', 'action_result', { tool: 'type', ok: true }),
+      ev('C', 'observation'),
+      ev('D', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Add a second content type',
+        status: 'verified',
+        evidence: ['C'],
+        notes: 'A text note was added alongside the existing canvas object.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['C'] }),
+    });
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
   it('downgrades verified goals whose notes match product-use weak evidence', () => {
     const trace: TraceEvent[] = [
       ev('DISCOVERY', 'discovery', {
@@ -306,6 +374,528 @@ describe('validateGoalClaims', () => {
     });
     expect(result.summary.downgraded).toBe(1);
     expect(result.summary.downgrade_reasons[0]).toContain('rejected weak evidence');
+    expect(result.goals[0]?.status).toBe('partial');
+  });
+
+  it('downgrades artifact-editor goals when evidence is a shallow single-object proof', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Create a meaningful board artifact', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create and edit visible canvas content.',
+          core_artifacts: ['composed visible canvas artifact'],
+          value_loops: [
+            {
+              id: 'VL1',
+              title: 'Create and edit a canvas artifact',
+              artifact: 'composed visible canvas artifact',
+              required_capabilities: [
+                'create or place visible content on the canvas',
+                'add readable text, a label, a connector, media, or a second object',
+                'modify an existing object with style, size, position, or structure change',
+              ],
+              proof_obligations: [
+                'The canvas contains a composed artifact, not just an activated tool or empty board.',
+                'At least one existing canvas object is visibly edited, styled, moved, resized, or connected.',
+              ],
+              weak_evidence: ['single trivial mark with no edit or composition'],
+            },
+          ],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Create meaningful board content',
+              value_loop_id: 'VL1',
+              journey_id: 'J1',
+              required_actions: [
+                'create or place visible content on the canvas',
+                'add readable text, a label, a connector, media, or a second object',
+                'modify an existing object with style, size, position, or structure change',
+              ],
+              proof_obligations: [
+                'The canvas contains a composed artifact, not just an activated tool or empty board.',
+                'At least one existing canvas object is visibly edited, styled, moved, resized, or connected.',
+              ],
+              expected_artifact: 'composed visible canvas artifact with edited object state',
+              acceptable_evidence: [
+                'post-action screenshot showing multiple/edited canvas elements',
+              ],
+              weak_evidence: ['single trivial mark with no edit or composition'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Create a meaningful board artifact',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'A rectangle is visible on the canvas after dragging.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.summary.downgrade_reasons[0]).toMatch(
+      /missing required actions|materiality floor/,
+    );
+    expect(result.goals[0]?.status).toBe('partial');
+  });
+
+  it('downgrades named scenarios when cited evidence omits the required content', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Create a launch planning board', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create a named planning board.',
+          core_artifacts: ['launch planning board'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Create a launch planning board',
+              journey_id: 'J1',
+              scenario_brief:
+                'Create a small launch planning board titled "Launch plan" with two labeled steps, "Draft" and "Review", a connector or arrow between them, and one visible style change.',
+              test_data: ['Launch plan', 'Draft', 'Review'],
+              required_actions: [
+                'create or place visible content on the canvas',
+                'type readable labels',
+                'change one style control such as color or fill',
+              ],
+              expected_artifact: 'composed launch planning board',
+              required_outputs: [
+                'readable title or note "Launch plan"',
+                'two labeled canvas elements: "Draft" and "Review"',
+              ],
+              acceptable_evidence: ['post-action screenshot showing named board content'],
+              weak_evidence: ['generic rectangle and note only'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('B', 'action_result', { tool: 'type', ok: true }),
+      ev('C', 'action_result', { tool: 'click', ok: true }),
+      ev('D', 'observation', { summary: 'Canvas shows a rectangle, a note, and a styled arrow.' }),
+      ev('E', 'goal_status', { id: 'G1', status: 'verified', evidence_event_ids: ['D'] }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Create a launch planning board',
+        status: 'verified',
+        evidence: ['D'],
+        notes: 'The evidence shows a rectangle, a note, and a styled arrow on the board.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['D'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.summary.downgrade_reasons[0]).toContain(
+      'scenario-specific proof missing required content',
+    );
+    expect(result.goals[0]?.status).toBe('partial');
+  });
+
+  it('keeps named scenarios verified when evidence shows the required content', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Create a launch planning board', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create a named planning board.',
+          core_artifacts: ['launch planning board'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Create a launch planning board',
+              journey_id: 'J1',
+              scenario_brief:
+                'Create a small launch planning board titled "Launch plan" with two labeled steps, "Draft" and "Review", a connector or arrow between them, and one visible style change.',
+              test_data: ['Launch plan', 'Draft', 'Review'],
+              required_actions: [
+                'create or place visible content on the canvas',
+                'type readable labels',
+                'change one style control such as color or fill',
+              ],
+              expected_artifact: 'composed launch planning board',
+              required_outputs: [
+                'readable title or note "Launch plan"',
+                'two labeled canvas elements: "Draft" and "Review"',
+              ],
+              acceptable_evidence: ['post-action screenshot showing named board content'],
+              weak_evidence: ['generic rectangle and note only'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('B', 'action_result', { tool: 'type', ok: true }),
+      ev('C', 'action_result', { tool: 'click', ok: true }),
+      ev('D', 'observation', {
+        summary:
+          'Canvas shows Launch plan with Draft and Review labels connected by an arrow; the Review box has a blue fill.',
+      }),
+      ev('E', 'goal_status', { id: 'G1', status: 'verified', evidence_event_ids: ['D'] }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Create a launch planning board',
+        status: 'verified',
+        evidence: ['D'],
+        notes:
+          'The post-action evidence shows Launch plan, Draft, and Review labels connected by an arrow with styling.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['D'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('uses required outputs rather than metadata-heavy test data for scenario proof', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Create a Q3 Launch Roadmap', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create and refine visible canvas content.',
+          core_artifacts: ['roadmap board'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Create a styled launch roadmap board',
+              journey_id: 'J1',
+              scenario_brief:
+                'Create a Q3 launch roadmap whiteboard with a title, four labeled milestone boxes, arrows between milestones, and a risk note.',
+              test_data: [
+                'Title: Q3 Launch Roadmap',
+                'Milestones: Research, Prototype, Beta, Launch',
+                'Risk note: API quota risk',
+                'Owners: Ana and Bo',
+                'Use at least one blue or green style and one solid or semi fill',
+              ],
+              required_actions: [
+                'click or focus the canvas',
+                'select Rectangle and place four milestone boxes',
+                'select Text and type the title and milestone labels',
+                'select Arrow and connect the milestone boxes',
+                'select Note and add the risk note',
+                'choose a non-default color or fill from the style toolbar',
+              ],
+              expected_artifact: 'A readable launch roadmap diagram on the canvas.',
+              required_outputs: [
+                'Q3 Launch Roadmap',
+                'Research',
+                'Prototype',
+                'Beta',
+                'Launch',
+                'API quota risk',
+              ],
+              acceptable_evidence: ['post-action screenshot showing named roadmap content'],
+              weak_evidence: ['toolbar selection without visible roadmap content'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('B', 'action_result', { tool: 'type', ok: true }),
+      ev('C', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('D', 'action_result', { tool: 'click', ok: true }),
+      ev('E', 'observation', {
+        summary:
+          'Canvas shows Q3 Launch Roadmap with Research, Prototype, Beta, Launch, API quota risk, and Owners: Ana and Bo.',
+      }),
+      ev('F', 'goal_status', { id: 'G1', status: 'verified', evidence_event_ids: ['E'] }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Create a Q3 Launch Roadmap',
+        status: 'verified',
+        evidence: ['E'],
+        notes: 'Visible roadmap shows Research, Prototype, Beta, Launch, risk, and owners.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['E'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('does not require procedural scenario instructions as visible text', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Export the current board', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create and export a board.',
+          core_artifacts: ['board export'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Export or download the board',
+              journey_id: 'J1',
+              scenario_brief:
+                'Use the page menu to export or download the board created in-session.',
+              test_data: [
+                'Use the current board created in J1 or J2',
+                'Prefer Download or an export format surfaced by the menu',
+              ],
+              required_actions: ['open export or download', 'complete the output action'],
+              expected_artifact: 'board-linked download',
+              required_outputs: ['visible export/download option or file event'],
+              acceptable_evidence: ['post-action evidence showing export/download state'],
+              weak_evidence: ['menu label only'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation', {
+        summary: 'The page menu shows Export and Download for the current board.',
+      }),
+      ev('C', 'goal_status', { id: 'G1', status: 'verified', evidence_event_ids: ['B'] }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Export the current board',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'The post-action evidence shows export and download choices for the current board.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('keeps artifact-editor revision goals when proof shows a visible state delta', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [
+          {
+            id: 'G1',
+            description: 'Duplicate an object and verify state changes',
+            journey_id: 'J1',
+          },
+        ],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create and revise visible canvas content.',
+          core_artifacts: ['visible shape on canvas'],
+          value_loops: [
+            {
+              id: 'VL1',
+              title: 'Revise board state and history',
+              artifact:
+                'A board whose object count, arrangement, or history state changes through duplicate/delete/undo/redo',
+              required_capabilities: [
+                'duplicate an object',
+                'delete an object',
+                'undo and redo board changes',
+                'create or place visible content on the canvas',
+                'add readable text, a label, a connector, media, or a second object',
+                'modify an existing object with style, size, position, or structure change',
+              ],
+              proof_obligations: [
+                'the board visibly reflects the edit action',
+                'object count or placement changes on the canvas',
+                'The canvas contains a composed artifact, not just an activated tool or empty board.',
+              ],
+              weak_evidence: ['the history button was clicked', 'nothing on the board changes'],
+            },
+          ],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Duplicate, delete, or undo a board object',
+              value_loop_id: 'VL1',
+              journey_id: 'J1',
+              required_actions: [
+                'select an existing object',
+                'use Duplicate, Delete, Undo, or Redo',
+                'inspect the board after the action',
+                'create or place visible content on the canvas',
+                'add readable text, a label, a connector, media, or a second object',
+                'modify an existing object with style, size, position, or structure change',
+              ],
+              proof_obligations: [
+                'the object count or arrangement changes on the canvas',
+                'the board state reflects the action clearly',
+                'The canvas contains a composed artifact, not just an activated tool or empty board.',
+              ],
+              expected_artifact:
+                'A modified board state with duplication, removal, or history reversal visible',
+              acceptable_evidence: ['a copied object appears'],
+              weak_evidence: ['the undo/redo button is pressed without board change'],
+              risk: 'low',
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('B', 'action_result', { tool: 'click', ok: true }),
+      ev('C', 'observation'),
+      ev('D', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        rationale:
+          'Duplicated a board object and the visible object count changed from 2 of 2 to 3 of 3.',
+        evidence_event_ids: ['C'],
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Duplicate an object and verify state changes',
+        status: 'verified',
+        evidence: ['C'],
+        notes: 'Duplicate changed the visible board object count from 2 of 2 to 3 of 3.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['C'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('does not apply edit/history materiality floor to media insertion jobs', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Insert media on the board', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create and import visible canvas content.',
+          core_artifacts: ['visible image on canvas'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Insert media or embed content',
+              journey_id: 'J1',
+              required_actions: [
+                'upload media',
+                'start from an existing artifact or object',
+                'perform a visible edit, history, duplicate, delete, undo, redo, or arrangement action',
+              ],
+              proof_obligations: [
+                'the inserted asset is visible as a board object',
+                'The artifact visibly reflects the edit or history action.',
+              ],
+              expected_artifact: 'visible uploaded image on the canvas',
+              acceptable_evidence: ['post-action screenshot showing uploaded image'],
+              weak_evidence: ['file picker opened'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click_upload', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Insert media on the board',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Uploaded media and the inserted image appeared on the whiteboard.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('downgrades non-default shape goals when proof only shows a default rectangle', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Place a non-default shape', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create visible canvas content.',
+          core_artifacts: ['visible shape on canvas'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Use a non-default shape from the shape library',
+              journey_id: 'J1',
+              required_actions: ['open the shape library', 'place a non-default shape'],
+              proof_obligations: ['a diamond, cloud, ellipse, or similar shape is visible'],
+              expected_artifact: 'non-default shape visible on canvas',
+              acceptable_evidence: ['post-action screenshot showing non-default shape'],
+              weak_evidence: ['rectangle placed instead'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'vision_drag', ok: true }),
+      ev('B', 'observation'),
+      ev('C', 'goal_status', { id: 'G1', status: 'verified' }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Place a non-default shape',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'A rectangle was created and labeled on the canvas.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.summary.downgrade_reasons[0]).toContain('non-default shape evidence');
     expect(result.goals[0]?.status).toBe('partial');
   });
 
@@ -435,6 +1025,118 @@ describe('validateGoalClaims', () => {
 
     expect(result.summary).toEqual({ verified_kept: 2, downgraded: 0, downgrade_reasons: [] });
     expect(result.goals.map((goal) => goal.status)).toEqual(['verified', 'verified']);
+  });
+
+  it('uses OBS refs to recover cited action history for batched goal statuses', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Add a readable note', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          primary_value_loop: 'Create meaningful board content.',
+          core_artifacts: ['visible note on canvas'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Add a readable project note',
+              journey_id: 'J1',
+              required_actions: ['choose a text, note, label, or annotation tool', 'enter readable text'],
+              expected_artifact: 'readable note visible on the board',
+              test_data: ['Risk: dependency'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'action_result', { tool: 'type', ok: true }),
+      ev('C', 'observation', {
+        ref: 'OBS-000028',
+        summary: 'A note labeled Risk: dependency is visible on the canvas.',
+      }),
+      ev('S1', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        rationale: 'Added a readable note labeled Risk: dependency and kept it visible.',
+        evidence_event_ids: ['C'],
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Add a readable note',
+        status: 'verified',
+        evidence: ['OBS-000028'],
+        notes: 'The note text Risk: dependency was added and stayed visible on the board.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['C'] }),
+    });
+
+    expect(result.summary).toEqual({ verified_kept: 1, downgraded: 0, downgrade_reasons: [] });
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('does not force every scenario to satisfy broad value-loop capabilities', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Add a readable note', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['canvas_editor'],
+          value_loops: [
+            {
+              id: 'VL1',
+              title: 'Create and refine a board',
+              required_capabilities: [
+                'create or place visible content on the canvas',
+                'add readable text, a label, a connector, media, or a second object',
+                'modify an existing object with style, size, position, or structure change',
+              ],
+            },
+          ],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Add a readable project note',
+              journey_id: 'J1',
+              value_loop_id: 'VL1',
+              required_actions: ['enter readable text'],
+              expected_artifact: 'readable note visible on the board',
+              test_data: ['Risk: dependency'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'type', ok: true }),
+      ev('B', 'observation', {
+        summary: 'A note labeled Risk: dependency is visible on the canvas.',
+      }),
+      ev('S1', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        rationale: 'Added a readable note labeled Risk: dependency and kept it visible.',
+        evidence_event_ids: ['B'],
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Add a readable note',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'The note text Risk: dependency was added and stayed visible on the board.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+
+    expect(result.summary).toEqual({ verified_kept: 1, downgraded: 0, downgrade_reasons: [] });
+    expect(result.goals[0]?.status).toBe('verified');
   });
 
   it('keeps verified when terse Judge notes have a substantive Explorer rationale', () => {
@@ -596,11 +1298,11 @@ describe('validateGoalClaims', () => {
       },
     ]);
     judge.spec_compliance.summary = 'All goals verified.';
+    const firstGoal = judge.spec_compliance.goals[0];
+    const secondGoal = judge.spec_compliance.goals[1];
+    if (!firstGoal || !secondGoal) throw new Error('expected two goals');
     const applied = applyGoalClaimValidationToJudgeOutput(judge, {
-      goals: [
-        { ...judge.spec_compliance.goals[0]!, status: 'partial' },
-        judge.spec_compliance.goals[1]!,
-      ],
+      goals: [{ ...firstGoal, status: 'partial' }, secondGoal],
       summary: {
         verified_kept: 1,
         downgraded: 1,
@@ -614,5 +1316,67 @@ describe('validateGoalClaims', () => {
     expect(applied.meta.confidence_caveats).toContain(
       '1 verified goal claim(s) were downgraded by deterministic evidence validation.',
     );
+  });
+
+  it('caps goal-dependent rubric scores after validated goal downgrades', () => {
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'create',
+        status: 'verified',
+        evidence: ['OBS1'],
+        notes: 'Created.',
+      },
+      {
+        id: 'G2',
+        description: 'share',
+        status: 'verified',
+        evidence: ['OBS2'],
+        notes: 'Shared.',
+      },
+    ]);
+    judge.scores = {
+      overall: { score: 9.5, weighted_from: ['quality', 'coverage'] },
+      profiles: {
+        quality: {
+          score: 9.5,
+          dimensions: {
+            correctness: {
+              score: 10,
+              rationale: 'All goals completed.',
+              evidence: ['OBS1', 'OBS2'],
+            },
+            polish: { score: 9, rationale: 'Looks stable.', evidence: [] },
+          },
+        },
+        coverage: {
+          score: 9.5,
+          dimensions: {
+            depth: { score: 10, rationale: 'Deep.', evidence: ['OBS1', 'OBS2'] },
+          },
+        },
+      },
+    };
+    const firstGoal = judge.spec_compliance.goals[0];
+    const secondGoal = judge.spec_compliance.goals[1];
+    if (!firstGoal || !secondGoal) throw new Error('expected two goals');
+
+    const applied = applyGoalClaimValidationToJudgeOutput(judge, {
+      goals: [{ ...firstGoal, status: 'partial' }, secondGoal],
+      summary: {
+        verified_kept: 1,
+        downgraded: 1,
+        downgrade_reasons: ['G1: missing artifact proof'],
+      },
+    });
+
+    expect(applied.scores.overall.score).toBe(7.5);
+    expect(applied.scores.profiles.quality?.score).toBe(7.5);
+    expect(applied.scores.profiles.quality?.dimensions.correctness?.score).toBe(7.5);
+    expect(applied.scores.profiles.quality?.dimensions.correctness?.rationale).toContain(
+      '1/2 verified, 1 partial',
+    );
+    expect(applied.scores.profiles.quality?.dimensions.polish?.score).toBe(9);
+    expect(applied.scores.profiles.coverage?.dimensions.depth?.score).toBe(7.5);
   });
 });

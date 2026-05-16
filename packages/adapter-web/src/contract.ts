@@ -38,6 +38,8 @@ export const WEB_INTERACTION_KIT: InteractionKit = {
     },
     { name: 'scroll', user_action: 'scroll' },
     { name: 'upload', user_action: 'file-upload' },
+    { name: 'click_upload', user_action: 'click-file-upload' },
+    { name: 'click_download', user_action: 'download-file' },
     { name: 'navigate', user_action: 'navigate-url' },
     { name: 'back', user_action: 'browser-back' },
     { name: 'forward', user_action: 'browser-forward' },
@@ -71,6 +73,8 @@ const INTERACTION_TOOLS = new Set([
   'vision_drag',
   'scroll',
   'upload',
+  'click_upload',
+  'click_download',
   'vision_click',
   'vision_paste',
   'vision_right_click',
@@ -108,7 +112,7 @@ export function collectWebOutcomeEvidence(
   //   - vision_describe action_results — these carry a `description` field
   //     naming what the vision model saw on the post-interaction page. The
   //     description IS the outcome evidence the Judge needs to cite.
-  //   - ui_state probe_results with post-interaction browser/product state
+  //   - ui_state / state_delta probe_results with post-interaction browser/product state
   //     (hash, scroll, or matched visible selectors), useful for section-nav and
   //     selection-state goals where the state probe is the most precise proof.
   //   - the paired `action` events that produced the above results — the
@@ -154,6 +158,13 @@ export function collectWebOutcomeEvidence(
             : 'vision_describe action result',
         });
       }
+      if (tool === 'click_download') {
+        const refs = (p.evidence_refs as string[] | undefined) ?? [];
+        for (const r of refs) {
+          artifacts.push({ kind: 'file_download', ref: r, note: 'downloaded file evidence' });
+        }
+        artifacts.push({ kind: 'file_download', ref: e.id, note: 'download action result' });
+      }
     }
     if (e.kind === 'probe_result' && isUiStateOutcomeProbe(p)) {
       artifacts.push({
@@ -176,7 +187,12 @@ export function collectWebOutcomeEvidence(
 }
 
 function isUiStateOutcomeProbe(payload: Record<string, unknown>): boolean {
-  if (String(payload.probe ?? '') !== 'ui_state') return false;
+  const probe = String(payload.probe ?? '');
+  if (probe === 'state_delta') {
+    const summary = asRecord(payload.summary);
+    return summary.changed === true;
+  }
+  if (probe !== 'ui_state') return false;
   const summary = asRecord(payload.summary);
   if (typeof summary.hash === 'string' && summary.hash.trim()) return true;
   const scroll = asRecord(summary.scroll);
@@ -189,6 +205,18 @@ function isUiStateOutcomeProbe(payload: Record<string, unknown>): boolean {
 
 function uiStateOutcomeNote(payload: Record<string, unknown>): string {
   const summary = asRecord(payload.summary);
+  if (String(payload.probe ?? '') === 'state_delta') {
+    const parts = ['post-interaction state_delta'];
+    if (summary.text_changed === true) parts.push('text_changed=true');
+    const before =
+      typeof summary.element_count_before === 'number' ? summary.element_count_before : undefined;
+    const after =
+      typeof summary.element_count_after === 'number' ? summary.element_count_after : undefined;
+    if (before !== undefined && after !== undefined && before !== after) {
+      parts.push(`elements=${before}->${after}`);
+    }
+    return parts.join(' ');
+  }
   const parts: string[] = ['post-interaction ui_state'];
   if (typeof summary.hash === 'string' && summary.hash.trim()) parts.push(`hash=${summary.hash}`);
   const scroll = asRecord(summary.scroll);

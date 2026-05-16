@@ -14,10 +14,10 @@ import {
   type Mode,
   discovery as discoveryMod,
   explorer as explorerMod,
+  trace as iristrace,
   judge as judgeMod,
   preflight as preflightMod,
   report as reportMod,
-  trace as iristrace,
   specInterpreter,
 } from '@iris/core';
 import type { RubricProfile } from '@iris/rubrics';
@@ -32,6 +32,12 @@ import {
   runCodexAppServerExplorer,
   runCodexAppServerSingleShot,
 } from './codex-app-server-runner.js';
+import { runMissingPostExplorerProbes } from './post-explorer-probes.js';
+import {
+  buildScenarioCompletionGates,
+  formatScenarioGatePrompt,
+  type ScenarioCompletionGate,
+} from './scenario-completion-gate.js';
 
 export interface CodexAppServerRunConfig {
   target: { kind: 'web'; url: string };
@@ -57,6 +63,7 @@ export interface CodexAppServerRunConfig {
   discover?: boolean;
   expand_goals?: boolean;
   max_expansion_goals?: number;
+  scenario_gate?: boolean;
 }
 
 export interface CodexAppServerRunResult {
@@ -96,16 +103,134 @@ function extractJsonObjectCandidate(text: string): string | null {
   return null;
 }
 
-function parseJudgeOutput(text: string): judgeMod.JudgeOutput {
-  const candidate = extractJsonObjectCandidate(text);
-  if (!candidate) throw new Error(`Judge returned no JSON object:\n${text.slice(0, 500)}`);
-  return judgeMod.JudgeOutputSchema.parse(JSON.parse(candidate));
+export function parseJudgeOutput(text: string): judgeMod.JudgeOutput {
+  const candidates = judgeJsonCandidates(text);
+  if (candidates.length === 0) {
+    throw new Error(`Judge returned no JSON object:\n${text.slice(0, 500)}`);
+  }
+  let lastErr: unknown;
+  for (const candidateText of candidates) {
+    try {
+      return judgeMod.JudgeOutputSchema.parse(normalizeJudgeJsonShape(JSON.parse(candidateText)));
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
+function judgeJsonCandidates(text: string): string[] {
+  const balanced = extractJsonObjectCandidate(text);
+  const bases = balanced
+    ? repairedPrematureCloseCandidates(text, balanced)
+    : repairedUnbalancedJsonCandidates(text);
+  const out: string[] = [];
+  for (const base of bases) {
+    out.push(...withTrailingBraceRepairs(base));
+  }
+  return [...new Set(out)];
+}
+
+function repairedUnbalancedJsonCandidates(text: string): string[] {
+  const start = text.indexOf('{');
+  if (start < 0) return [];
+  const body = text.slice(start).trim();
+  const repaired = repairKnownTopLevelSectionDepth(body);
+  return repaired === body ? [body] : [repaired, body];
+}
+
+function repairKnownTopLevelSectionDepth(body: string): string {
+  let next = body;
+  for (const marker of [
+    ',"spec_compliance"',
+    ',"coverage_review"',
+    ',"meta"',
+    ',"access_blocks"',
+  ]) {
+    const idx = next.indexOf(marker);
+    if (idx < 0) continue;
+    const depth = jsonStructuralDepthAt(next, idx);
+    if (depth > 1) {
+      next = `${next.slice(0, idx)}${'}'.repeat(depth - 1)}${next.slice(idx)}`;
+    }
+  }
+  return next;
+}
+
+function jsonStructuralDepthAt(text: string, endExclusive: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < endExclusive; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') depth--;
+  }
+  return depth;
+}
+
+function withTrailingBraceRepairs(base: string): string[] {
+  const out = [base];
+  for (let missing = 1; missing <= 8; missing++) {
+    out.push(`${base}${'}'.repeat(missing)}`);
+  }
+  return out;
+}
+
+function normalizeJudgeJsonShape(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+  const root = value as { scores?: { profiles?: Record<string, unknown> } };
+  const profiles = root.scores?.profiles;
+  if (!profiles || typeof profiles !== 'object') return value;
+  for (const profile of Object.values(profiles)) {
+    if (!profile || typeof profile !== 'object') continue;
+    liftNestedScoreProfiles(profiles, profile as Record<string, unknown>);
+  }
+  return value;
+}
+
+function liftNestedScoreProfiles(
+  profiles: Record<string, unknown>,
+  parent: Record<string, unknown>,
+): void {
+  for (const [key, nested] of Object.entries(parent)) {
+    if (key === 'score' || key === 'dimensions') continue;
+    if (!nested || typeof nested !== 'object') continue;
+    const candidate = nested as Record<string, unknown>;
+    if (typeof candidate.score === 'number' && candidate.dimensions && !profiles[key]) {
+      profiles[key] = candidate;
+      delete parent[key];
+      liftNestedScoreProfiles(profiles, candidate);
+      continue;
+    }
+    liftNestedScoreProfiles(profiles, candidate);
+  }
+}
+
+function repairedPrematureCloseCandidates(text: string, firstCandidate: string): string[] {
+  const out = [firstCandidate];
+  const start = text.indexOf(firstCandidate);
+  if (start < 0) return out;
+  const end = start + firstCandidate.length;
+  const tail = text.slice(end);
+  if (!/^\s*,\s*"(spec_compliance|coverage_review|meta)"/.test(tail)) return out;
+  const lastBrace = text.lastIndexOf('}');
+  if (lastBrace <= end) return out;
+  out.unshift(`${firstCandidate.slice(0, -1)}${text.slice(end, lastBrace + 1)}`);
+  return out;
 }
 
 const CODEX_APP_SERVER_JUDGE_SYSTEM = `You are Iris's Judge. Return ONLY one complete JSON object. Keep output compact but complete. Use the latest goal_status for each goal. At most 3 findings. All strings short.
 Scores are mandatory: scores.profiles MUST contain every profile listed under RUBRIC PROFILES TO SCORE, and each profile.dimensions MUST contain every listed dimension id. Do not omit frontend, usability, accessibility, coverage, or UX baseline profiles to save tokens. Use score:null only for a dimension that is genuinely untestable from this run; still include that dimension with a short rationale.
 Raw axe impact is not product severity: machine-only axe/a11y issues should usually be minor findings or rubric-score evidence, not major/blocker findings, unless trace evidence shows a core flow blocked, explicit accessibility/compliance focus, or broad user impact.
-If discovery includes product_use_contract, grade real-use depth against it: high coverage/completeness requires the primary value loop and expected artifact/state evidence, not only menus/toolbars/focus/mode selection.
+If discovery includes product_use_contract, grade real-use depth against it: high coverage/completeness requires the primary value loop and expected artifact/state evidence, not only menus/toolbars/focus/mode selection. When user_jobs include scenario_brief, test_data, required_outputs, or quality_bar, a verified goal must show those concrete user-visible details in cited evidence; generic filler, empty artifacts, or opened panels are partial at best.
 Required exact shape:
 {"v":1,"findings":[{"id":"F-001","title":"...","category":"bug|a11y|ux|perf|copy|suggestion","severity":"blocker|major|minor|nit|suggestion","evidence":["EVENT"],"rationale":"..."}],"discarded_findings":[],"scores":{"overall":{"score":0,"weighted_from":["quality"]},"profiles":{"quality":{"score":0,"dimensions":{"correctness":{"score":0,"rationale":"...","evidence":["EVENT"]},"completeness":{"score":0,"rationale":"...","evidence":["EVENT"]},"polish":{"score":0,"rationale":"...","evidence":["EVENT"]}}}}},"spec_compliance":{"applicable":true,"goals":[{"id":"G1","description":"...","status":"verified|partial|blocked|skipped|untested","evidence":["EVENT"],"notes":"..."}],"summary":"..."},"coverage_review":{"surfaces_explored":0,"surfaces_unexplored":0,"judgement":"..."},"meta":{"confidence_overall":0.8,"confidence_caveats":[],"would_re_explore_with":[]},"access_blocks":[]}
 If rubric profile names or dimensions differ, replace quality/correctness/completeness/polish with the actual RUBRIC PROFILES ids. scores.overall.weighted_from must list every scored profile id. Use [] for empty arrays. Use null for untested dimension scores. Do not use v:2. Do not add extra top-level keys.`;
@@ -219,22 +344,32 @@ function buildJudgeFailureOutput(input: {
           evidence: status.evidence,
           notes: status.rationale,
         }));
+  const fallbackScore = fallbackScoreFromGoalRows(goalRows);
+  const profileNames = input.rubricProfiles.map((profile) => profile.name);
+  const fallbackRationale =
+    fallbackScore > 0
+      ? `Fallback score from goal_status after Judge JSON failure: ${input.reason}`
+      : `Judge did not complete: ${input.reason}`;
 
   return {
     v: 1,
     findings: [],
     discarded_findings: [],
     scores: {
-      overall: { score: 0, weighted_from: [] },
+      overall: { score: fallbackScore, weighted_from: fallbackScore > 0 ? profileNames : [] },
       profiles: Object.fromEntries(
         input.rubricProfiles.map((profile) => [
           profile.name,
           {
-            score: 0,
+            score: fallbackScore,
             dimensions: Object.fromEntries(
               profile.dimensions.map((dimension) => [
                 dimension.id,
-                { score: null, rationale: `Judge did not complete: ${input.reason}`, evidence: [] },
+                {
+                  score: fallbackScore > 0 ? fallbackScore : null,
+                  rationale: fallbackRationale,
+                  evidence: goalRows.flatMap((goal) => goal.evidence).slice(0, 6),
+                },
               ]),
             ),
           },
@@ -244,20 +379,41 @@ function buildJudgeFailureOutput(input: {
     spec_compliance: {
       applicable: goalRows.length > 0,
       goals: goalRows,
-      summary: `Judge did not complete: ${input.reason}`,
+      summary:
+        fallbackScore > 0
+          ? `Judge scoring fell back to latest goal_status events: ${goalRows.filter((goal) => goal.status === 'verified').length}/${goalRows.length} verified.`
+          : `Judge did not complete: ${input.reason}`,
     },
     coverage_review: {
       surfaces_explored: input.events.filter((event) => event.kind === 'surface_seen').length,
       surfaces_unexplored: input.events.filter((event) => event.kind === 'surface_unexplored')
         .length,
-      judgement: `Judge did not complete: ${input.reason}`,
+      judgement:
+        fallbackScore > 0
+          ? 'Coverage judgement is provisional because Judge JSON parsing failed.'
+          : `Judge did not complete: ${input.reason}`,
     },
     meta: {
-      confidence_overall: 0,
+      confidence_overall: fallbackScore > 0 ? 0.55 : 0,
       confidence_caveats: [input.reason],
       would_re_explore_with: ['Rerun Judge with a lower-overhead Codex App Server configuration.'],
     },
   };
+}
+
+function fallbackScoreFromGoalRows(
+  goalRows: Array<{ status: 'verified' | 'partial' | 'blocked' | 'skipped' | 'untested' }>,
+): number {
+  const attempted = goalRows.filter((goal) =>
+    ['verified', 'partial', 'blocked'].includes(goal.status),
+  );
+  if (attempted.length === 0) return 0;
+  const verified = attempted.filter((goal) => goal.status === 'verified').length;
+  const partial = attempted.filter((goal) => goal.status === 'partial').length;
+  const blocked = attempted.filter((goal) => goal.status === 'blocked').length;
+  const raw = 4 + (verified / attempted.length) * 4 + (partial / attempted.length) * 1.5;
+  const penalty = blocked > 0 ? Math.min(2, (blocked / attempted.length) * 3) : 0;
+  return Math.max(0, Math.min(8, Math.round((raw - penalty) * 10) / 10));
 }
 
 export async function runIrisViaCodexAppServer(
@@ -315,6 +471,7 @@ export async function runIrisViaCodexAppServer(
     let interpreted: specInterpreter.InterpretedSpec | undefined;
     let totalCost = 0;
     let discoveryExplorerContext = '';
+    let scenarioGates: ScenarioCompletionGate[] = [];
     const phaseTokenUsage: Record<string, CodexTokenUsageSnapshot> = {};
     if (config.mode === 'grounded' && specText) {
       process.stderr.write('iris: running spec interpreter via Codex App Server...\n');
@@ -481,6 +638,7 @@ export async function runIrisViaCodexAppServer(
             ? ssResult.evidence_refs[0]
             : undefined;
         if (ssPath) {
+          let discoveryRawText = '';
           const discoveryResult = await discoveryMod.runDiscovery({
             url: config.target.url,
             observation_summary: obs.summary,
@@ -491,14 +649,15 @@ export async function runIrisViaCodexAppServer(
             discoverer: async (i) => {
               const r = await runCodexAppServerSingleShot(client, {
                 systemPrompt: i.systemPrompt,
-              userPrompt: i.userPrompt,
-              imagePath: i.imagePath,
-              ...(i.model ? { model: i.model } : {}),
-              reasoningEffort,
-              timeoutS: phaseTimeoutS,
-              cwd: appServerCwd,
+                userPrompt: i.userPrompt,
+                imagePath: i.imagePath,
+                ...(i.model ? { model: i.model } : {}),
+                reasoningEffort,
+                timeoutS: phaseTimeoutS,
+                cwd: appServerCwd,
               });
               phaseTokenUsage.discovery = r.token_usage;
+              discoveryRawText = r.text;
               return { text: r.text, cost_usd: r.cost_usd };
             },
           });
@@ -518,6 +677,7 @@ export async function runIrisViaCodexAppServer(
                 goals: out.goals,
                 surfaces: out.surfaces,
                 journeys: out.journeys,
+                capabilities: out.capabilities,
                 ...(out.product_use_contract
                   ? { product_use_contract: out.product_use_contract }
                   : {}),
@@ -539,6 +699,7 @@ export async function runIrisViaCodexAppServer(
               `${JSON.stringify(out, null, 2)}\n`,
             );
             discoveryExplorerContext = discoveryMod.formatDiscoveryExplorerContext(out);
+            scenarioGates = config.scenario_gate ? buildScenarioCompletionGates(out) : [];
             interpreted = {
               v: 1,
               target_kind_hint: 'web',
@@ -549,6 +710,13 @@ export async function runIrisViaCodexAppServer(
             };
             if (config.mode === 'free') (config as { mode: Mode }).mode = 'grounded';
             process.stderr.write(`iris: discovery - ${out.goals.length} seed goals proposed\n`);
+          } else {
+            if (discoveryRawText) {
+              writeFileSync(join(config.out_dir, 'discovery.raw.txt'), discoveryRawText);
+            }
+            process.stderr.write(
+              'iris: discovery returned no parseable goals via Codex App Server — falling back\n',
+            );
           }
         }
       } catch (err) {
@@ -578,17 +746,21 @@ export async function runIrisViaCodexAppServer(
     const stepsPerGoal = config.steps_per_goal;
     const perGoalLine =
       stepsPerGoal && stepsPerGoal > 0
-        ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished, call goal_status with evidence_event_ids for verified goals.`
+        ? `Per-goal budget: ~${stepsPerGoal} turns per goal. When a goal is finished, call goal_status with evidence_event_ids for verified goals. Skipped means not applicable to this product/run; never use skipped because time or budget remains.`
+        : '';
+    const scenarioGatePrompt =
+      config.scenario_gate && scenarioGates.length > 0
+        ? `${formatScenarioGatePrompt(scenarioGates)}\n\n`
         : '';
     const initialUserPrompt = `Target: ${config.target.url}
 
-${hasGoals ? `What this app is supposed to do:\n${goalList}\n\n${discoveryExplorerContext ? `${discoveryExplorerContext}\n\n` : ''}Use the app and verify each goal as a normal user would. For verified goals, cite post-action observation/screenshot/vision_describe event ids in goal_status.\n\n${perGoalLine}` : `Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons.`}
+${hasGoals ? `What this app is supposed to do:\n${goalList}\n\n${discoveryExplorerContext ? `${discoveryExplorerContext}\n\n` : ''}${scenarioGatePrompt}Use the app and verify each goal as a normal user would. If Discovery names scenario content/data, required outputs, or a quality bar, use that exact content in the product and verify the visible result; do not substitute generic filler. For verified goals, cite post-action observation/screenshot/vision_describe event ids in goal_status. Use skipped only when the goal is not applicable, not when you have not tried it yet.\n\n${perGoalLine}` : 'Your job: USE THIS APP. Open it, find the primary feature, exercise it like a curious new user. Type real text. Click real buttons.'}
 
 PRIORITY ORDER:
   1. Happy paths first.
   2. Then try edge cases relevant to the assigned goals.
 
-Iris will run axe and console_errors_since automatically after your Explorer turn. Do not spend model turns calling those probes unless a goal specifically needs their evidence.
+Iris will run axe, console_errors_since, network_all_since, and mobile_viewport automatically after your Explorer turn. Do not spend model turns calling those probes unless a goal specifically needs their evidence.
 Do not mark a goal partial until you have tried the strongest cheap proof available. For focus, layout, sidebar, collapse, selected-state, text-size, width, or color-mode goals, use the ui_state probe after interaction. If Iris reports that budget remains for partial retries, retry only those partial goals before stopping.
 Do not use direct URL navigation after initial load to satisfy product feature goals such as search, auth, donate, or settings. Interact with visible UI like a user. Direct navigation is only acceptable for initial target load, browser back/forward/reload, or explicit URL-handling goals.
 If all assigned goals are terminal after goal_status and Iris does not request a retry, stop; do not call extra tools just to say done.
@@ -611,6 +783,7 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
       ...(hasGoals
         ? { goals: goals.map((g, i) => ({ id: `G${i + 1}`, description: g.description })) }
         : {}),
+      ...(config.scenario_gate ? { scenarioGates } : {}),
       cwd: appServerCwd,
     });
     totalCost += explorerResult.cost_usd;
@@ -619,57 +792,12 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
       `iris: Explorer done - termination=${explorerResult.termination}, ${explorerResult.steps_taken} steps\n`,
     );
 
-    const alreadyRanAxe = (await iristrace.readTraceArray(tracePath)).some(
-      (e) => e.kind === 'probe_result' && (e.payload as { probe?: string })?.probe === 'axe',
-    );
-    if (!alreadyRanAxe) {
-      const axeResult = await adapter.runProbe('axe', {}).catch((err) => ({
-        ok: false as const,
-        probe: 'axe',
-        error: err instanceof Error ? err.message : String(err),
-      }));
-      await traceWriter.append({
-        v: 1,
-        id: ulid(),
-        ts: Date.now() / 1000,
-        step: 0,
-        target_kind: 'web',
-        kind: 'probe_result',
-        actor: 'system',
-        payload: axeResult.ok
-          ? { probe: 'axe', summary: axeResult.summary, data: axeResult.data, ok: true }
-          : { probe: 'axe', error: axeResult.error, ok: false },
-      });
-    }
-    const alreadyRanConsole = (await iristrace.readTraceArray(tracePath)).some(
-      (e) =>
-        e.kind === 'probe_result' &&
-        (e.payload as { probe?: string })?.probe === 'console_errors_since',
-    );
-    if (!alreadyRanConsole) {
-      const cResult = await adapter.runProbe('console_errors_since', {}).catch((err) => ({
-        ok: false as const,
-        probe: 'console_errors_since',
-        error: err instanceof Error ? err.message : String(err),
-      }));
-      await traceWriter.append({
-        v: 1,
-        id: ulid(),
-        ts: Date.now() / 1000,
-        step: 0,
-        target_kind: 'web',
-        kind: 'probe_result',
-        actor: 'system',
-        payload: cResult.ok
-          ? {
-              probe: 'console_errors_since',
-              summary: cResult.summary,
-              data: cResult.data,
-              ok: true,
-            }
-          : { probe: 'console_errors_since', error: cResult.error, ok: false },
-      });
-    }
+    await runMissingPostExplorerProbes({
+      adapter,
+      traceWriter,
+      tracePath,
+      log: (message) => process.stderr.write(message),
+    });
 
     await traceWriter.close();
     const artifacts = await adapter.stop();
@@ -689,6 +817,7 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
     let judgeOutput: judgeMod.JudgeOutput;
     const elapsedBeforeJudge = (Date.now() - startMs) / 1000;
     const judgeTimeoutS = Math.max(45, Math.ceil(config.timeout_s - elapsedBeforeJudge));
+    let judgeRecoveredFromGoalStatus = false;
     try {
       const judgeResponse = await runCodexAppServerSingleShot(client, {
         systemPrompt: CODEX_APP_SERVER_JUDGE_SYSTEM,
@@ -714,6 +843,9 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
         rubricProfiles: config.rubric_profiles,
         events,
       });
+      judgeRecoveredFromGoalStatus = judgeOutput.spec_compliance.goals.some((goal) =>
+        ['verified', 'partial', 'blocked'].includes(goal.status),
+      );
     }
     judgeOutput = judgeMod.ensureRubricScoreCoverage(judgeOutput, config.rubric_profiles);
 
@@ -787,12 +919,17 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
           explorer: reasoningEffort,
           judge: reasoningEffort,
         },
-        termination: judgeFailedReason ? 'judge_failed' : explorerResult.termination,
+        termination:
+          judgeFailedReason && !judgeRecoveredFromGoalStatus
+            ? 'judge_failed'
+            : explorerResult.termination,
         step_count: explorerResult.steps_taken,
         ...(runUsage ? { usage: runUsage } : {}),
       },
       ...(config.threshold !== undefined ? { threshold: config.threshold } : {}),
-      ...(judgeFailedReason ? { blocked: { reasons: [judgeFailedReason] } } : {}),
+      ...(judgeFailedReason && !judgeRecoveredFromGoalStatus
+        ? { blocked: { reasons: [judgeFailedReason] } }
+        : {}),
       artifacts: {
         ...(config.no_html ? {} : { report_html: './report.html' }),
         report_md: './report.md',
@@ -816,7 +953,7 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
     }
 
     let exitCode: 0 | 1 | 2 | 3 | 4 = 0;
-    if (judgeFailedReason) {
+    if (judgeFailedReason && !judgeRecoveredFromGoalStatus) {
       exitCode = 3;
     } else if (
       explorerResult.termination === 'budget_steps' ||
@@ -832,7 +969,10 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
       out_dir: config.out_dir,
       duration_s,
       cost_usd: totalCost,
-      termination: judgeFailedReason ? 'judge_failed' : explorerResult.termination,
+      termination:
+        judgeFailedReason && !judgeRecoveredFromGoalStatus
+          ? 'judge_failed'
+          : explorerResult.termination,
       exit_code: exitCode,
     };
   } finally {

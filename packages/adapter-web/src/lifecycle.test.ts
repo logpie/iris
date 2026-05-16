@@ -70,11 +70,21 @@ describe('WebLifecycle', () => {
       opacity: getComputedStyle(el).opacity,
       transform: getComputedStyle(el).transform,
       pointerEvents: getComputedStyle(el).pointerEvents,
+      width: getComputedStyle(el).width,
+      height: getComputedStyle(el).height,
+      shapeCount: el.querySelectorAll('[data-iris-recording-cursor-shape="true"]').length,
     }));
 
     expect(cursor.opacity).toBe('1');
     expect(cursor.pointerEvents).toBe('none');
     expect(cursor.transform).not.toBe('none');
+    expect(cursor.width).toBe('28px');
+    expect(cursor.height).toBe('34px');
+    expect(cursor.shapeCount).toBe(1);
+    await page.mouse.move(160, 110);
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-iris-recording-cursor-trail="true"]').length > 0,
+    );
   });
 
   it('does not inject the cursor overlay when video recording is disabled', async () => {

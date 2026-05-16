@@ -21,6 +21,7 @@
 // The adapter contract picks the artifacts; the validator picks the verdict.
 
 import type { OutcomeContract, OutcomeContractTraceEvent } from '@iris/adapter-types';
+import { scenarioProofVisibleTextTokens } from '../scenario/scenario-data.js';
 import { resolveTraceRefTypo } from '../trace/ref-resolver.js';
 import type { TraceEvent } from '../trace/schema.js';
 import type { JudgeOutput } from './judge.js';
@@ -194,10 +195,25 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
 interface ProductUseJobLike {
   id?: string;
   title?: string;
+  value_loop_id?: string;
   journey_id?: string;
+  scenario_brief?: string;
+  test_data?: string[];
   required_actions?: string[];
+  proof_obligations?: string[];
   expected_artifact?: string;
+  required_outputs?: string[];
+  quality_bar?: string[];
   acceptable_evidence?: string[];
+  weak_evidence?: string[];
+}
+
+interface ProductUseValueLoopLike {
+  id?: string;
+  title?: string;
+  artifact?: string;
+  required_capabilities?: string[];
+  proof_obligations?: string[];
   weak_evidence?: string[];
 }
 
@@ -205,6 +221,7 @@ interface ProductUseContractLike {
   product_kinds?: string[];
   primary_value_loop?: string;
   core_artifacts?: string[];
+  value_loops?: ProductUseValueLoopLike[];
   user_jobs?: ProductUseJobLike[];
 }
 
@@ -218,15 +235,16 @@ function productUseWindowForCitedEvidence(input: {
   fallbackWindow: OutcomeContractTraceEvent[];
 }): OutcomeContractTraceEvent[] {
   if (!input.statusInfo || input.citedRefs.size === 0) return input.fallbackWindow;
+  const statusInfo = input.statusInfo;
   const citedIndices = Array.from(input.citedRefs)
     .map((ref) => input.traceIndexById.get(ref))
-    .filter((idx): idx is number => idx !== undefined && idx <= input.statusInfo!.idx);
+    .filter((idx): idx is number => idx !== undefined && idx <= statusInfo.idx);
   if (citedIndices.length === 0) return input.fallbackWindow;
   const maxCitedIdx = Math.max(...citedIndices);
   const start = Math.max(0, maxCitedIdx - PRODUCT_USE_CITATION_LOOKBACK_EVENTS);
   const citationWindow = input.trace
     .slice(start, maxCitedIdx + 1)
-    .filter((event) => sessionIdOf(event) === input.statusInfo!.session_id)
+    .filter((event) => sessionIdOf(event) === statusInfo.session_id)
     .map(toContractEvent);
   if (citationWindow.length === 0) return input.fallbackWindow;
 
@@ -251,19 +269,101 @@ function evaluateProductUseContract(input: {
   const discoveryGoal = latestDiscoveryGoal(input.trace, input.goal.id);
   const job = productUseJobForGoal(contract, input.goal, discoveryGoal?.journey_id);
   if (!job) return { ok: true };
-  const missingActions = requiredActionsMissing(job.required_actions ?? [], input.goalWindow);
+  const loop = productUseValueLoopForJob(contract, job);
+  const jobActions = job.required_actions ?? [];
+  const requiredActions = requiredActionsForProductUseJob({
+    job,
+    loop,
+    actions: uniqueStrings(
+      jobActions.length > 0 ? jobActions : (loop?.required_capabilities ?? []),
+    ),
+  });
+  const missingActions = requiredActionsMissing(requiredActions, input.goalWindow);
   if (missingActions.length > 0) {
-    return { ok: false, reason: `product-use contract missing required actions: ${missingActions.join(', ')}` };
+    return {
+      ok: false,
+      reason: `product-use contract missing required actions: ${missingActions.join(', ')}`,
+    };
   }
-  const proofText = `${input.goal.notes ?? ''}\n${input.statusRationale}`;
+  const claimText = `${input.goal.notes ?? ''}\n${input.statusRationale}`;
+  const proofText = `${input.goal.description}\n${claimText}`;
   const weakProof = matchingWeakEvidence(
-    [...(job.weak_evidence ?? []), ...genericWeakEvidencePhrases(contract)],
-    proofText,
+    [
+      ...(loop?.weak_evidence ?? []),
+      ...(job.weak_evidence ?? []),
+      ...genericWeakEvidencePhrases(contract),
+    ],
+    claimText,
   );
-  if (weakProof && !hasOutcomeLanguage(proofText)) {
+  if (weakProof && !hasOutcomeLanguage(claimText)) {
     return { ok: false, reason: `product-use contract rejected weak evidence: ${weakProof}` };
   }
+  const materiality = evaluateMaterialityFloor({
+    contract,
+    job,
+    loop,
+    goalWindow: input.goalWindow,
+    proofText,
+    claimText,
+  });
+  if (!materiality.ok) return materiality;
+  const scenarioProof = evaluateScenarioSpecificProof({
+    job,
+    goalWindow: input.goalWindow,
+  });
+  if (!scenarioProof.ok) return scenarioProof;
   return { ok: true };
+}
+
+function requiredActionsForProductUseJob(input: {
+  job: ProductUseJobLike;
+  loop: ProductUseValueLoopLike | undefined;
+  actions: string[];
+}): string[] {
+  const jobIntentText = specificProductUseJobIntent(input.job, input.loop);
+  if (isArtifactMediaImportJob(jobIntentText)) {
+    return input.actions.filter((action) => !isGenericArtifactRevisionRequirement(action));
+  }
+  if (!isArtifactStateRevisionJob(jobIntentText)) return input.actions;
+  return input.actions.filter((action) => !isGenericArtifactCompositionRequirement(action));
+}
+
+function specificProductUseJobIntent(
+  job: ProductUseJobLike,
+  _loop: ProductUseValueLoopLike | undefined,
+): string {
+  return normalizeText(
+    [
+      job.title ?? '',
+      job.scenario_brief ?? '',
+      job.expected_artifact ?? '',
+      ...(job.test_data ?? []),
+      ...(job.proof_obligations ?? []),
+      ...(job.required_outputs ?? []),
+      ...(job.quality_bar ?? []),
+      ...(job.acceptable_evidence ?? []),
+    ].join(' '),
+  );
+}
+
+function isGenericArtifactRevisionRequirement(action: string): boolean {
+  const text = normalizeText(action);
+  return (
+    /\bstart from an existing artifact or object\b/.test(text) ||
+    /\bperform a visible edit history duplicate delete undo redo or arrangement action\b/.test(
+      text,
+    ) ||
+    /\binspect the artifact state after the action\b/.test(text)
+  );
+}
+
+function isGenericArtifactCompositionRequirement(action: string): boolean {
+  const text = normalizeText(action);
+  return (
+    /\badd readable text\b/.test(text) ||
+    /\b(label|connector|media|second object)\b/.test(text) ||
+    /\bmodify an existing object with style size position or structure change\b/.test(text)
+  );
 }
 
 function latestProductUseContract(trace: TraceEvent[]): ProductUseContractLike | undefined {
@@ -287,7 +387,11 @@ function latestDiscoveryGoal(
     const payload = (event.payload ?? {}) as { goals?: unknown };
     if (!Array.isArray(payload.goals)) continue;
     const goal = payload.goals.find((candidate) => {
-      return candidate && typeof candidate === 'object' && String((candidate as { id?: unknown }).id ?? '') === goalId;
+      return (
+        candidate &&
+        typeof candidate === 'object' &&
+        String((candidate as { id?: unknown }).id ?? '') === goalId
+      );
     });
     return goal as { id?: string; journey_id?: string; description?: string } | undefined;
   }
@@ -306,16 +410,317 @@ function productUseJobForGoal(
   }
   const normalizedGoal = normalizeText(`${goal.id} ${goal.description}`);
   return jobs.find((job) => {
-    const candidate = normalizeText(`${job.id ?? ''} ${job.title ?? ''} ${job.expected_artifact ?? ''}`);
-    return candidate.length > 0 && (normalizedGoal.includes(candidate) || candidate.includes(normalizedGoal.slice(0, 80)));
+    const candidate = normalizeText(
+      `${job.id ?? ''} ${job.title ?? ''} ${job.expected_artifact ?? ''}`,
+    );
+    return (
+      candidate.length > 0 &&
+      (normalizedGoal.includes(candidate) || candidate.includes(normalizedGoal.slice(0, 80)))
+    );
   });
+}
+
+function productUseValueLoopForJob(
+  contract: ProductUseContractLike,
+  job: ProductUseJobLike,
+): ProductUseValueLoopLike | undefined {
+  const loops = contract.value_loops ?? [];
+  if (job.value_loop_id) {
+    const byId = loops.find((loop) => loop.id === job.value_loop_id);
+    if (byId) return byId;
+  }
+  if (loops.length === 1) return loops[0];
+  return undefined;
+}
+
+function evaluateMaterialityFloor(input: {
+  contract: ProductUseContractLike;
+  job: ProductUseJobLike;
+  loop: ProductUseValueLoopLike | undefined;
+  goalWindow: OutcomeContractTraceEvent[];
+  proofText: string;
+  claimText: string;
+}): { ok: true } | { ok: false; reason: string } {
+  const kinds = input.contract.product_kinds ?? [];
+  const requiredJobActions = (input.job.required_actions ?? []).filter(
+    (action) => !isOptionalRequiredAction(action.toLowerCase()),
+  );
+  const filteredJobActions = requiredActionsForProductUseJob({
+    job: input.job,
+    loop: input.loop,
+    actions: requiredJobActions,
+  });
+  const jobRequirementText = normalizeText(
+    [specificProductUseJobIntent(input.job, input.loop), ...filteredJobActions].join(' '),
+  );
+  const loopRequirementText = normalizeText(
+    [
+      input.loop?.title ?? '',
+      input.loop?.artifact ?? '',
+      ...(input.loop?.required_capabilities ?? []),
+      ...(input.loop?.proof_obligations ?? []),
+    ].join(' '),
+  );
+  const requirementText = normalizeText([jobRequirementText, loopRequirementText].join(' '));
+  const classificationText = jobRequirementText || loopRequirementText || requirementText;
+  if (!isArtifactEditorPrimaryJob(kinds, classificationText)) return { ok: true };
+
+  const required = materialityCategories(jobRequirementText || requirementText);
+  const observed = observedMaterialityCategories(input.goalWindow, input.proofText);
+  if (isArtifactMediaImportJob(classificationText)) {
+    if (!observed.has('create') || !observed.has('media')) {
+      return {
+        ok: false,
+        reason:
+          'product-use contract materiality floor not met: media import evidence is too shallow',
+      };
+    }
+    return { ok: true };
+  }
+  if (isArtifactStateRevisionJob(classificationText)) {
+    const proof = normalizeText(input.proofText);
+    const hasArtifactContext =
+      observed.has('create') ||
+      /\b(canvas|board|document|artifact|object|shape|note|text|media|image|row|content)\b/.test(
+        proof,
+      );
+    const hasRevisionAction =
+      observed.has('manipulate') ||
+      /\b(duplicate|duplicated|delete|deleted|remove|removed|undo|redo|history|revised|revision|arrange|arranged|move|moved|resize|resized|object count|state)\b/.test(
+        proof,
+      );
+    const hasStateOutcome =
+      hasOutcomeLanguage(input.proofText) ||
+      /\b(object count|arrangement|position|state|changed|changes|visible delta|appeared|disappeared|persisted|after the action)\b/.test(
+        proof,
+      );
+    if (!hasArtifactContext || !hasRevisionAction || !hasStateOutcome) {
+      return {
+        ok: false,
+        reason:
+          'product-use contract materiality floor not met: artifact revision evidence is too shallow',
+      };
+    }
+    return { ok: true };
+  }
+  if (isNonDefaultShapeJob(classificationText)) {
+    const claim = normalizeText(input.claimText);
+    if (!hasConcreteNonDefaultShapeOutcome(claim)) {
+      return {
+        ok: false,
+        reason:
+          'product-use contract materiality floor not met: non-default shape evidence is too shallow',
+      };
+    }
+  }
+  const hasCreate = observed.has('create');
+  const hasComposition =
+    observed.has('text') ||
+    observed.has('style') ||
+    observed.has('manipulate') ||
+    observed.has('media') ||
+    observed.has('connector') ||
+    observed.has('export') ||
+    observed.has('share');
+  if (!hasCreate || !hasComposition) {
+    return {
+      ok: false,
+      reason: 'product-use contract materiality floor not met: artifact evidence is too shallow',
+    };
+  }
+
+  const missing = Array.from(required).filter((category) => !observed.has(category));
+  const materialMissing = missing.filter((category) =>
+    ['text', 'style', 'manipulate', 'media', 'connector'].includes(category),
+  );
+  if (materialMissing.length > 0 && observed.size < 3) {
+    return {
+      ok: false,
+      reason: `product-use contract materiality floor missing: ${materialMissing.join(', ')}`,
+    };
+  }
+  return { ok: true };
+}
+
+function evaluateScenarioSpecificProof(input: {
+  job: ProductUseJobLike;
+  goalWindow: OutcomeContractTraceEvent[];
+}): { ok: true } | { ok: false; reason: string } {
+  const requiredData = scenarioProofVisibleData(input.job);
+  if (requiredData.length === 0) return { ok: true };
+
+  const observed = observedUserVisibleScenarioText(input.goalWindow);
+  if (!observed) {
+    return {
+      ok: false,
+      reason: 'scenario-specific proof missing: no user-visible evidence text was captured',
+    };
+  }
+  const missing = requiredData.filter((item) => !observed.includes(normalizeText(item)));
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: `scenario-specific proof missing required content: ${missing.join(', ')}`,
+    };
+  }
+  return { ok: true };
+}
+
+function scenarioProofVisibleData(job: ProductUseJobLike): string[] {
+  const requiredOutputData = scenarioProofVisibleTextTokens(job.required_outputs ?? []);
+  if (requiredOutputData.length > 0) return requiredOutputData;
+  return scenarioProofVisibleTextTokens(job.test_data ?? []);
+}
+
+function observedUserVisibleScenarioText(goalWindow: OutcomeContractTraceEvent[]): string {
+  const chunks: string[] = [];
+  for (const event of goalWindow) {
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    if (event.kind === 'observation') {
+      chunks.push(String(payload.summary ?? ''));
+      const rich = payload.rich_content;
+      if (Array.isArray(rich)) {
+        for (const entry of rich) {
+          if (entry && typeof entry === 'object') {
+            chunks.push(String((entry as { text?: unknown }).text ?? ''));
+          }
+        }
+      }
+      const perception = payload.perception_state;
+      if (perception && typeof perception === 'object') {
+        const elements = (perception as { elements?: unknown }).elements;
+        if (Array.isArray(elements)) {
+          for (const element of elements.slice(0, 80)) {
+            if (!element || typeof element !== 'object') continue;
+            const e = element as { name?: unknown; text?: unknown };
+            chunks.push(String(e.name ?? ''));
+            chunks.push(String(e.text ?? ''));
+          }
+        }
+      }
+    }
+    if (event.kind === 'action_result' && typeof payload.description === 'string') {
+      chunks.push(payload.description);
+    }
+  }
+  return normalizeText(chunks.join(' '));
+}
+
+function isArtifactStateRevisionJob(text: string): boolean {
+  return /\b(duplicate|delete|deleted|remove|removed|undo|redo|history|revision|revise|revised|object count|arrange|arrangement|board state|document state|state change|state changes|copy|paste)\b/.test(
+    text,
+  );
+}
+
+function isArtifactMediaImportJob(text: string): boolean {
+  return /\b(media|image|video|upload|embed|file|import)\b/.test(text);
+}
+
+function isNonDefaultShapeJob(text: string): boolean {
+  return /\b(non default shape|shape library|shape picker|more shapes|diamond|cloud|ellipse|triangle|star|heart|hexagon|oval|rhombus|x box|check box)\b/.test(
+    text,
+  );
+}
+
+function hasConcreteNonDefaultShapeOutcome(text: string): boolean {
+  return /\b(ellipse|triangle|diamond|hexagon|cloud|star|heart|oval|rhombus|x box|check box)\b/.test(
+    text,
+  );
+}
+
+function isArtifactEditorPrimaryJob(kinds: string[], text: string): boolean {
+  if (
+    !(
+      kinds.includes('canvas_editor') ||
+      kinds.includes('document_editor') ||
+      kinds.includes('media_tool')
+    )
+  ) {
+    return false;
+  }
+  if (/\b(export|download|share|collaborat|invite|sign in|sign up|login|auth)\b/.test(text)) {
+    return false;
+  }
+  return /\b(artifact|canvas|board|document|diagram|draw|shape|text|paragraph|media|edit|style|format|move|resize|create|place)\b/.test(
+    text,
+  );
+}
+
+type MaterialityCategory =
+  | 'create'
+  | 'text'
+  | 'style'
+  | 'manipulate'
+  | 'media'
+  | 'connector'
+  | 'export'
+  | 'share';
+
+function materialityCategories(text: string): Set<MaterialityCategory> {
+  const out = new Set<MaterialityCategory>();
+  if (
+    /\b(create|created|add|added|draw|drawn|place|placed|insert|object|shape|artifact|canvas|board|document|paragraph|media)\b/.test(
+      text,
+    )
+  ) {
+    out.add('create');
+  }
+  if (/\b(text|label|note|paragraph|readable|type|typed|write|written|heading)\b/.test(text)) {
+    out.add('text');
+  }
+  if (/\b(style|styled|color|fill|stroke|dash|opacity|format|bold|italic|font)\b/.test(text)) {
+    out.add('style');
+  }
+  if (
+    /\b(move|moved|resize|resized|size|position|duplicate|delete|deleted|remove|removed|undo|redo|group|arrange|edit|edited|modify|modified)\b/.test(
+      text,
+    )
+  ) {
+    out.add('manipulate');
+  }
+  if (/\b(media|image|video|upload|embed|file)\b/.test(text)) out.add('media');
+  if (/\b(arrow|connector|line|link|connected|connection)\b/.test(text)) out.add('connector');
+  if (/\b(export|download|save|output)\b/.test(text)) out.add('export');
+  if (/\b(share|collaborat|invite|permission)\b/.test(text)) out.add('share');
+  return out;
+}
+
+function observedMaterialityCategories(
+  goalWindow: OutcomeContractTraceEvent[],
+  proofText: string,
+): Set<MaterialityCategory> {
+  const out = materialityCategories(normalizeText(proofText));
+  for (const event of goalWindow) {
+    if (event.kind !== 'action_result') continue;
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    if (payload.ok !== true) continue;
+    const tool = String(payload.tool ?? '');
+    if (tool === 'drag' || tool === 'vision_drag') {
+      out.add('create');
+      out.add('manipulate');
+    }
+    if (tool === 'type' || tool === 'paste' || tool === 'vision_paste') {
+      out.add('create');
+      out.add('text');
+    }
+    if (tool === 'upload' || tool === 'click_upload') {
+      out.add('create');
+      out.add('media');
+    }
+    if (tool === 'click_download') {
+      out.add('export');
+    }
+  }
+  return out;
 }
 
 function requiredActionsMissing(
   requiredActions: string[],
   goalWindow: OutcomeContractTraceEvent[],
 ): string[] {
-  const normalizedRequired = requiredActions.map((action) => action.toLowerCase());
+  const normalizedRequired = requiredActions
+    .map((action) => action.toLowerCase())
+    .filter((action) => !isOptionalRequiredAction(action));
   const missing: string[] = [];
   for (const required of normalizedRequired) {
     const toolSet = requiredActionTools(required);
@@ -323,6 +728,12 @@ function requiredActionsMissing(
     if (!goalWindow.some((event) => successfulActionTool(event, toolSet))) missing.push(required);
   }
   return missing;
+}
+
+function isOptionalRequiredAction(requiredAction: string): boolean {
+  return /\b(optional|optionally|if available|when available|where available|if exposed|when exposed)\b/.test(
+    requiredAction,
+  );
 }
 
 function requiredActionTools(requiredAction: string): string[] {
@@ -335,14 +746,68 @@ function requiredActionTools(requiredAction: string): string[] {
   if (/\b(type|enter|write|text|input|query|fill)\b/.test(requiredAction)) {
     return ['type', 'paste', 'vision_paste', 'press', 'key_chord'];
   }
+  if (
+    /\b(duplicate|delete|remove|undo|redo|copy|cut|move|resize|edit|modify|group|arrange)\b/.test(
+      requiredAction,
+    )
+  ) {
+    return [
+      'click',
+      'vision_click',
+      'double_click',
+      'vision_double_click',
+      'right_click',
+      'vision_right_click',
+      'press',
+      'key_chord',
+      'drag',
+      'vision_drag',
+    ];
+  }
+  if (/\b(create|place|draw|sketch|object|shape|artifact|content)\b/.test(requiredAction)) {
+    return [
+      'drag',
+      'vision_drag',
+      'click',
+      'vision_click',
+      'double_click',
+      'vision_double_click',
+      'type',
+      'paste',
+      'vision_paste',
+      'upload',
+      'click_upload',
+    ];
+  }
   if (/\b(export|download|submit|save|publish|send|share|confirm|create)\b/.test(requiredAction)) {
-    return ['click', 'vision_click', 'double_click', 'vision_double_click', 'press', 'key_chord'];
+    return [
+      'click',
+      'vision_click',
+      'double_click',
+      'vision_double_click',
+      'press',
+      'key_chord',
+      'click_download',
+    ];
   }
   if (/\b(upload|media|file)\b/.test(requiredAction)) {
-    if (/\b(select|choose|click|open|pick|activate|invoke|toggle|menu|button|link|start|initiat)\b/.test(requiredAction)) {
-      return ['click', 'vision_click', 'double_click', 'vision_double_click', 'press', 'key_chord', 'upload'];
+    if (
+      /\b(select|choose|click|open|pick|activate|invoke|toggle|menu|button|link|start|initiat)\b/.test(
+        requiredAction,
+      )
+    ) {
+      return [
+        'click',
+        'vision_click',
+        'double_click',
+        'vision_double_click',
+        'press',
+        'key_chord',
+        'upload',
+        'click_upload',
+      ];
     }
-    return ['upload'];
+    return ['upload', 'click_upload'];
   }
   if (
     /\b(select|choose|click|open|pick|activate|invoke|toggle|menu|button|link)\b/.test(
@@ -396,18 +861,29 @@ function hasOutcomeLanguage(text: string): boolean {
 
 function genericWeakEvidencePhrases(contract: ProductUseContractLike): string[] {
   const kinds = contract.product_kinds ?? [];
-  const generic = ['toolbar selected', 'tool selected', 'mode activated', 'button highlighted', 'focus moved'];
+  const generic = [
+    'toolbar selected',
+    'tool selected',
+    'mode activated',
+    'button highlighted',
+    'focus moved',
+  ];
   if (kinds.includes('canvas_editor') || kinds.includes('document_editor')) {
     return [...generic, 'properties panel opened', 'tool palette activates'];
   }
-  if (kinds.includes('search_content')) return [...generic, 'search box visible', 'homepage loaded'];
+  if (kinds.includes('search_content'))
+    return [...generic, 'search box visible', 'homepage loaded'];
   if (kinds.includes('crud_workflow')) return [...generic, 'form opened', 'modal opened'];
   if (kinds.includes('dashboard_filtering')) return [...generic, 'filter menu opened'];
   return generic;
 }
 
 function normalizeText(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 interface GoalStatusInfo {
@@ -546,12 +1022,28 @@ export function sliceGoalWindows(
       .slice(lastEnd + 1, idx + 1)
       .filter((e) => sessionIdOf(e) === session_id)
       .map(toContractEvent);
-    out.set(id, window);
+    out.set(id, mergeContractEventWindows(out.get(id) ?? [], window));
     lastEndBySession.set(session_id, idx);
   }
   // Goals with no goal_status event in the trace get an empty window.
   for (const g of goals) {
     if (!out.has(g.id)) out.set(g.id, []);
+  }
+  return out;
+}
+
+function mergeContractEventWindows(
+  prev: OutcomeContractTraceEvent[],
+  next: OutcomeContractTraceEvent[],
+): OutcomeContractTraceEvent[] {
+  if (prev.length === 0) return next;
+  if (next.length === 0) return prev;
+  const seen = new Set<string>();
+  const out: OutcomeContractTraceEvent[] = [];
+  for (const event of [...prev, ...next]) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    out.push(event);
   }
   return out;
 }
@@ -575,6 +1067,7 @@ export function applyGoalClaimValidationToJudgeOutput(
       : judge.spec_compliance.summary;
   return {
     ...judge,
+    scores: calibrateScoresForGoalStatuses(judge.scores, result.goals),
     spec_compliance: {
       ...judge.spec_compliance,
       goals: result.goals,
@@ -592,6 +1085,66 @@ export function applyGoalClaimValidationToJudgeOutput(
           : judge.meta.confidence_caveats,
     },
   };
+}
+
+function calibrateScoresForGoalStatuses(
+  scores: JudgeOutput['scores'],
+  goals: JudgeOutput['spec_compliance']['goals'],
+): JudgeOutput['scores'] {
+  if (goals.length === 0) return scores;
+  const verified = goals.filter((goal) => goal.status === 'verified').length;
+  const partial = goals.filter((goal) => goal.status === 'partial').length;
+  const incomplete = goals.length - verified - partial;
+  const cap = roundScore(((verified + partial * 0.5) / goals.length) * 10);
+  if (cap >= 10) return scores;
+  const evidence = uniqueStrings(goals.flatMap((goal) => goal.evidence)).slice(0, 8);
+  const rationale = `Calibrated after goal validation: ${verified}/${goals.length} verified, ${partial} partial, ${incomplete} incomplete.`;
+  const targetDimensions = new Set(['correctness', 'completeness', 'depth']);
+  let cappedAnyProfile = false;
+  const profiles = Object.fromEntries(
+    Object.entries(scores.profiles).map(([profileName, profile]) => {
+      let cappedDimension = false;
+      const dimensions = Object.fromEntries(
+        Object.entries(profile.dimensions).map(([dimensionName, dimension]) => {
+          if (!targetDimensions.has(dimensionName) || dimension.score === null) {
+            return [dimensionName, dimension];
+          }
+          if (dimension.score <= cap) return [dimensionName, dimension];
+          cappedDimension = true;
+          return [
+            dimensionName,
+            {
+              ...dimension,
+              score: cap,
+              rationale,
+              evidence: evidence.length > 0 ? evidence : dimension.evidence,
+            },
+          ];
+        }),
+      );
+      const shouldCapProfile =
+        cappedDimension || profileName === 'quality' || profileName === 'coverage';
+      let score = profile.score;
+      if (shouldCapProfile && profile.score > cap) {
+        cappedAnyProfile = true;
+        score = cap;
+      }
+      return [profileName, { ...profile, score, dimensions }];
+    }),
+  );
+  const overallScore =
+    scores.overall.score > cap && (cappedAnyProfile || goals.length > 0)
+      ? cap
+      : scores.overall.score;
+  return {
+    ...scores,
+    overall: { ...scores.overall, score: overallScore },
+    profiles,
+  };
+}
+
+function roundScore(score: number): number {
+  return Math.max(0, Math.min(10, Math.round(score * 10) / 10));
 }
 
 function summarizeValidatedGoalStatuses(

@@ -46,6 +46,35 @@ export const JudgeFindingSchema = z.object({
 });
 export type JudgeFinding = z.infer<typeof JudgeFindingSchema>;
 
+const AccessBlockSchema = z
+  .union([
+    z.object({
+      kind: z.enum([
+        'bot_detection',
+        'captcha',
+        'auth_wall',
+        'geofence',
+        'rate_limit',
+        'paywall',
+        'other',
+      ]),
+      surface: z.string(),
+      description: z.string(),
+      evidence: z.array(z.string()).default([]),
+    }),
+    z.string().min(1),
+  ])
+  .transform((block) =>
+    typeof block === 'string'
+      ? {
+          kind: 'other' as const,
+          surface: '',
+          description: block,
+          evidence: [],
+        }
+      : block,
+  );
+
 const DiscardedFindingSchema = z
   .object({
     tentative_event_id: z.string().optional(),
@@ -144,24 +173,7 @@ export const JudgeOutputSchema = z.object({
   // captcha walls, auth gates, geofences, etc. NOT scored as findings
   // because they're not defects in the product a real user would see;
   // they're "Iris was blocked." Surfaced as a separate banner in the report.
-  access_blocks: z
-    .array(
-      z.object({
-        kind: z.enum([
-          'bot_detection',
-          'captcha',
-          'auth_wall',
-          'geofence',
-          'rate_limit',
-          'paywall',
-          'other',
-        ]),
-        surface: z.string(), // URL or section name where Iris was blocked
-        description: z.string(),
-        evidence: z.array(z.string()).default([]),
-      }),
-    )
-    .optional(),
+  access_blocks: z.array(AccessBlockSchema).optional(),
 });
 export type JudgeOutput = z.infer<typeof JudgeOutputSchema>;
 

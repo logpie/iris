@@ -215,12 +215,14 @@ describe('iris eval — end-to-end against fixture site', () => {
     // Verify result
     expect(result.exit_code).toBe(0);
     expect(result.report.headline.score).toBe(7.5);
-    // Phase 5: the Judge cites OBS-000001 as evidence — that's the adapter's
-    // observation_ref string, NOT a trace event id (which would be a ULID).
-    // The evidence validator correctly discards the finding. discarded_findings
-    // carries the audit trail; the rest of the pipeline still works.
+    // Phase 5: the Judge cites an observation ref that exists, but the claim is
+    // about slowness without any timing evidence. The evidence validator
+    // correctly discards it. discarded_findings carries the audit trail; the
+    // rest of the pipeline still works.
     expect(result.report.findings).toHaveLength(0);
-    expect(result.report.discarded_findings?.[0]?.reason).toBe('all_evidence_ids_invalid');
+    expect(result.report.discarded_findings?.[0]?.reason).toBe(
+      'timing_claim_without_timing_evidence',
+    );
 
     // All artifact files exist
     expect(existsSync(join(outDir, 'report.json'))).toBe(true);
@@ -240,9 +242,9 @@ describe('iris eval — end-to-end against fixture site', () => {
     // Phase 5: F-001 was discarded by the validator; for_builder is empty.
     expect(report.next_actions.for_re_evaluation).toContain('--persona keyboard_only');
 
-    // report.md has the score header
+    // report.md has the score-authority header
     const md = readFileSync(join(outDir, 'report.md'), 'utf8');
-    expect(md).toMatch(/# Iris run — 7\.5/);
+    expect(md).toMatch(/# Iris run — Provisional product score: 7\.5 \/ 10/);
 
     // trace.jsonl has run_start + run_end + observation + action
     const trace = readFileSync(join(outDir, 'trace.jsonl'), 'utf8')

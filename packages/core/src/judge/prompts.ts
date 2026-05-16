@@ -64,6 +64,8 @@ Iris observations capture DOM outline, body innerText, and RICH CONTENT (textare
 
 When you cannot distinguish (a) from (b)/(c) — for example, post-interaction observation looks identical to pre-interaction and there is no console/network error — set status to "untested" with a caveat like "outcome not visible in trace; cannot distinguish product failure from instrumentation gap." Do NOT emit "the editor failed to accept input" on this evidence alone. Real product failures need visible page errors, console errors, failed network requests, or a vision_describe quote naming a broken state.
 
+For edit/destructive actions such as Delete, Duplicate, Undo, Redo, Remove, or Save, do NOT emit a product bug merely because the Explorer attempted a command and the artifact did not change. First verify the trace established the action precondition: the target item/object was selected or otherwise eligible, and the relevant control was enabled. If the cited observation shows the action control disabled, no selected target, or ambiguous focus, treat it as an Iris execution/proof gap and mark the goal partial/untested rather than writing a product defect.
+
 ## Access Blocks
 Bot-detection, captcha, auth walls, login redirects, Cloudflare interstitials, paywalls, and geofences are NOT product findings. A real customer with a real browser solves the captcha and proceeds; the page is not broken. Emit these into access_blocks instead.
 
@@ -89,7 +91,9 @@ LATEST goal_status WINS. The trace can contain MULTIPLE goal_status events for t
 
 When the trace begins with a discovery event, the goals were proposed by Iris's discovery pass (no human spec). Treat them with the same weight as spec goals for grading. The discovery event payload also carries a product_description — quote/use it when summarizing what the product is.
 
-If the discovery event includes product_use_contract, use it as the generic real-use acceptance contract. Judge whether the Explorer exercised the primary_value_loop and produced the listed core_artifacts/state changes. The contract's weak_evidence entries are explicitly insufficient for verified goals and high coverage scores unless the goal scope is only to reveal that entry point.
+If the discovery event includes product_use_contract, use it as scenario acceptance criteria. Judge whether the Explorer exercised the primary journey and produced the listed core_artifacts/state changes. The weak_evidence entries are explicitly insufficient for verified goals and high coverage scores unless the goal scope is only to reveal that entry point.
+
+When product_use_contract user_jobs include scenario_brief, test_data, required_outputs, or quality_bar, judge against those concrete scenario requirements. A generic shape, generic note, open panel, or placeholder text should not verify a scenario that asked for named content/data or a coherent artifact.
 
 goal_proposed events mean the Explorer added a goal mid-run after discovering a missed surface. Expansion goals are reported in spec_compliance, but the spec-compliance score denominator counts only seed goals. Expansion goals appear in the per-goal list with their status, but their attempted/verified counts do not pull the percentage down for the seed-goal score. If an expansion goal is verified, mention it in spec_compliance.summary as bonus coverage. List expansion goals with their proper id (G7+).
 
@@ -112,7 +116,21 @@ the issue in rubric scoring.
 ## Rubric Scoring
 Score each rubric profile's dimensions on a 0-10 scale. Cite trace event ids as evidence (e.g. "T01ABC...").
 
-Separate surface coverage from real-use depth. Do not give high coverage/completeness scores merely because menus, toolbars, filters, settings, or sign-in entry points were clicked. High scores require task coverage: the primary value loop was exercised and there is trace evidence of the durable artifact, data/state change, loaded content, filtered view, cart/account state, or transformed media that the product exists to produce.
+Separate surface coverage from real-use depth. Do not give high coverage/completeness scores merely because menus, toolbars, filters, settings, or sign-in entry points were clicked. High scores require task coverage: the primary journey was exercised and there is trace evidence of the durable artifact, data/state change, loaded content, filtered view, cart/account state, or transformed media that the product exists to produce.
+
+Separate product quality from evaluator uncertainty. A partial, untested, or
+weakly evidenced goal is not automatically a product defect. Lower coverage or
+confidence when Iris did not prove the outcome, and add confidence_caveats /
+would_re_explore_with entries. Lower correctness/usability or emit a finding
+only when the trace shows the product itself blocked, lost, corrupted, confused,
+or visibly failed a real user outcome.
+
+Do not turn Iris automation friction into product UX findings. Repeated click
+attempts, selector misses, locator timeouts, retry_attempt events, coordinate
+targeting trouble, or "hard to target" language are evaluator/tooling evidence
+unless the trace also shows a real user-visible ambiguity or broken affordance
+such as an unlabeled invisible control, an overlapping element, a disabled
+primary action, or a visible error state.
 
 When scoring the ux_baseline rubric, the dimensions are product-agnostic — score them based on what the trace shows, not against any goal:
 - primary_action_discoverable: how quickly did the Explorer find and exercise the primary feature?

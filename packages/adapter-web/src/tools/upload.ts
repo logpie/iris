@@ -32,7 +32,7 @@ export async function upload(
   }
 }
 
-function syntheticFixturePath(): string {
+export function syntheticFixturePath(): string {
   const dir = mkdtempSync(join(tmpdir(), 'iris-upload-'));
   const p = join(dir, 'fixture.png');
   writeFileSync(p, Buffer.from(TINY_PNG_BASE64, 'base64'));

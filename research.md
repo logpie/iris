@@ -219,6 +219,54 @@ Once you answer these — even briefly — I'll write `docs/superpowers/specs/20
 
 ---
 
+# Iris Artifact-Centered Product Contract — Research Addendum
+
+**Date:** 2026-05-15
+**Status:** Implementation-scoped. User requested a generic fix after the tldraw run showed shallow canvas use being treated as product proof.
+
+## What exists today
+
+- Discovery v2 asks for one `product_use_contract`, surfaces, journeys, a coverage plan, and goals.
+- The contract is singular by design and currently stores `primary_value_loop`, `core_artifacts`, and `user_jobs`.
+- Coverage selection already prefers selected/core journeys and contract-backed journeys.
+- Explorer context already receives the product-use contract and weak-evidence language.
+- The deterministic goal-claim validator downgrades verified claims when a goal misses contract `required_actions`, cites only weak evidence, or fails to cite outcome-shaped evidence.
+
+## Gap
+
+The contract is too flat. A product like tldraw can be modeled as one umbrella contract, but "create visible canvas content" is not enough to prove real product use. If Discovery emits only one shallow user job, the validator has little to enforce beyond one or two tool actions.
+
+The generic failure pattern is surface/task compression:
+
+- artifact editors collapse to "draw one thing"
+- document editors collapse to "type something"
+- dashboards collapse to "open filter"
+- content products collapse to "load/search page"
+
+The right invariant is not product-specific feature enumeration. It is artifact/state materiality: core goals must create, change, consume, or export a durable user-visible result with enough capability depth for the product kind.
+
+## Constraints
+
+- Keep backward compatibility with existing reports and tests using `primary_value_loop`, `core_artifacts`, and `user_jobs`.
+- Do not make tldraw-specific rules. Product-kind archetypes are acceptable because they are already part of the generic contract.
+- Keep discovered surfaces as inventory. They should not directly become goals unless they satisfy a product-use obligation.
+- Preserve provider compatibility; the contract is shared between Claude and Codex paths through core discovery and report JSON.
+
+## Implementation direction
+
+- Add a structured `value_loops` layer under the singular product contract.
+- Add `proof_obligations` to user jobs so each material journey has explicit acceptance criteria.
+- Normalize missing contract detail by synthesizing user jobs from material journeys and enriching shallow jobs with generic product-kind materiality floors.
+- Render the report as value loop -> acceptance jobs -> linked goals, not as one paragraph blob.
+- Make the goal-claim validator reject verified core artifact-editor claims that cite proof text without satisfying their synthesized materiality requirements.
+
+## Expected behavior after the fix
+
+- A tldraw-like Discovery output with only a single "draw a shape" job should be normalized into a richer artifact value loop and acceptance job obligations.
+- Promo/banner/setup journeys should remain deferred.
+- A verified canvas/editor goal without drag/create plus text/style/move-like materiality should downgrade to partial.
+- Existing content/search contracts should remain valid and not be forced into editor-specific requirements.
+
 # TodoMVC E2E Follow-up — Research
 
 **Date:** 2026-05-14
@@ -835,3 +883,189 @@ Fifth priority: upgrade report and CI outputs.
 Midscene validates the direction the user has been pushing: videos, screenshots, tasks, and replay should be first-class, not afterthoughts. Stagehand shows that cached actions need self-healing. browser-use shows Iris needs a richer stable perception state. Hercules shows that scenario-shaped outputs and CI proof links matter.
 
 The root Iris fix is not a prompt tweak. It is to make the product map, task graph, perception state, replay cache, and evidence player real shared primitives. The immediate bug exposed by the spike is concrete: current Wikipedia runs still produce flat goals without Discovery v2 `surfaces`, `journeys`, or `coverage_plan`, so the next implementation should start there.
+
+## 2026-05-16 Report reader redesign research
+
+What exists today:
+
+- `packages/core/src/report/testing-plan.ts` converts Discovery output into a canonical `TestingPlan` with one `main_outcome`, multiple `journeys`, multiple `scenarios`, and deferred areas.
+- `packages/core/src/report/report-html.ts` renders the HTML. The top hero, coverage panel, tested-goal evidence cards, score matrix, and audit appendix are all in one file.
+- `report-json.ts` includes `testing_plan` in `report.json`; re-rendering an existing run through `packages/cli/src/commands/report.ts` is enough to validate report presentation without rerunning the product.
+
+Current UX problem:
+
+- The report exposes internal-ish terms and redundant concepts: "Main user outcome", "Product areas tested", "Tasks tested", "Coverage", "Scope", "Observed", "source event", and status pills repeated at both group and card level.
+- `main_outcome` is singular because the underlying `ProductUseContract.primary_value_loop` is singular. For tldraw this is an umbrella value loop, while the actual tested user journeys are the `TestingPlan.journeys` below it. Labeling the umbrella as "Main user outcome" makes it look like Iris only found one user behavior.
+- The evidence cards are close to the right source of truth, but the visual hierarchy is backwards for a reader: the task id/status/title should be the card headline, the media should be first-class, and internal coverage/source links should be secondary.
+
+Constraints:
+
+- Keep the JSON schema stable for existing report consumers; change the reader-facing HTML labels and layout first.
+- Keep model/reasoning/transport visible because previous feedback asked for it, but move low-signal run mechanics out of the hero.
+- Keep raw traces and raw recordings available, but behind the audit appendix.
+
+Implementation direction:
+
+- Rename the singular umbrella to "Overall mission" / "What Iris tried to prove", and make "User journeys checked" the visible multi-outcome section.
+- Render a compact journey/task overview before evidence: journey cards with task counts and pass status; task checklist with id, status, title, and expected outcome.
+- Redesign evidence cards so each task row has one title line: task id, status pill, title. Put proof media beside a concise "What Iris saw" block. Collapse coverage/debug metadata.
+- Collapse the score matrix details behind a clearer "Scoring" section with profile chips first.
+- Verify with the latest tldraw run re-render, browser screenshot, report tests, typecheck, and build.
+
+## 2026-05-16 Material scenario generation research
+
+Trigger:
+
+- The latest tldraw run is much better than the first shallow reports, but it still proves generic capabilities rather than realistic product use. The selected goals are "create object", "add two elements", "use non-default shape", "add text", "export", and "share". Those are capability checks, not concrete user scenarios.
+- The user's "why not draw an elephant?" question was a probe for generalization, not a request to hardcode elephants. The root requirement is: Iris should first learn what the product is for, then create material, inspectable, non-toy scenario briefs that a real user might attempt.
+
+What exists today:
+
+- `packages/core/src/discovery/prompts.ts` already asks for "scenario-native" plans and says surfaces are not goals. It also asks artifact editors for multiple operations.
+- `packages/core/src/discovery/discovery.ts` has a compatibility schema with `product_use_contract`, `value_loops`, and `user_jobs`, plus normalization that expands rich canvas surfaces into capability journeys.
+- `packages/core/src/report/testing-plan.ts` turns `user_jobs` into public `UserScenario` rows.
+- `packages/core/src/judge/goal-claim-validator.ts` enforces broad materiality categories such as create/text/style/media, but it does not yet enforce scenario-specific visible content or semantic artifact quality.
+
+Gap:
+
+- Discovery still emits and normalizes around capability families: create, style, history, shape variant, text, media, export, share. This catches toolbar-only proof, but it does not make the task concrete enough. A toy "Board notes" text can satisfy a "text" capability.
+- The compatibility fields lack an explicit scenario brief, required output elements, and quality bar. `expected_artifact` is a broad outcome string, not a checklist of visible scenario content.
+- Explorer context shows contract details, but it does not front-load a concise "do this concrete scenario" brief per goal.
+- The Judge/validator can reject missing broad categories, but not missing scenario content like title, labels, relationships, or user-meaningful structure.
+
+Design direction:
+
+- Keep `product_use_contract`/`user_jobs` for compatibility, but make each `user_job` a concrete user scenario by adding optional fields:
+  - `scenario_brief`: one-sentence realistic task.
+  - `test_data`: concrete strings/data the Explorer should use.
+  - `required_outputs`: visible content/state/components that must appear.
+  - `quality_bar`: non-toy criteria a reviewer can inspect.
+- Update Discovery prompt and normalizers so product learning produces scenario briefs first, then journeys/goals are execution handles derived from those scenarios.
+- Add generic product-kind scenario scaffolds for broad categories, not site-specific patches. For canvas/document/media/editor products, generate realistic artifact briefs with named content and relationships. For search/content, CRUD, dashboards, commerce, and communication tools, generate realistic task data and visible result requirements.
+- Make Explorer context and run prompt surface the scenario brief and required outputs before lower-level actions.
+- Make Judge/validator reject verified claims when scenario-specific required outputs are missing from cited trace evidence, while still allowing visual-only requirements that cannot be text-matched to be judged by screenshot/vision evidence.
+
+Verification targets:
+
+- Unit: discovery preserves and enriches scenario brief fields; tldraw-like canvas discovery produces concrete named scenario content, not just "visible content".
+- Unit: report testing plan exposes scenario brief, required outputs, and quality bar.
+- Unit: goal-claim validator downgrades a verified canvas claim that contains generic shape/text proof but omits scenario-required labels.
+- Integration: fresh tldraw e2e should produce goals whose titles/expected results read like real user scenarios, and clips/screenshots should show named scenario content, not generic "Board notes".
+
+## 2026-05-16 Scenario proof validation root fix research
+
+Trigger:
+
+- A fresh tldraw run with `gpt-5.5` and high reasoning produced material board content, but the report showed only 4/8 goals verified.
+- The partial goals were not mostly missing product actions. Trace observations contained the requested labels and states for G1, G4, and G5. G2 was partly legitimate because the visible flow title `Support Triage Flow` was not observed.
+
+What exists today:
+
+- Discovery emits `user_jobs` with both `test_data` and `required_outputs`.
+- `test_data` is the concrete content/context Iris should use while acting. It may include role labels such as `Milestones:`, `Caption:`, `Invite context:`, optional file metadata, and setup data that does not need to remain visible.
+- `required_outputs` is the intended proof checklist: visible strings, components, or state changes that must appear in evidence.
+- `packages/core/src/judge/goal-claim-validator.ts` currently calls `scenarioVisibleDataTokens(job.test_data)` and ignores `required_outputs` in `evaluateScenarioSpecificProof`.
+
+Root cause:
+
+- The validator uses the wrong source of truth for proof. It treats model-authored input labels and optional setup hints as literal visible requirements.
+- `scenarioVisibleDataTokens` also lacks generic handling for content-role prefixes such as `Decision:`, `Outcomes:`, `Caption:`, `Annotation:`, and `Invite context:`, and it does not skip optional upload filename metadata like `Media filename if upload is available: ...`.
+
+Fix direction:
+
+- Make scenario proof validation prefer `required_outputs` when present, falling back to `test_data` only for older discovery artifacts.
+- Broaden scenario-data extraction generically around content-role prefixes instead of adding tldraw-specific rules.
+- Keep broad/non-text required outputs such as export events, file events, or visible state as non-literal text requirements; those are validated by action/outcome evidence, not substring matching.
+- Revalidate the existing tldraw 5.5/high trace after the code fix. Expected result: G1, G4, and G5 should move from partial to verified; G2 may remain partial if `Support Triage Flow` was truly not visible.
+
+## 2026-05-16 Optional scenario completion gate research
+
+Trigger:
+
+- The user asked to try a completion gate, but make gating an optional argument.
+- The target failure mode is Explorer prematurely marking a scenario verified even though the cited proof does not contain deterministic scenario outputs.
+
+What exists today:
+
+- Discovery has a structured `product_use_contract.user_jobs[].required_outputs` field.
+- Both Codex App Server and Agent SDK runners own the `goal_status` dynamic tool, so both can enforce a provider-neutral gate before accepting `verified`.
+- Final Judge validation already checks scenario-specific proof, but it runs after Explorer has finished; it cannot force Explorer to keep trying in the same run.
+
+Design:
+
+- Add `--scenario-gate` to `iris eval`.
+- Build per-goal gate checks from required outputs, but only for literal visible text. Broad visual requirements such as non-default shape, connector, image/media object, export result, or state changes stay under screenshot/vision/action validation.
+- Pass the same gate list into both runner transports.
+- Record observation/action-result text by trace event id. When Explorer calls `goal_status(status="verified")`, reject the tool call if cited evidence ids are missing required literal outputs.
+
+Validation findings:
+
+- Fresh tldraw gated run produced 8 proposed goals, 112 Explorer steps, real screenshots, and 9 sliced evidence clips.
+- No gate rejections occurred in the final run, which means Explorer cited enough deterministic visible-text evidence for the scenarios it claimed.
+- The first report after the run showed 6/8 verified, but this was a separate validator windowing bug: repeated `goal_status` calls overwrote earlier action windows. Merging repeated per-goal windows and revalidating the same trace produced 8/8 verified with zero deterministic downgrades.
+
+## 2026-05-16 Agentic discovery capability-denominator research
+
+Trigger:
+
+- The user pushed on a deeper Discovery gap: Iris can now generate concrete scenarios, but it still does not clearly learn and expose the product denominator.
+- For tldraw, a scenario set can verify a launch board, export, media, or sharing path, yet still miss broad canvas-editor capability areas such as freehand drawing, object manipulation, connectors, style depth, collaboration depth, or history/undo. Reporting only scenario counts makes the evaluation look more complete than it is.
+
+What exists today:
+
+- `packages/core/src/discovery/prompts.ts` asks Discovery to infer product kind, value loops, user jobs, scenarios, surfaces, journeys, and seed goals.
+- `packages/core/src/discovery/discovery.ts` normalizes those concepts and has artifact-editor capability heuristics that synthesize extra journeys for style/history/shape/text/connector/media/export/share when surfaces expose them.
+- `packages/core/src/report/testing-plan.ts` creates the public `TestingPlan` around user journeys and user scenarios.
+- `packages/core/src/report/evaluation.ts` separates product score from evidence confidence, but confidence only considers goal completion, rubric completeness, and Judge confidence.
+- The report can show surface-to-scenario coverage, but it still treats UI inventory and scenarios as the denominator. That is not the same as product capability coverage.
+
+Root cause:
+
+- Iris conflates three levels: UI surfaces, executable scenarios, and product capabilities. Scenarios are the things tested; capabilities are the learned denominator of what the product appears able to do.
+- Without a structured capability denominator, the evaluator cannot honestly say whether a mature product was broadly exercised or only sampled.
+- Prompt-only fixes keep adding scenario examples, but there is no schema/report/scoring place to hold "capability discovered but not tested" as first-class evidence.
+
+Design direction:
+
+- Add `capabilities` to Discovery output as a provider-neutral, product-kind-aware denominator.
+- Normalize capabilities from three sources: model output, product-kind priors, and discovered surfaces/journeys/user jobs. This keeps the fix generic while still using known product archetypes.
+- Track each capability with importance, coverage status, related scenarios/journeys/surfaces, evidence/source, and a coverage gap.
+- Let scenarios cover capabilities, but do not make capability coverage equal scenario completion. A scenario can cover multiple capabilities; a capability can remain discovered/deferred even when all tested scenarios pass.
+- Feed capability gaps into Explorer context so future goal proposals are biased toward missing material product abilities.
+- Render capability coverage prominently in the report and use it to cap score authority. A high scenario pass rate with low core capability coverage should read as a limited/provisional evaluation, not as a full product judgment.
+
+Verification targets:
+
+- Unit: canvas-editor discovery with tldraw-like surfaces produces a synthesized capability denominator including creation, text, style, connectors, object revision/history, shape variants, media/import, export/save, and share/collaboration.
+- Unit: non-canvas product kinds such as search/content or CRUD also produce generic capability denominators, proving this is not a tldraw patch.
+- Unit: report JSON includes capability coverage and downgrades authority when core capability coverage is low despite all tested goals passing.
+- Unit: report HTML shows capability coverage in the high-level report flow, not only in a debug disclosure.
+- Integration: re-render the current tldraw report and confirm it explains both tested scenario success and uncovered product capabilities.
+## 2026-05-16 Ideal-state Discovery execution research
+
+Current state:
+- `packages/core/src/discovery/discovery.ts` now has a first-class `capabilities` denominator and report-time capability synthesis, but the denominator is still mostly downstream accounting. It does not reliably force scenario selection before Explorer runs.
+- The web adapter already performs a bounded Discovery v2 survey (`discoverySurvey({ max_scrolls: 2, peek_menus: true, dismiss_banners: true })`) before LLM Discovery in both SDK and Codex App Server orchestrators.
+- Discovery normalization already contains artifact-editor journey repair (`ensureArtifactEditorCapabilityJourneys`) and product-kind materiality scaffolds, but this is not a generic closed loop over the learned capability denominator.
+- `formatDiscoveryExplorerContext` tells Explorer about capability gaps, and Explorer has `propose_goal`, but expansion is opportunistic and not guaranteed to close core gaps. A run can still start with selected goals that cover too little of the learned product.
+- Fresh orchestrators write `discovery.json` with capabilities, but the trace `discovery` event currently omits `capabilities`; report extraction then has to synthesize capability coverage from older fields instead of reading the actual Discovery denominator.
+
+Root gap:
+- The ideal state is not just a better report. Iris must learn the product denominator, audit the selected scenarios against that denominator, and repair the plan before Explorer starts. Otherwise a high scenario pass rate can still mean "Iris tested the subset it happened to pick," not "Iris fairly evaluated the product."
+
+Constraints:
+- The fix should be generic across product kinds. Product-specific priors are acceptable only as reusable product-kind capability priors; no named-site patches.
+- Scenario count should grow because uncovered core abilities require material checks, not because of a fixed target count.
+- Low-value surfaces such as banners, legal/footer links, and promos should remain deferred unless they block core use.
+- Existing scenario gates, goal claim validation, report evidence slicing, and score-authority logic should continue to consume the same Discovery output shape.
+
+Target design:
+- Add a Discovery closed-loop repair stage inside normalization:
+  1. Normalize surfaces, journeys, product-use contract, and initial coverage plan.
+  2. Derive capability denominator from product kind, surfaces, journeys, and model output.
+  3. Identify core/important capabilities not selected by the plan.
+  4. Synthesize material journeys for those gaps from the same product-kind materiality scaffold.
+  5. Recompute product-use jobs, coverage plan, seed goals, and final capabilities.
+- Persist actual `capabilities` in trace `discovery` events for both SDK and Codex App Server paths.
+- Verify with unit tests that under-compressed tldraw-like Discovery expands to material scenarios before Explorer, and that content products expand content-navigation gaps without canvas-specific behavior.
+- Verify with actual e2e runs, at minimum tldraw and Wikipedia, using report artifacts and screenshots/videos rather than trusting unit tests alone.

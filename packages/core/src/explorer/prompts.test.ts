@@ -26,13 +26,21 @@ describe('EXPLORER_CORE', () => {
     expect(EXPLORER_CORE).toContain('post-action observation');
   });
 
-  it('requires product-use contracts to drive real product use', () => {
-    expect(EXPLORER_CORE).toContain('PRODUCT USE CONTRACT');
-    expect(EXPLORER_CORE).toContain('primary value loop');
+  it('requires scenario acceptance criteria to drive real product use', () => {
+    expect(EXPLORER_CORE).toContain('scenario acceptance criteria');
+    expect(EXPLORER_CORE).toContain('primary journey');
     expect(EXPLORER_CORE).toContain('weak proof');
     expect(EXPLORER_CORE).toContain('create or modify a durable artifact/state');
     expect(EXPLORER_CORE).toContain('minimally meaningful');
     expect(EXPLORER_CORE).toContain('draw/place plus label/type plus style/move/resize');
+    expect(EXPLORER_CORE).toContain('before/after state delta');
+    expect(EXPLORER_CORE).toContain('selected toolbar value alone is weak proof');
+  });
+
+  it('routes file-picker and download flows through first-class tools', () => {
+    expect(EXPLORER_CORE).toContain('click_upload');
+    expect(EXPLORER_CORE).toContain('click_download');
+    expect(EXPLORER_CORE).toContain('downloaded file path is first-class outcome evidence');
   });
 
   it('keeps setup and peripheral surfaces out of dynamic goal expansion', () => {
