@@ -288,7 +288,16 @@ export function evalCommand(): Command {
           };
           meta: { confidence_caveats: string[] };
           spec_compliance?: {
-            goal_claim_validation?: { verified_kept: number; downgraded: number } | undefined;
+            goal_claim_validation?:
+              | {
+                  verified_kept: number;
+                  partial_upgraded?: number;
+                  partial_kept?: number;
+                  downgraded: number;
+                  downgrade_reasons?: string[];
+                  partial_reasons?: string[];
+                }
+              | undefined;
           };
           evidence_validation?: { verified: number; downgraded: number; discarded: number };
         };
@@ -435,8 +444,12 @@ export function evalCommand(): Command {
               : {}),
             ...(goalClaimValidation
               ? {
-                  scenario_evidence_verified: goalClaimValidation.verified_kept,
+                  scenario_evidence_verified_kept: goalClaimValidation.verified_kept,
+                  scenario_evidence_partial_upgraded: goalClaimValidation.partial_upgraded ?? 0,
+                  scenario_evidence_partial_kept: goalClaimValidation.partial_kept ?? 0,
                   scenario_evidence_downgraded: goalClaimValidation.downgraded,
+                  scenario_evidence_downgrade_reasons: goalClaimValidation.downgrade_reasons ?? [],
+                  scenario_evidence_partial_reasons: goalClaimValidation.partial_reasons ?? [],
                 }
               : {}),
             ...(ev

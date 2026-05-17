@@ -50,12 +50,20 @@ describe('buildSummaryLine', () => {
       goals_attempted: 7,
       goals_verified: 7,
       goals_total: 7,
-      scenario_evidence_verified: 7,
+      scenario_evidence_verified_kept: 6,
+      scenario_evidence_partial_upgraded: 1,
+      scenario_evidence_partial_kept: 2,
       finding_evidence_verified: 0,
       unsupported_finding_drafts_discarded: 1,
     });
     const parsed = JSON.parse(line.trim()) as {
-      scenario_evidence: { verified: number; downgraded: number };
+      scenario_evidence: {
+        verified: number;
+        verified_kept: number;
+        partial_upgraded: number;
+        partial_kept: number;
+        downgraded: number;
+      };
       finding_evidence: {
         verified: number;
         downgraded: number;
@@ -63,7 +71,13 @@ describe('buildSummaryLine', () => {
       };
       evidence?: unknown;
     };
-    expect(parsed.scenario_evidence).toEqual({ verified: 7, downgraded: 0 });
+    expect(parsed.scenario_evidence).toEqual({
+      verified: 6,
+      verified_kept: 6,
+      partial_upgraded: 1,
+      partial_kept: 2,
+      downgraded: 0,
+    });
     expect(parsed.finding_evidence).toEqual({
       verified: 0,
       downgraded: 0,

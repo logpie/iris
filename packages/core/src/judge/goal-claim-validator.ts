@@ -44,8 +44,11 @@ export interface GoalClaimValidationOutput {
   goals: JudgeOutput['spec_compliance']['goals'];
   summary: {
     verified_kept: number;
+    partial_upgraded: number;
+    partial_kept: number;
     downgraded: number;
     downgrade_reasons: string[];
+    partial_reasons: string[];
   };
 }
 
@@ -63,7 +66,7 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
   if (!outcome_contract) {
     return {
       goals,
-      summary: { verified_kept: 0, downgraded: 0, downgrade_reasons: [] },
+      summary: emptyGoalClaimSummary(),
     };
   }
 
@@ -71,10 +74,21 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
   const goalStatusInfo = latestGoalStatusInfo(trace, goals);
   const traceIndexById = new Map(trace.map((e, idx) => [e.id, idx]));
   let verifiedKept = 0;
+  let partialUpgraded = 0;
+  let partialKept = 0;
   let downgraded = 0;
   const reasons: string[] = [];
+  const partialReasons: string[] = [];
 
   const next = goals.map((g) => {
+    const keepPartial = (reason: string, caveat = `[goal-claim validator: ${reason}]`) => {
+      partialKept++;
+      partialReasons.push(`${g.id}: ${reason}`);
+      return {
+        ...g,
+        notes: appendValidationNote(g.notes, caveat),
+      };
+    };
     if (g.status !== 'verified' && g.status !== 'partial') return g;
     const wasPartial = g.status === 'partial';
     const statusInfo = goalStatusInfo.get(g.id);
@@ -88,7 +102,9 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
     const statusRationale = (statusInfo?.rationale ?? '').trim();
     const noteBackfill = notes.length < 20 && statusRationale.length >= 20 ? statusRationale : '';
     if (notes.length < 20 && !noteBackfill) {
-      if (wasPartial) return g;
+      if (wasPartial) {
+        return keepPartial('partial without substantive notes');
+      }
       downgraded++;
       const reason = `${g.id}: verified without substantive notes (mandatory under Phase 14)`;
       reasons.push(reason);
@@ -120,7 +136,9 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
       statusRationale,
     });
     if (!productUseCheck.ok) {
-      if (wasPartial) return g;
+      if (wasPartial) {
+        return keepPartial(productUseCheck.reason);
+      }
       downgraded++;
       reasons.push(`${g.id}: ${productUseCheck.reason}`);
       const caveat = `[goal-claim validator: ${productUseCheck.reason}]`;
@@ -155,15 +173,17 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
         uniqueArtifacts.length === 0);
 
     if (cited) {
-      verifiedKept++;
       if (wasPartial) {
-        const upgradeNote = '[goal-claim validator: partial upgraded after cited outcome evidence satisfied the product-use contract]';
+        partialUpgraded++;
+        const upgradeNote =
+          '[goal-claim validator: partial upgraded after cited outcome evidence satisfied the product-use contract]';
         return {
           ...g,
           status: 'verified' as const,
           notes: notes ? `${notes} ${upgradeNote}` : upgradeNote,
         };
       }
+      verifiedKept++;
       return noteBackfill
         ? {
             ...g,
@@ -172,12 +192,17 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
         : g;
     }
     if (hasSideEffectOnly || uniqueArtifacts.length === 0) {
-      if (wasPartial) return g;
-      downgraded++;
       const reason =
         uniqueArtifacts.length === 0
           ? `${g.id}: no outcome-shaped evidence in goal window`
           : `${g.id}: rationale cites side-effects only; no outcome artifact cited`;
+      if (wasPartial) {
+        return keepPartial(
+          reason.replace(`${g.id}: `, ''),
+          '[goal-claim validator: outcome not confirmed]',
+        );
+      }
+      downgraded++;
       reasons.push(reason);
       const caveat = '[goal-claim validator: outcome not confirmed]';
       return {
@@ -188,7 +213,9 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
     }
     // Outcome artifacts exist but the Judge did not cite them. Treat as
     // downgrade — Judge needs to cite outcome to claim verified.
-    if (wasPartial) return g;
+    if (wasPartial) {
+      return keepPartial('outcome artifacts exist but none cited in evidence');
+    }
     downgraded++;
     reasons.push(`${g.id}: outcome artifacts exist but none cited in evidence`);
     const caveat = '[goal-claim validator: outcome artifact uncited]';
@@ -201,8 +228,31 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
 
   return {
     goals: next,
-    summary: { verified_kept: verifiedKept, downgraded, downgrade_reasons: reasons },
+    summary: {
+      verified_kept: verifiedKept,
+      partial_upgraded: partialUpgraded,
+      partial_kept: partialKept,
+      downgraded,
+      downgrade_reasons: reasons,
+      partial_reasons: partialReasons,
+    },
   };
+}
+
+function emptyGoalClaimSummary(): GoalClaimValidationOutput['summary'] {
+  return {
+    verified_kept: 0,
+    partial_upgraded: 0,
+    partial_kept: 0,
+    downgraded: 0,
+    downgrade_reasons: [],
+    partial_reasons: [],
+  };
+}
+
+function appendValidationNote(existing: string | undefined, note: string): string {
+  const trimmed = (existing ?? '').trim();
+  return trimmed ? `${trimmed} ${note}` : note;
 }
 
 interface ProductUseJobLike {
@@ -1112,10 +1162,28 @@ export function applyGoalClaimValidationToJudgeOutput(
   judge: JudgeOutput,
   result: GoalClaimValidationOutput,
 ): JudgeOutput {
+  const partialUpgraded = result.summary.partial_upgraded ?? 0;
+  const partialKept = result.summary.partial_kept ?? 0;
   const summary =
-    result.summary.downgraded > 0
-      ? summarizeValidatedGoalStatuses(result.goals, result.summary.downgraded)
+    result.summary.downgraded > 0 || partialUpgraded > 0 || partialKept > 0
+      ? summarizeValidatedGoalStatuses(result.goals, result.summary)
       : judge.spec_compliance.summary;
+  const confidenceCaveats = [...judge.meta.confidence_caveats];
+  if (result.summary.downgraded > 0) {
+    confidenceCaveats.push(
+      `${result.summary.downgraded} verified goal claim(s) were downgraded by deterministic evidence validation.`,
+    );
+  }
+  if (partialUpgraded > 0) {
+    confidenceCaveats.push(
+      `${partialUpgraded} partial goal claim(s) were upgraded after deterministic evidence validation.`,
+    );
+  }
+  if (partialKept > 0) {
+    confidenceCaveats.push(
+      `${partialKept} partial goal claim(s) stayed partial after deterministic evidence validation.`,
+    );
+  }
   return {
     ...judge,
     scores: calibrateScoresForGoalStatuses(judge.scores, result.goals),
@@ -1128,11 +1196,8 @@ export function applyGoalClaimValidationToJudgeOutput(
     meta: {
       ...judge.meta,
       confidence_caveats:
-        result.summary.downgraded > 0
-          ? uniqueStrings([
-              ...judge.meta.confidence_caveats,
-              `${result.summary.downgraded} verified goal claim(s) were downgraded by deterministic evidence validation.`,
-            ])
+        result.summary.downgraded > 0 || partialUpgraded > 0 || partialKept > 0
+          ? uniqueStrings(confidenceCaveats)
           : judge.meta.confidence_caveats,
     },
   };
@@ -1200,7 +1265,7 @@ function roundScore(score: number): number {
 
 function summarizeValidatedGoalStatuses(
   goals: JudgeOutput['spec_compliance']['goals'],
-  downgraded: number,
+  summary: GoalClaimValidationOutput['summary'],
 ): string {
   const counts = goals.reduce<Record<string, number>>((acc, goal) => {
     acc[goal.status] = (acc[goal.status] ?? 0) + 1;
@@ -1212,8 +1277,22 @@ function summarizeValidatedGoalStatuses(
       return count > 0 ? `${count} ${status}` : '';
     })
     .filter(Boolean);
-  const noun = downgraded === 1 ? 'claim' : 'claims';
-  return `Goal evidence validation downgraded ${downgraded} verified ${noun}. Final goal status: ${parts.join(', ')}.`;
+  const transitionParts: string[] = [];
+  if (summary.downgraded > 0) {
+    const noun = summary.downgraded === 1 ? 'claim' : 'claims';
+    transitionParts.push(`downgraded ${summary.downgraded} verified ${noun}`);
+  }
+  const partialUpgraded = summary.partial_upgraded ?? 0;
+  if (partialUpgraded > 0) {
+    const noun = partialUpgraded === 1 ? 'claim' : 'claims';
+    transitionParts.push(`upgraded ${partialUpgraded} partial ${noun}`);
+  }
+  const partialKept = summary.partial_kept ?? 0;
+  if (partialKept > 0) {
+    const noun = partialKept === 1 ? 'claim' : 'claims';
+    transitionParts.push(`kept ${partialKept} partial ${noun} as partial`);
+  }
+  return `Goal evidence validation ${transitionParts.join(', ')}. Final goal status: ${parts.join(', ')}.`;
 }
 
 function uniqueStrings(values: string[]): string[] {

@@ -191,10 +191,84 @@ describe('validateGoalClaims', () => {
     ]);
     const contract = stubContract({ G1: ['B'] });
     const result = validateGoalClaims({ judge, trace, outcome_contract: contract });
-    expect(result.summary.verified_kept).toBe(1);
+    expect(result.summary.verified_kept).toBe(0);
+    expect(result.summary.partial_upgraded).toBe(1);
     expect(result.summary.downgraded).toBe(0);
     expect(result.goals[0]?.status).toBe('verified');
     expect(result.goals[0]?.notes).toContain('partial upgraded');
+  });
+
+  it('rewrites stale Judge summary when validation upgrades a partial goal', () => {
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'complete checkout',
+        status: 'partial',
+        evidence: ['B'],
+        notes: 'Observation B shows Checkout complete confirmation after submit.',
+      },
+    ]);
+    judge.spec_compliance.summary = 'Checkout remained partial.';
+    const goal = judge.spec_compliance.goals[0];
+    if (!goal) throw new Error('expected goal');
+
+    const applied = applyGoalClaimValidationToJudgeOutput(judge, {
+      goals: [
+        {
+          ...goal,
+          status: 'verified' as const,
+          notes: `${goal.notes} [goal-claim validator: partial upgraded after cited outcome evidence satisfied the product-use contract]`,
+        },
+      ],
+      summary: {
+        verified_kept: 0,
+        partial_upgraded: 1,
+        partial_kept: 0,
+        downgraded: 0,
+        downgrade_reasons: [],
+        partial_reasons: [],
+      },
+    });
+
+    expect(applied.spec_compliance.summary).toBe(
+      'Goal evidence validation upgraded 1 partial claim. Final goal status: 1 verified.',
+    );
+    expect(applied.spec_compliance.goal_claim_validation?.partial_upgraded).toBe(1);
+    expect(applied.meta.confidence_caveats).toContain(
+      '1 partial goal claim(s) were upgraded after deterministic evidence validation.',
+    );
+  });
+
+  it('records why a partial goal stays partial', () => {
+    const trace: TraceEvent[] = [
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'goal_status', {
+        id: 'G1',
+        status: 'partial',
+        evidence_event_ids: ['A'],
+        rationale: 'Only the panel opened; no final artifact was visible.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'draw a rectangle',
+        status: 'partial',
+        evidence: ['A'],
+        notes: 'Only the panel opened; no final artifact was visible.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: [] }),
+    });
+
+    expect(result.summary.partial_kept).toBe(1);
+    expect(result.summary.partial_reasons?.[0]).toContain('no outcome-shaped evidence');
+    expect(result.goals[0]?.status).toBe('partial');
+    expect(result.goals[0]?.notes).toContain('outcome not confirmed');
   });
 
   it('does not accept typed credentials alone as post-login proof', () => {
@@ -1171,7 +1245,14 @@ describe('validateGoalClaims', () => {
       outcome_contract: stubContract({ G1: ['C'], G2: ['E'] }),
     });
 
-    expect(result.summary).toEqual({ verified_kept: 2, downgraded: 0, downgrade_reasons: [] });
+    expect(result.summary).toEqual({
+      verified_kept: 2,
+      partial_upgraded: 0,
+      partial_kept: 0,
+      downgraded: 0,
+      downgrade_reasons: [],
+      partial_reasons: [],
+    });
     expect(result.goals.map((goal) => goal.status)).toEqual(['verified', 'verified']);
   });
 
@@ -1188,7 +1269,10 @@ describe('validateGoalClaims', () => {
               id: 'PU1',
               title: 'Add a readable project note',
               journey_id: 'J1',
-              required_actions: ['choose a text, note, label, or annotation tool', 'enter readable text'],
+              required_actions: [
+                'choose a text, note, label, or annotation tool',
+                'enter readable text',
+              ],
               expected_artifact: 'readable note visible on the board',
               test_data: ['Risk: dependency'],
             },
@@ -1223,7 +1307,14 @@ describe('validateGoalClaims', () => {
       outcome_contract: stubContract({ G1: ['C'] }),
     });
 
-    expect(result.summary).toEqual({ verified_kept: 1, downgraded: 0, downgrade_reasons: [] });
+    expect(result.summary).toEqual({
+      verified_kept: 1,
+      partial_upgraded: 0,
+      partial_kept: 0,
+      downgraded: 0,
+      downgrade_reasons: [],
+      partial_reasons: [],
+    });
     expect(result.goals[0]?.status).toBe('verified');
   });
 
@@ -1283,7 +1374,14 @@ describe('validateGoalClaims', () => {
       outcome_contract: stubContract({ G1: ['B'] }),
     });
 
-    expect(result.summary).toEqual({ verified_kept: 1, downgraded: 0, downgrade_reasons: [] });
+    expect(result.summary).toEqual({
+      verified_kept: 1,
+      partial_upgraded: 0,
+      partial_kept: 0,
+      downgraded: 0,
+      downgrade_reasons: [],
+      partial_reasons: [],
+    });
     expect(result.goals[0]?.status).toBe('verified');
   });
 
@@ -1412,7 +1510,14 @@ describe('validateGoalClaims', () => {
       },
     });
 
-    expect(result.summary).toEqual({ verified_kept: 2, downgraded: 0, downgrade_reasons: [] });
+    expect(result.summary).toEqual({
+      verified_kept: 2,
+      partial_upgraded: 0,
+      partial_kept: 0,
+      downgraded: 0,
+      downgrade_reasons: [],
+      partial_reasons: [],
+    });
     expect(result.goals.map((g) => g.status)).toEqual(['verified', 'verified']);
   });
 
@@ -1453,8 +1558,11 @@ describe('validateGoalClaims', () => {
       goals: [{ ...firstGoal, status: 'partial' }, secondGoal],
       summary: {
         verified_kept: 1,
+        partial_upgraded: 0,
+        partial_kept: 0,
         downgraded: 1,
         downgrade_reasons: ['G1: outcome artifacts exist but none cited in evidence'],
+        partial_reasons: [],
       },
     });
 
@@ -1513,8 +1621,11 @@ describe('validateGoalClaims', () => {
       goals: [{ ...firstGoal, status: 'partial' }, secondGoal],
       summary: {
         verified_kept: 1,
+        partial_upgraded: 0,
+        partial_kept: 0,
         downgraded: 1,
         downgrade_reasons: ['G1: missing artifact proof'],
+        partial_reasons: [],
       },
     });
 

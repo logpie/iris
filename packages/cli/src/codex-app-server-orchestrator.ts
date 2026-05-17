@@ -34,9 +34,9 @@ import {
 } from './codex-app-server-runner.js';
 import { runMissingPostExplorerProbes } from './post-explorer-probes.js';
 import {
+  type ScenarioCompletionGate,
   buildScenarioCompletionGates,
   formatScenarioGatePrompt,
-  type ScenarioCompletionGate,
 } from './scenario-completion-gate.js';
 
 export interface CodexAppServerRunConfig {
@@ -227,13 +227,12 @@ function repairedPrematureCloseCandidates(text: string, firstCandidate: string):
   return out;
 }
 
-const CODEX_APP_SERVER_JUDGE_SYSTEM = `You are Iris's Judge. Return ONLY one complete JSON object. Keep output compact but complete. Use the latest goal_status for each goal. At most 3 findings. All strings short.
-Scores are mandatory: scores.profiles MUST contain every profile listed under RUBRIC PROFILES TO SCORE, and each profile.dimensions MUST contain every listed dimension id. Do not omit frontend, usability, accessibility, coverage, or UX baseline profiles to save tokens. Use score:null only for a dimension that is genuinely untestable from this run; still include that dimension with a short rationale.
-Raw axe impact is not product severity: machine-only axe/a11y issues should usually be minor findings or rubric-score evidence, not major/blocker findings, unless trace evidence shows a core flow blocked, explicit accessibility/compliance focus, or broad user impact.
-If discovery includes product_use_contract, grade real-use depth against it: high coverage/completeness requires the primary value loop and expected artifact/state evidence, not only menus/toolbars/focus/mode selection. When user_jobs include scenario_brief, test_data, required_outputs, or quality_bar, a verified goal must show those concrete user-visible details in cited evidence; generic filler, empty artifacts, or opened panels are partial at best.
-Required exact shape:
-{"v":1,"findings":[{"id":"F-001","title":"...","category":"bug|a11y|ux|perf|copy|suggestion","severity":"blocker|major|minor|nit|suggestion","evidence":["EVENT"],"rationale":"..."}],"discarded_findings":[],"scores":{"overall":{"score":0,"weighted_from":["quality"]},"profiles":{"quality":{"score":0,"dimensions":{"correctness":{"score":0,"rationale":"...","evidence":["EVENT"]},"completeness":{"score":0,"rationale":"...","evidence":["EVENT"]},"polish":{"score":0,"rationale":"...","evidence":["EVENT"]}}}}},"spec_compliance":{"applicable":true,"goals":[{"id":"G1","description":"...","status":"verified|partial|blocked|skipped|untested","evidence":["EVENT"],"notes":"..."}],"summary":"..."},"coverage_review":{"surfaces_explored":0,"surfaces_unexplored":0,"judgement":"..."},"meta":{"confidence_overall":0.8,"confidence_caveats":[],"would_re_explore_with":[]},"access_blocks":[]}
-If rubric profile names or dimensions differ, replace quality/correctness/completeness/polish with the actual RUBRIC PROFILES ids. scores.overall.weighted_from must list every scored profile id. Use [] for empty arrays. Use null for untested dimension scores. Do not use v:2. Do not add extra top-level keys.`;
+export const CODEX_APP_SERVER_JUDGE_SYSTEM = `${judgeMod.JUDGE_SYSTEM}
+
+## Codex App Server Output Constraints
+Return ONLY one complete JSON object. Keep output compact but complete: at most 3 findings, short strings, no markdown.
+Scores are mandatory: scores.profiles MUST contain every profile listed under RUBRIC PROFILES TO SCORE, and each profile.dimensions MUST contain every listed dimension id. Do not omit frontend, usability, accessibility, coverage, or UX baseline profiles to save tokens. Use score:null only for a dimension that is genuinely untestable from this run.
+Do not use v:2. Do not add extra top-level keys.`;
 
 function buildCodexAppServerJudgePrompt(basePrompt: string): string {
   return `${basePrompt}
@@ -818,7 +817,6 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
     let judgeOutput: judgeMod.JudgeOutput;
     const elapsedBeforeJudge = (Date.now() - startMs) / 1000;
     const judgeTimeoutS = Math.max(45, Math.ceil(config.timeout_s - elapsedBeforeJudge));
-    let judgeRecoveredFromGoalStatus = false;
     try {
       const judgeResponse = await runCodexAppServerSingleShot(client, {
         systemPrompt: CODEX_APP_SERVER_JUDGE_SYSTEM,
@@ -838,15 +836,16 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
     } catch (err) {
       judgeFailedReason = err instanceof Error ? err.message : String(err);
       process.stderr.write(`iris: Judge failed via Codex App Server: ${judgeFailedReason}\n`);
+      writeFileSync(
+        join(config.out_dir, 'judge-error.txt'),
+        `_written_at: ${new Date().toISOString()}\n\n${judgeFailedReason}`,
+      );
       judgeOutput = buildJudgeFailureOutput({
         reason: judgeFailedReason,
         goals: interpreted?.goals ?? [],
         rubricProfiles: config.rubric_profiles,
         events,
       });
-      judgeRecoveredFromGoalStatus = judgeOutput.spec_compliance.goals.some((goal) =>
-        ['verified', 'partial', 'blocked'].includes(goal.status),
-      );
     }
     judgeOutput = judgeMod.ensureRubricScoreCoverage(judgeOutput, config.rubric_profiles);
 
@@ -920,21 +919,17 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
           explorer: reasoningEffort,
           judge: reasoningEffort,
         },
-        termination:
-          judgeFailedReason && !judgeRecoveredFromGoalStatus
-            ? 'judge_failed'
-            : explorerResult.termination,
+        termination: judgeFailedReason ? 'judge_failed' : explorerResult.termination,
         step_count: explorerResult.steps_taken,
         ...(runUsage ? { usage: runUsage } : {}),
       },
       ...(config.threshold !== undefined ? { threshold: config.threshold } : {}),
-      ...(judgeFailedReason && !judgeRecoveredFromGoalStatus
-        ? { blocked: { reasons: [judgeFailedReason] } }
-        : {}),
+      ...(judgeFailedReason ? { blocked: { reasons: [judgeFailedReason] } } : {}),
       artifacts: {
         ...(config.no_html ? {} : { report_html: './report.html' }),
         report_md: './report.md',
         trace: './trace.jsonl',
+        ...(judgeFailedReason ? { judge_error: './judge-error.txt' } : {}),
         ...(artifacts.artifact_files.trace_zip
           ? { trace_zip: artifacts.artifact_files.trace_zip }
           : {}),
@@ -954,7 +949,7 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
     }
 
     let exitCode: 0 | 1 | 2 | 3 | 4 = 0;
-    if (judgeFailedReason && !judgeRecoveredFromGoalStatus) {
+    if (judgeFailedReason) {
       exitCode = 3;
     } else if (
       explorerResult.termination === 'budget_steps' ||
@@ -970,10 +965,7 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
       out_dir: config.out_dir,
       duration_s,
       cost_usd: totalCost,
-      termination:
-        judgeFailedReason && !judgeRecoveredFromGoalStatus
-          ? 'judge_failed'
-          : explorerResult.termination,
+      termination: judgeFailedReason ? 'judge_failed' : explorerResult.termination,
       exit_code: exitCode,
     };
   } finally {

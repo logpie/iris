@@ -31,6 +31,25 @@ describe('buildReportMd', () => {
     expect(md).toMatch(/✅ G1: load article/);
   });
 
+  it('renders goal validation transition counts and reasons', () => {
+    const judge = fakeJudge();
+    judge.spec_compliance.goal_claim_validation = {
+      verified_kept: 1,
+      partial_upgraded: 1,
+      partial_kept: 1,
+      downgraded: 1,
+      downgrade_reasons: ['G4: no outcome artifact cited'],
+      partial_reasons: ['G2: no outcome-shaped evidence in goal window'],
+    };
+    const r = buildReportJson({ judge, run: fakeRun() });
+    const md = buildReportMd(r);
+    expect(md).toContain(
+      'Evidence audit: 1 verified kept, 1 partial upgraded, 1 partial kept, 1 downgraded',
+    );
+    expect(md).toContain('G4: no outcome artifact cited');
+    expect(md).toContain('G2: no outcome-shaped evidence in goal window');
+  });
+
   it('renders optional provider token usage', () => {
     const r = buildReportJson({
       judge: fakeJudge(),

@@ -19,7 +19,12 @@ export interface SummaryInput {
   goals_verified?: number;
   goals_total?: number;
   scenario_evidence_verified?: number;
+  scenario_evidence_verified_kept?: number;
+  scenario_evidence_partial_upgraded?: number;
+  scenario_evidence_partial_kept?: number;
   scenario_evidence_downgraded?: number;
+  scenario_evidence_downgrade_reasons?: string[];
+  scenario_evidence_partial_reasons?: string[];
   finding_evidence_verified?: number;
   finding_evidence_downgraded?: number;
   unsupported_finding_drafts_discarded?: number;
@@ -34,8 +39,7 @@ export interface SummaryInput {
 
 export function buildSummaryLine(input: SummaryInput): string {
   const findingEvidenceVerified = input.finding_evidence_verified ?? input.evidence_verified;
-  const findingEvidenceDowngraded =
-    input.finding_evidence_downgraded ?? input.evidence_downgraded;
+  const findingEvidenceDowngraded = input.finding_evidence_downgraded ?? input.evidence_downgraded;
   const findingDraftsDiscarded =
     input.unsupported_finding_drafts_discarded ?? input.evidence_discarded;
   const out = {
@@ -58,11 +62,23 @@ export function buildSummaryLine(input: SummaryInput): string {
           },
         }
       : {}),
-    ...(input.scenario_evidence_verified !== undefined
+    ...(input.scenario_evidence_verified !== undefined ||
+    input.scenario_evidence_verified_kept !== undefined
       ? {
           scenario_evidence: {
-            verified: input.scenario_evidence_verified,
+            verified:
+              input.scenario_evidence_verified ?? input.scenario_evidence_verified_kept ?? 0,
+            verified_kept:
+              input.scenario_evidence_verified_kept ?? input.scenario_evidence_verified ?? 0,
+            partial_upgraded: input.scenario_evidence_partial_upgraded ?? 0,
+            partial_kept: input.scenario_evidence_partial_kept ?? 0,
             downgraded: input.scenario_evidence_downgraded ?? 0,
+            ...(input.scenario_evidence_downgrade_reasons
+              ? { downgrade_reasons: input.scenario_evidence_downgrade_reasons }
+              : {}),
+            ...(input.scenario_evidence_partial_reasons
+              ? { partial_reasons: input.scenario_evidence_partial_reasons }
+              : {}),
           },
         }
       : {}),

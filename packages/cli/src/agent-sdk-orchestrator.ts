@@ -20,9 +20,9 @@ import {
 } from './agent-sdk-runner.js';
 import { runMissingPostExplorerProbes } from './post-explorer-probes.js';
 import {
+  type ScenarioCompletionGate,
   buildScenarioCompletionGates,
   formatScenarioGatePrompt,
-  type ScenarioCompletionGate,
 } from './scenario-completion-gate.js';
 
 /**
@@ -100,7 +100,7 @@ export interface AgentSdkRunResult {
  * authenticated session. Used by --share-auth to skip per-session auth. */
 export type AdapterFactory = (opts?: { storage_state_path?: string }) => TargetAdapter;
 
-type JudgeResponseForDiagnostics = Pick<
+export type JudgeResponseForDiagnostics = Pick<
   SingleShotResult,
   'text' | 'partial' | 'partial_error' | 'hit_output_cap'
 >;
@@ -201,14 +201,14 @@ function repairTruncatedJsonCandidate(candidate: string): string {
   return repaired;
 }
 
-function parseJsonCandidateWithSalvage(candidate: string): unknown {
+function parseJsonCandidateWithSalvage(candidate: string): { parsed: unknown; repaired: boolean } {
   try {
-    return JSON.parse(candidate);
+    return { parsed: JSON.parse(candidate), repaired: false };
   } catch (firstErr) {
     const repaired = repairTruncatedJsonCandidate(candidate);
     if (repaired !== candidate) {
       try {
-        return JSON.parse(repaired);
+        return { parsed: JSON.parse(repaired), repaired: true };
       } catch {
         // Preserve the original parser error; it points at the real failure.
       }
@@ -217,14 +217,22 @@ function parseJsonCandidateWithSalvage(candidate: string): unknown {
   }
 }
 
-function parseJudgeOutputFromResponse(
+export function parseJudgeOutputFromResponse(
   response: JudgeResponseForDiagnostics,
   label: string,
 ): judgeMod.JudgeOutput {
   try {
+    if (response.partial || response.hit_output_cap) {
+      throw new Error(
+        `${label} response was incomplete${response.partial_error ? `: ${response.partial_error}` : ''}`,
+      );
+    }
     const jsonCandidate = extractJsonObjectCandidate(response.text);
     if (!jsonCandidate) throw new Error(`${label} returned no JSON`);
-    const parsed = parseJsonCandidateWithSalvage(jsonCandidate);
+    const { parsed, repaired } = parseJsonCandidateWithSalvage(jsonCandidate);
+    if (repaired) {
+      throw new Error(`${label} JSON required truncation repair before parsing`);
+    }
     return judgeMod.JudgeOutputSchema.parse(parsed);
   } catch (err) {
     throw new JudgeResponseParseError(label, err, response);
@@ -817,7 +825,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
             // Each session sees ALL goals in its prompt (for context) but is
             // only responsible for verifying its subset.
             const subsetIds = subset.map((g) => g.id).join(', ');
-            const subsetPrompt = `Target: ${config.target.url}\n\nAll discovered goals (for context):\n${goalList}\n\n${scenarioGatePrompt}YOUR ASSIGNED GOALS this session: ${subsetIds}\nOther sessions are independently handling the other goals — focus on yours.\n\nFor each assigned goal, in order:\n  1. Find the relevant UI element.\n  2. Interact with it normally.\n  3. Observe what changed via the auto-observation.\n  4. Call mcp__iris__goal_status with the goal id, status, one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome. Use skipped only when the goal is not applicable, not when you have not tried it yet.\n  5. If you find a bug, ALSO call mcp__iris__note_finding.\n\n${perGoalLine}\n\nBUDGET: ${perSessionTimeout}s wall. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns.`;
+            const subsetPrompt = `Target: ${config.target.url}\n\nAll discovered goals (for context):\n${goalList}\n\n${discoveryExplorerContext ? `${discoveryExplorerContext}\n\n` : ''}${scenarioGatePrompt}YOUR ASSIGNED GOALS this session: ${subsetIds}\nOther sessions are independently handling the other goals — focus on yours.\n\nFor each assigned goal, in order:\n  1. Find the relevant UI element.\n  2. Interact with it normally.\n  3. Observe what changed via the auto-observation.\n  4. Call mcp__iris__goal_status with the goal id, status, one-line rationale, and for verified goals evidence_event_ids containing the post-action observation/screenshot/vision_describe event id that shows the outcome. Use skipped only when the goal is not applicable, not when you have not tried it yet.\n  5. If you find a bug, ALSO call mcp__iris__note_finding.\n\n${perGoalLine}\n\nBUDGET: ${perSessionTimeout}s wall. Per-goal auto-cutover at ~${Math.ceil((stepsPerGoal ?? 10) * 1.5)} turns.`;
             const perSessionMaxSteps = Math.max(
               30,
               Math.ceil(subset.length * (stepsPerGoal ?? 10) * 1.5) +
@@ -1073,21 +1081,46 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       `${JSON.stringify({ ...judgeOutput.scores, _written_at: new Date().toISOString() }, null, 2)}\n`,
     );
   } catch (err) {
-    writeFileSync(join(config.out_dir, 'judge-error.txt'), formatJudgeErrorForFile(err));
+    const judgeError = formatJudgeErrorForFile(err);
+    writeFileSync(
+      join(config.out_dir, 'judge-error.txt'),
+      `_written_at: ${new Date().toISOString()}\n\n${judgeError}`,
+    );
+    const reportEarly = emptyReport(
+      config,
+      reportMode,
+      startedAt,
+      totalCost,
+      explorerResult.steps_taken,
+      judgeError,
+      {
+        ...(config.no_html ? {} : { report_html: './report.html' }),
+        report_md: './report.md',
+        trace: './trace.jsonl',
+        judge_error: './judge-error.txt',
+        ...(artifacts.artifact_files.trace_zip
+          ? { trace_zip: artifacts.artifact_files.trace_zip }
+          : {}),
+        ...(artifacts.artifact_files.full_recording
+          ? { video: artifacts.artifact_files.full_recording }
+          : {}),
+      },
+    );
+    writeFileSync(join(config.out_dir, 'report.json'), `${JSON.stringify(reportEarly, null, 2)}\n`);
+    writeFileSync(join(config.out_dir, 'report.md'), reportMod.buildReportMd(reportEarly));
+    if (!config.no_html) {
+      writeFileSync(
+        join(config.out_dir, 'report.html'),
+        reportMod.buildReportHtml(reportEarly, { runDir: config.out_dir }),
+      );
+    }
     process.off('unhandledRejection', sdkNoiseHandler);
     return {
-      report: emptyReport(
-        config,
-        reportMode,
-        startedAt,
-        totalCost,
-        explorerResult.termination,
-        explorerResult.steps_taken,
-      ),
+      report: reportEarly,
       out_dir: config.out_dir,
       duration_s: (Date.now() - startMs) / 1000,
       cost_usd: totalCost,
-      termination: explorerResult.termination,
+      termination: 'judge_failed',
       exit_code: 3,
     };
   }
@@ -1190,9 +1223,11 @@ function emptyReport(
   reportMode: Mode,
   startedAt: Date,
   cost_usd: number,
-  termination: string,
   steps: number,
+  reason: string,
+  artifacts: Parameters<typeof reportMod.buildReportJson>[0]['artifacts'],
 ): ReturnType<typeof reportMod.buildReportJson> {
+  const blockedReason = firstNonemptyLine(reason) || 'judge failed';
   return reportMod.buildReportJson({
     judge: {
       v: 1,
@@ -1203,7 +1238,7 @@ function emptyReport(
       coverage_review: { surfaces_explored: 0, surfaces_unexplored: 0, judgement: 'aborted' },
       meta: {
         confidence_overall: 0,
-        confidence_caveats: ['judge failed'],
+        confidence_caveats: [blockedReason],
         would_re_explore_with: [],
       },
     },
@@ -1221,10 +1256,22 @@ function emptyReport(
         explorer: config.explorer_model,
         judge: config.judge_model,
       },
-      termination,
+      termination: 'judge_failed',
       step_count: steps,
     },
+    blocked: { reasons: [blockedReason] },
+    ...(artifacts ? { artifacts } : {}),
   });
+}
+
+function firstNonemptyLine(value: string): string {
+  return (
+    value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0)
+      ?.slice(0, 500) ?? ''
+  );
 }
 
 // Phase 16: split goals into N contiguous slices. Contiguous (not round-robin)

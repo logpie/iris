@@ -54,6 +54,8 @@ export interface ReportArtifacts {
   trace?: string;
   trace_zip?: string;
   video?: string;
+  judge_error?: string;
+  judge_raw?: string;
   clips?: Record<string, string>;
 }
 

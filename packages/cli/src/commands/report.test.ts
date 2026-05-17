@@ -62,6 +62,17 @@ describe('normalizeRevalidatedRunMetadata', () => {
 
     expect(run.termination).toBe('budget_steps');
   });
+
+  it('does not fabricate done when a judge_failed report has no trace termination', () => {
+    const run = normalizeRevalidatedRunMetadata(
+      fakeRun('judge_failed'),
+      [] as never,
+      '/tmp/no-run-config',
+      false,
+    );
+
+    expect(run.termination).toBe('judge_failed');
+  });
 });
 
 describe('findingsSnapshotFromReport', () => {

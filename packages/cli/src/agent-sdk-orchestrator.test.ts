@@ -7,6 +7,7 @@ import {
   formatJudgeErrorForFile,
   isTruncationShapedJudgeError,
   mergeTraceFiles,
+  parseJudgeOutputFromResponse,
 } from './agent-sdk-orchestrator.js';
 
 describe('Agent SDK Judge diagnostics', () => {
@@ -52,6 +53,48 @@ describe('Agent SDK Judge diagnostics', () => {
         partial: false,
       }),
     ).toBe(false);
+  });
+
+  it('rejects partial Judge responses even when the JSON shape is parseable', () => {
+    const text = JSON.stringify({
+      v: 1,
+      findings: [],
+      discarded_findings: [],
+      scores: {
+        overall: { score: 8, weighted_from: ['quality'] },
+        profiles: {
+          quality: {
+            score: 8,
+            dimensions: {
+              correctness: { score: 8, rationale: 'ok', evidence: [] },
+            },
+          },
+        },
+      },
+      spec_compliance: {
+        applicable: true,
+        goals: [
+          {
+            id: 'G1',
+            description: 'do it',
+            status: 'verified',
+            evidence: ['OBS-1'],
+            notes: 'Observation OBS-1 shows the finished outcome.',
+          },
+        ],
+        summary: 'done',
+      },
+      coverage_review: { surfaces_explored: 1, surfaces_unexplored: 0, judgement: 'ok' },
+      meta: { confidence_overall: 0.8, confidence_caveats: [], would_re_explore_with: [] },
+      access_blocks: [],
+    });
+
+    expect(() =>
+      parseJudgeOutputFromResponse(
+        { text, partial: true, partial_error: 'Query closed before response received' },
+        'Judge',
+      ),
+    ).toThrow(JudgeResponseParseError);
   });
 });
 

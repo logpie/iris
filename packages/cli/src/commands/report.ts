@@ -160,10 +160,17 @@ function revalidateStoredReport(
     });
     judge = judgeMod.applyGoalClaimValidationToJudgeOutput(judge, goalClaimResult);
   }
-  const preserveBlocked = shouldPreserveBlockedState(report);
+  const initiallyPreserveBlocked = shouldPreserveBlockedState(report);
+  const run = normalizeRevalidatedRunMetadata(
+    report.run,
+    traceEvents,
+    runDir,
+    initiallyPreserveBlocked,
+  );
+  const preserveBlocked = initiallyPreserveBlocked || run.termination === 'judge_failed';
   return reportMod.buildReportJson({
     judge,
-    run: normalizeRevalidatedRunMetadata(report.run, traceEvents, runDir, preserveBlocked),
+    run,
     ...(report.artifacts ? { artifacts: report.artifacts } : {}),
     ...(report.preflight ? { preflight: report.preflight } : {}),
     ...(preserveBlocked ? { blocked: { reasons: report.headline.blocked_reasons ?? [] } } : {}),
@@ -194,13 +201,13 @@ export function normalizeRevalidatedRunMetadata(
   return {
     ...enriched,
     termination:
-      traceTermination && traceTermination !== 'judge_failed'
-        ? traceTermination
-        : 'done',
+      traceTermination && traceTermination !== 'judge_failed' ? traceTermination : 'judge_failed',
   };
 }
 
-function latestTraceRunTermination(traceEvents: traceMod.TraceEvent[] | undefined): string | undefined {
+function latestTraceRunTermination(
+  traceEvents: traceMod.TraceEvent[] | undefined,
+): string | undefined {
   if (!traceEvents) return undefined;
   for (let i = traceEvents.length - 1; i >= 0; i -= 1) {
     const event = traceEvents[i];

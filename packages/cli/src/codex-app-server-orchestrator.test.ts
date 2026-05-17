@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { parseJudgeOutput } from './codex-app-server-orchestrator.js';
+import {
+  CODEX_APP_SERVER_JUDGE_SYSTEM,
+  parseJudgeOutput,
+} from './codex-app-server-orchestrator.js';
 
 describe('parseJudgeOutput', () => {
   it('repairs a premature top-level close before spec_compliance', () => {
@@ -18,5 +21,20 @@ describe('parseJudgeOutput', () => {
     const out = parseJudgeOutput(text);
     expect(out.scores.profiles.accessibility?.dimensions.keyboard_nav?.score).toBe(7);
     expect(out.spec_compliance.goals[0]?.status).toBe('verified');
+  });
+});
+
+describe('CODEX_APP_SERVER_JUDGE_SYSTEM', () => {
+  it('inherits the core Judge evidence and product-use rules', () => {
+    expect(CODEX_APP_SERVER_JUDGE_SYSTEM).toContain(
+      'Preserve the exact claim boundary in goal notes',
+    );
+    expect(CODEX_APP_SERVER_JUDGE_SYSTEM).toContain(
+      'Findings like "X gives no visible confirmation"',
+    );
+    expect(CODEX_APP_SERVER_JUDGE_SYSTEM).toContain(
+      'If the discovery event includes product_use_contract',
+    );
+    expect(CODEX_APP_SERVER_JUDGE_SYSTEM).toContain('Codex App Server Output Constraints');
   });
 });

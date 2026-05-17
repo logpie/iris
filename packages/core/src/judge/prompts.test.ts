@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { JUDGE_SYSTEM } from './prompts.js';
+import { JUDGE_SYSTEM, buildTraceDigest } from './prompts.js';
 
 describe('JUDGE_SYSTEM', () => {
   it('instructs the Judge to preserve goal scope boundaries', () => {
@@ -29,5 +29,49 @@ describe('JUDGE_SYSTEM', () => {
     expect(JUDGE_SYSTEM).toContain('First verify the trace established the action precondition');
     expect(JUDGE_SYSTEM).toContain('the relevant control was enabled');
     expect(JUDGE_SYSTEM).toContain('treat it as an Iris execution/proof gap');
+  });
+
+  it('carries product-use contract acceptance criteria into discovery trace digest', () => {
+    const digest = buildTraceDigest([
+      {
+        v: 1,
+        id: 'DISCOVERY',
+        ts: 0,
+        step: 0,
+        target_kind: 'web',
+        kind: 'discovery',
+        actor: 'system',
+        payload: {
+          product_description: 'Canvas editor',
+          goals: [{ id: 'G1', description: 'Create a project board' }],
+          product_use_contract: {
+            product_kinds: ['canvas_editor'],
+            primary_value_loop: 'Create and export a project board.',
+            core_artifacts: ['visible project board'],
+            user_jobs: [
+              {
+                id: 'PU1',
+                journey_id: 'J1',
+                title: 'Create project board',
+                scenario_brief: 'Plan Launch Alpha',
+                test_data: ['Launch Alpha', 'Risk: dependency'],
+                required_actions: ['create shapes', 'label risk'],
+                required_outputs: ['Launch Alpha board visible'],
+                quality_bar: ['labels readable'],
+                weak_evidence: ['toolbar opened'],
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(digest).toContain('product_use_contract');
+    expect(digest).toContain('canvas_editor');
+    expect(digest).toContain('Create and export a project board');
+    expect(digest).toContain('PU1/J1');
+    expect(digest).toContain('Plan Launch Alpha');
+    expect(digest).toContain('Launch Alpha board visible');
+    expect(digest).toContain('toolbar opened');
   });
 });

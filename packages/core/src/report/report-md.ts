@@ -128,6 +128,24 @@ export function buildReportMd(report: ReportJson): string {
       const notes = g.notes ? ` *(${g.notes})*` : '';
       lines.push(`- ${icon} ${g.id}: ${g.description}${notes}`);
     }
+    const gcv = report.spec_compliance.goal_claim_validation;
+    if (
+      gcv &&
+      gcv.verified_kept + (gcv.partial_upgraded ?? 0) + (gcv.partial_kept ?? 0) + gcv.downgraded > 0
+    ) {
+      const parts: string[] = [];
+      if (gcv.verified_kept > 0) parts.push(`${gcv.verified_kept} verified kept`);
+      if ((gcv.partial_upgraded ?? 0) > 0) parts.push(`${gcv.partial_upgraded} partial upgraded`);
+      if ((gcv.partial_kept ?? 0) > 0) parts.push(`${gcv.partial_kept} partial kept`);
+      if (gcv.downgraded > 0) parts.push(`${gcv.downgraded} downgraded`);
+      lines.push(`- Evidence audit: ${parts.join(', ')}`);
+      for (const reason of [...(gcv.downgrade_reasons ?? []), ...(gcv.partial_reasons ?? [])].slice(
+        0,
+        3,
+      )) {
+        lines.push(`  - ${mdCell(reason)}`);
+      }
+    }
     lines.push('');
   }
 

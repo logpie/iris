@@ -145,8 +145,11 @@ export const JudgeOutputSchema = z.object({
     goal_claim_validation: z
       .object({
         verified_kept: z.number().int().nonnegative(),
+        partial_upgraded: z.number().int().nonnegative().default(0),
+        partial_kept: z.number().int().nonnegative().default(0),
         downgraded: z.number().int().nonnegative(),
         downgrade_reasons: z.array(z.string()).default([]),
+        partial_reasons: z.array(z.string()).default([]),
       })
       .optional(),
   }),

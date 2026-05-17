@@ -283,7 +283,8 @@ function summarizeEvent(e: TraceEvent): string {
           return `${x.id}: ${String(x.description ?? '').slice(0, 60)}`;
         })
         .join('; ');
-      return `product="${String(p.product_description ?? '').slice(0, 140)}" goals=[${goalSnippet}]`;
+      const contractSnippet = summarizeProductUseContractForDigest(p.product_use_contract);
+      return `product="${String(p.product_description ?? '').slice(0, 140)}" goals=[${goalSnippet}]${contractSnippet ? ` ${contractSnippet}` : ''}`;
     }
     case 'goal_proposed':
       return `${String(p.id ?? '')} (${String(p.priority ?? 'should')}) "${String(p.description ?? '').slice(0, 100)}" — ${String(p.rationale ?? '').slice(0, 80)}`;
@@ -302,4 +303,83 @@ function summarizeEvent(e: TraceEvent): string {
     default:
       return JSON.stringify(p).slice(0, 80);
   }
+}
+
+function summarizeProductUseContractForDigest(contract: unknown): string {
+  if (!isRecord(contract)) return '';
+  const parts: string[] = [];
+  const kinds = stringArray(contract.product_kinds).slice(0, 5);
+  if (kinds.length > 0) parts.push(`kinds=${kinds.join(',')}`);
+  const primary = stringValue(contract.primary_value_loop);
+  if (primary) parts.push(`primary="${clip(primary, 140)}"`);
+  const artifacts = stringArray(contract.core_artifacts).slice(0, 5);
+  if (artifacts.length > 0)
+    parts.push(`artifacts=[${artifacts.map((item) => clip(item, 60)).join('; ')}]`);
+
+  const userJobs = Array.isArray(contract.user_jobs) ? contract.user_jobs : [];
+  const jobs = userJobs
+    .slice(0, 8)
+    .map((job) => summarizeProductUseJobForDigest(job))
+    .filter(Boolean)
+    .join(' | ');
+  if (jobs) parts.push(`user_jobs=[${jobs}]`);
+
+  const loops = Array.isArray(contract.value_loops) ? contract.value_loops : [];
+  const loopSummary = loops
+    .slice(0, 4)
+    .map((loop) => {
+      if (!isRecord(loop)) return '';
+      const id = clip(stringValue(loop.id) || 'VL?', 20);
+      const title = clip(stringValue(loop.title), 60);
+      const proof = stringArray(loop.proof_obligations).slice(0, 3);
+      const weak = stringArray(loop.weak_evidence).slice(0, 3);
+      return `${id}:${title}${proof.length > 0 ? ` proof=[${proof.map((item) => clip(item, 50)).join('; ')}]` : ''}${weak.length > 0 ? ` weak=[${weak.map((item) => clip(item, 50)).join('; ')}]` : ''}`;
+    })
+    .filter(Boolean)
+    .join(' | ');
+  if (loopSummary) parts.push(`value_loops=[${loopSummary}]`);
+
+  return parts.length > 0 ? `product_use_contract{${parts.join(' ')}}` : '';
+}
+
+function summarizeProductUseJobForDigest(job: unknown): string {
+  if (!isRecord(job)) return '';
+  const id = clip(stringValue(job.id) || 'PU?', 20);
+  const journey = stringValue(job.journey_id);
+  const scenario = stringValue(job.scenario_brief) || stringValue(job.title);
+  const data = stringArray(job.test_data).slice(0, 4);
+  const outputs = stringArray(job.required_outputs).slice(0, 5);
+  const quality = stringArray(job.quality_bar).slice(0, 4);
+  const weak = stringArray(job.weak_evidence).slice(0, 4);
+  const actions = stringArray(job.required_actions).slice(0, 4);
+  const bits = [`${id}${journey ? `/${clip(journey, 20)}` : ''}`];
+  if (scenario) bits.push(`scenario="${clip(scenario, 90)}"`);
+  if (data.length > 0) bits.push(`test_data=[${data.map((item) => clip(item, 50)).join('; ')}]`);
+  if (actions.length > 0)
+    bits.push(`actions=[${actions.map((item) => clip(item, 45)).join('; ')}]`);
+  if (outputs.length > 0)
+    bits.push(`required_outputs=[${outputs.map((item) => clip(item, 50)).join('; ')}]`);
+  if (quality.length > 0)
+    bits.push(`quality_bar=[${quality.map((item) => clip(item, 50)).join('; ')}]`);
+  if (weak.length > 0)
+    bits.push(`weak_evidence=[${weak.map((item) => clip(item, 50)).join('; ')}]`);
+  return bits.join(' ');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => stringValue(item)).filter((item) => item.length > 0)
+    : [];
+}
+
+function clip(value: string, max: number): string {
+  return value.slice(0, max).replace(/\s+/g, ' ');
 }

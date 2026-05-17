@@ -2861,12 +2861,28 @@ function renderEvidenceIntegrity(report: ReportJson): string {
     }
   }
   const gcv = report.spec_compliance?.goal_claim_validation;
-  if (gcv && gcv.verified_kept + gcv.downgraded > 0) {
-    const parts = [
-      `${gcv.verified_kept} scenario check${gcv.verified_kept === 1 ? '' : 's'} verified`,
-    ];
+  if (
+    gcv &&
+    gcv.verified_kept + (gcv.partial_upgraded ?? 0) + (gcv.partial_kept ?? 0) + gcv.downgraded > 0
+  ) {
+    const parts: string[] = [];
+    if (gcv.verified_kept > 0) {
+      parts.push(`${gcv.verified_kept} verified kept`);
+    }
+    if ((gcv.partial_upgraded ?? 0) > 0) {
+      parts.push(`${gcv.partial_upgraded} partial upgraded`);
+    }
+    if ((gcv.partial_kept ?? 0) > 0) {
+      parts.push(`${gcv.partial_kept} partial kept`);
+    }
     if (gcv.downgraded > 0) parts.push(`${gcv.downgraded} downgraded`);
     lines.push(parts.join(', '));
+    for (const reason of [...(gcv.downgrade_reasons ?? []), ...(gcv.partial_reasons ?? [])].slice(
+      0,
+      3,
+    )) {
+      lines.push(`Goal validation: ${reason}`);
+    }
   }
   if (lines.length === 0) return '';
   return `<div class="integrity-strip"><span class="integrity-label">Evidence audit</span>${lines.map((line) => `<span>${escapeHtml(line)}</span>`).join('')}</div>`;
@@ -3173,7 +3189,8 @@ function renderGoalReviewFacts(report: ReportJson, counts: GoalCounts): string {
 function renderCapabilityCoverage(report: ReportJson): string {
   const capabilities = report.discovery?.capabilities ?? [];
   const coverage =
-    report.evaluation?.capability_coverage ?? deriveReportEvaluationForReport(report).capability_coverage;
+    report.evaluation?.capability_coverage ??
+    deriveReportEvaluationForReport(report).capability_coverage;
   if (capabilities.length === 0 || !coverage) return '';
   const statusByGoal = new Map(report.spec_compliance.goals.map((goal) => [goal.id, goal.status]));
   const rows = capabilities
@@ -3264,7 +3281,11 @@ function capabilityReportStatus(
       Boolean(status),
     );
   if (statuses.some((status) => status === 'verified' || status === 'satisfied')) return 'covered';
-  if (statuses.some((status) => status === 'partial' || status === 'blocked' || status === 'not_satisfied')) {
+  if (
+    statuses.some(
+      (status) => status === 'partial' || status === 'blocked' || status === 'not_satisfied',
+    )
+  ) {
     return 'partial';
   }
   return capability.status === 'selected' ? 'untested' : 'deferred';
@@ -3281,9 +3302,7 @@ function capabilityStatusPill(status: 'covered' | 'partial' | 'untested' | 'defe
   }
 }
 
-function capabilityReportRank(
-  capability: ReportCapability,
-): number {
+function capabilityReportRank(capability: ReportCapability): number {
   const expectationRank = {
     must_test: 0,
     should_test_or_explain: 1,
@@ -3488,9 +3507,7 @@ function renderDeferredAreas(areas: NonNullable<ReportJson['testing_plan']>['def
   const commonReason = commonDeferredReason(areas);
   const visible = areas.slice(0, 12);
   const hidden = areas.slice(12);
-  const chips = renderDiscoveryChips(
-    visible.map((area) => ({ id: area.id, label: area.title })),
-  );
+  const chips = renderDiscoveryChips(visible.map((area) => ({ id: area.id, label: area.title })));
   const hiddenChips =
     hidden.length > 0
       ? `<details class="reader-mini-details"><summary>${escapeHtml(`${hidden.length} more`)}</summary>${renderDiscoveryChips(hidden.map((area) => ({ id: area.id, label: area.title })))}</details>`
@@ -3499,7 +3516,10 @@ function renderDeferredAreas(areas: NonNullable<ReportJson['testing_plan']>['def
     ? `<p>${escapeHtml(commonReason)}</p>`
     : `<ul>${areas
         .slice(0, 6)
-        .map((area) => `<li><strong>${escapeHtml(area.title)}:</strong> ${escapeHtml(area.reason)}</li>`)
+        .map(
+          (area) =>
+            `<li><strong>${escapeHtml(area.title)}:</strong> ${escapeHtml(area.reason)}</li>`,
+        )
         .join('')}</ul>`;
   return `<details class="reader-deferred">
     <summary>Not checked in this run (${areas.length})</summary>
@@ -3975,7 +3995,10 @@ function renderGoalExpectedOutputs(card: VisualEvidenceCard): string {
   const outputs = uniqueStrings(card.scenario?.required_outputs ?? []);
   const quality = uniqueStrings(card.scenario?.quality_bar ?? []);
   if (outputs.length === 0 && quality.length === 0) return '';
-  const outputChips = outputs.slice(0, 8).map((item) => `<span>${escapeHtml(item)}</span>`).join('');
+  const outputChips = outputs
+    .slice(0, 8)
+    .map((item) => `<span>${escapeHtml(item)}</span>`)
+    .join('');
   const hiddenOutputs = outputs.slice(8);
   const outputBlock =
     outputs.length > 0
