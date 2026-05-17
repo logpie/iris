@@ -207,3 +207,15 @@ Claim-scoped videos should show a recognizable pointer, not an abstract dot. If 
 ## 2026-05-16 — Product breadth needs a separate denominator
 
 Do not infer product quality from a scenario pass rate alone. Iris needs a visible product-ability denominator that is distinct from UI surfaces and tested scenarios, and reports must label surface counts as UI coverage rather than product coverage. Unsupported timing or performance findings also need timing evidence, not just a static observation.
+
+## 2026-05-16 — Do not close ideal-state goals with known evaluator gaps
+
+When the user asks for an ideal-state evaluator, do not mark the work complete because the latest run is better than the previous one. If known classes of failures remain, such as skipped important product-native capabilities, incomplete denominator accounting, or weak primary evidence, keep the goal open and name the remaining root fixes.
+
+## 2026-05-16 — Keep Iris scope semantics small and public
+
+Avoid fixing Iris selection with a sprawling taxonomy or named-product rules. Public evaluator semantics should stay close to three reader-understandable states: must test, should test or explain, and not normally tested. Extra product-kind hints can guide normalization, but they should not become brittle report concepts or hidden if/else behavior.
+
+## 2026-05-16 — Evidence reels should follow the scenario arc
+
+Do not make claim evidence by uniformly clipping six screenshots or serving long static raw recordings as primary proof. User-facing evidence should show the meaningful before/action/result/proof arc for the specific scenario, while raw browser recordings remain debug artifacts.

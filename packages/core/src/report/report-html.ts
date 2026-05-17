@@ -266,7 +266,7 @@ const STYLES = `
   }
   .metric-grid {
     display: grid;
-    grid-template-columns: repeat(6, minmax(110px, 1fr));
+    grid-template-columns: repeat(7, minmax(110px, 1fr));
     gap: 8px;
     margin-top: 18px;
   }
@@ -1220,6 +1220,28 @@ const STYLES = `
     display: grid;
     gap: 8px;
     padding: 12px 16px;
+  }
+  .scope-limit-list {
+    display: grid;
+    gap: 8px;
+    padding: 12px 16px 0;
+  }
+  .scope-limit-item {
+    border: 1px solid #f0c36d;
+    border-left: 4px solid var(--status-partial);
+    border-radius: 7px;
+    padding: 9px 11px;
+    background: #fffaf0;
+  }
+  .scope-limit-item strong {
+    display: block;
+    font-size: 13px;
+  }
+  .scope-limit-item span {
+    display: block;
+    margin-top: 3px;
+    color: var(--text-dim);
+    font-size: 13px;
   }
   .capability-row {
     border: 1px solid var(--rule-light);
@@ -2489,6 +2511,7 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
   const scoreWarning = renderScoreCompletenessWarning(scoreCompleteness);
   const evaluationWarning = renderEvaluationWarning(evaluation);
   const capabilityMetric = renderCapabilityMetric(evaluation);
+  const skippedCapabilityMetric = renderImportantSkippedMetric(evaluation);
 
   return `<section class="report-hero tldr ${toneClass}">
     <div class="hero-main">
@@ -2504,10 +2527,11 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
       </div>
     </div>
     <div class="metric-grid">
-	      ${renderMetric('Tasks tested', counts.total > 0 ? `${counts.sat}/${counts.total}` : 'n/a', counts.total > 0 ? goalMetricCaption(counts) : 'no tasks')}
-	      ${renderMetric('Evidence confidence', evidenceConfidenceMetricValue(evaluation), evaluation.evidence_confidence.rationale)}
-	      ${capabilityMetric}
-	      ${renderMetric('Findings', totalFindings === 0 ? '0' : String(totalFindings), findingsMetricCaption(report), totalFindings > 0 ? '#findings' : undefined)}
+		      ${renderMetric('Scenarios verified', counts.total > 0 ? `${counts.sat}/${counts.total}` : 'n/a', counts.total > 0 ? goalMetricCaption(counts) : 'no scenarios')}
+		      ${renderMetric('Evidence confidence', evidenceConfidenceMetricValue(evaluation), evaluation.evidence_confidence.rationale)}
+		      ${capabilityMetric}
+		      ${skippedCapabilityMetric}
+		      ${renderMetric('Findings', totalFindings === 0 ? '0' : String(totalFindings), findingsMetricCaption(report), totalFindings > 0 ? '#findings' : undefined)}
 	      ${renderMetric('Runtime', formatDuration(report.run.duration_s), `${report.run.step_count} recorded steps`)}
 	      ${renderMetric('Rubric', `${scoreCompleteness.scoredProfiles}/${scoreCompleteness.requestedProfiles}`, scoreCompleteness.caption)}
 	    </div>
@@ -2643,12 +2667,12 @@ function overviewSummary(
   const parts: string[] = [];
   const scoreCompleteness = scoreCompletenessSummary(report.scores);
   if (counts.total > 0) {
-    parts.push(`${counts.sat} of ${counts.total} tasks verified`);
+    parts.push(`${counts.sat} of ${counts.total} scenarios verified`);
     if (counts.par > 0) parts.push(`${counts.par} partial`);
     if (counts.neg > 0) parts.push(`${counts.neg} broken`);
     if (counts.untested > 0) parts.push(`${counts.untested} untested`);
   } else {
-    parts.push('No explicit tasks were supplied');
+    parts.push('No scenarios were selected');
   }
   const findingText = findingsMetricCaption(report);
   if (findingText !== 'none') parts.push(findingText);
@@ -2734,16 +2758,42 @@ function evidenceConfidenceMetricValue(evaluation: ReportEvaluation): string {
 
 function renderCapabilityMetric(evaluation: ReportEvaluation): string {
   const coverage = evaluation.capability_coverage;
-  if (!coverage) return renderMetric('Product coverage', 'n/a', 'capabilities not recorded');
+  if (!coverage) {
+    return renderMetric('Important capabilities covered', 'n/a', 'capabilities not recorded');
+  }
   const value =
-    coverage.core_total > 0
-      ? `${coverage.core_covered}/${coverage.core_total} core`
-      : `${coverage.covered}/${coverage.total}`;
+    coverage.important_total > 0
+      ? `${coverage.important_covered}/${coverage.important_total}`
+      : coverage.core_total > 0
+        ? `${coverage.core_covered}/${coverage.core_total} core`
+        : `${coverage.covered}/${coverage.total}`;
   const caption =
-    coverage.gaps.length > 0
-      ? `${coverage.level}; ${coverage.gaps.length} gaps`
-      : `${coverage.level}; no core gaps`;
-  return renderMetric('Product coverage', value, caption, '#capability-coverage');
+    coverage.scope_limits.length > 0
+      ? `${coverage.level}; ${coverage.scope_limits.length} scope limits`
+      : `${coverage.level}; no important skips`;
+  return renderMetric('Important capabilities covered', value, caption, '#capability-coverage');
+}
+
+function renderImportantSkippedMetric(evaluation: ReportEvaluation): string {
+  const coverage = evaluation.capability_coverage;
+  if (!coverage) {
+    return renderMetric('Important capabilities skipped', 'n/a', 'capabilities not recorded');
+  }
+  const skipped = coverage.important_skipped;
+  const caption =
+    skipped > 0
+      ? coverage.scope_limits
+          .filter((limit) => limit.coverage !== 'partial')
+          .slice(0, 2)
+          .map((limit) => limit.label)
+          .join('; ') || 'scope limits recorded'
+      : 'none';
+  return renderMetric(
+    'Important capabilities skipped',
+    String(skipped),
+    caption,
+    skipped > 0 ? '#capability-coverage' : undefined,
+  );
 }
 
 function stripTrailingSentencePunctuation(value: string): string {
@@ -2766,7 +2816,7 @@ function goalMetricCaption(counts: GoalCounts): string {
   if (counts.neg > 0) parts.push(`${counts.neg} broken`);
   if (counts.untested > 0) parts.push(`${counts.untested} untested`);
   if (counts.skipped > 0) parts.push(`${counts.skipped} skipped`);
-  return parts.length > 0 ? parts.join(', ') : 'tested tasks';
+  return parts.length > 0 ? parts.join(', ') : 'tested scenarios';
 }
 
 function findingsMetricCaption(report: ReportJson): string {
@@ -2812,7 +2862,9 @@ function renderEvidenceIntegrity(report: ReportJson): string {
   }
   const gcv = report.spec_compliance?.goal_claim_validation;
   if (gcv && gcv.verified_kept + gcv.downgraded > 0) {
-    const parts = [`${gcv.verified_kept} task check${gcv.verified_kept === 1 ? '' : 's'} verified`];
+    const parts = [
+      `${gcv.verified_kept} scenario check${gcv.verified_kept === 1 ? '' : 's'} verified`,
+    ];
     if (gcv.downgraded > 0) parts.push(`${gcv.downgraded} downgraded`);
     lines.push(parts.join(', '));
   }
@@ -3003,7 +3055,7 @@ function renderFindingsSection(
     .join('');
   return `<section id="findings">
     <h2>Findings (${findings.length})</h2>
-    <p style="color: var(--text-dim); font-size: 13px; margin-top: -6px;">Findings that explain a tested goal reuse that goal's evidence instead of replaying duplicate clips.</p>
+    <p style="color: var(--text-dim); font-size: 13px; margin-top: -6px;">Findings that explain a tested scenario reuse that scenario's evidence instead of replaying duplicate clips.</p>
     <ul class="findings-list">${items}</ul>
   </section>`;
 }
@@ -3112,7 +3164,7 @@ function renderGoalReviewFacts(report: ReportJson, counts: GoalCounts): string {
         ? 'not recorded'
         : `${risk} risk`;
   return `<div class="goal-review-facts">
-    <div class="goal-review-fact"><span>Task outcome</span><strong>${escapeHtml(`${counts.sat}/${counts.total} verified${counts.par > 0 ? `, ${counts.par} partial` : ''}`)}</strong></div>
+    <div class="goal-review-fact"><span>Scenario outcome</span><strong>${escapeHtml(`${counts.sat}/${counts.total} verified${counts.par > 0 ? `, ${counts.par} partial` : ''}`)}</strong></div>
     <div class="goal-review-fact"><span>UI inventory</span><strong>${escapeHtml(coverageText)}</strong></div>
     <div class="goal-review-fact"><span>Deferred areas</span><strong>${escapeHtml(untestedText)}</strong></div>
 	  </div>`;
@@ -3132,20 +3184,32 @@ function renderCapabilityCoverage(report: ReportJson): string {
       status: capabilityReportStatus(capability, statusByGoal),
     }));
   const visibleRows = rows.filter(
-    (row) => row.capability.importance === 'core' || row.capability.importance === 'important',
+    (row) => capabilityExpectationLabel(row.capability) !== 'not normally tested',
   );
   const secondaryRows = rows.filter(
-    (row) => row.capability.importance !== 'core' && row.capability.importance !== 'important',
+    (row) => capabilityExpectationLabel(row.capability) === 'not normally tested',
   );
   const summaryChips = [
-    `${coverage.core_covered}/${coverage.core_total} core covered`,
-    `${coverage.covered}/${coverage.total} total covered`,
+    `${coverage.must_covered}/${coverage.must_total} must-test covered`,
+    `${coverage.important_covered}/${coverage.important_total} important covered`,
     coverage.partial > 0 ? `${coverage.partial} partial` : '',
-    coverage.deferred + coverage.untested > 0
-      ? `${coverage.deferred + coverage.untested} not covered`
-      : '',
+    coverage.important_skipped > 0 ? `${coverage.important_skipped} important skipped` : '',
   ].filter(Boolean);
   const readerSummary = coverage.summary.replace(/\bcapabilities\b/g, 'abilities');
+  const scopeLimitList =
+    coverage.scope_limits.length > 0
+      ? `<div class="scope-limit-list">
+          ${coverage.scope_limits
+            .slice(0, 5)
+            .map(
+              (limit) => `<div class="scope-limit-item">
+                <strong>${escapeHtml(limit.label)}</strong>
+                <span>${escapeHtml(limit.reason)}</span>
+              </div>`,
+            )
+            .join('')}
+        </div>`
+      : '';
   return `<section id="capability-coverage" class="capability-panel">
     <div class="capability-head">
       <div>
@@ -3155,6 +3219,7 @@ function renderCapabilityCoverage(report: ReportJson): string {
       </div>
       <div class="reader-plan-summary">${summaryChips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>
     </div>
+    ${scopeLimitList}
     <div class="capability-list">
       ${visibleRows.map(renderCapabilityRow).join('')}
     </div>
@@ -3178,12 +3243,12 @@ function renderCapabilityRow(row: {
       ? capability.scenario_ids.length > 0
         ? `Covered by ${capability.scenario_ids.join(', ')}.`
         : 'Covered by selected scenario evidence.'
-      : capability.coverage_gap || capability.denominator_reason;
+      : capability.skip_reason || capability.coverage_gap || capability.denominator_reason;
   return `<div class="capability-row ${escapeAttr(`capability-${status}`)}">
     <div class="capability-title">
       ${renderStatusPill(capabilityStatusPill(status))}
       <strong>${escapeHtml(capability.label)}</strong>
-      <span>${escapeHtml(capability.importance)}</span>
+      <span>${escapeHtml(capabilityExpectationLabel(capability))}</span>
     </div>
     <p>${escapeHtml(reason)}</p>
   </div>`;
@@ -3219,9 +3284,29 @@ function capabilityStatusPill(status: 'covered' | 'partial' | 'untested' | 'defe
 function capabilityReportRank(
   capability: ReportCapability,
 ): number {
+  const expectationRank = {
+    must_test: 0,
+    should_test_or_explain: 1,
+    not_normally_tested: 2,
+  };
   const importanceRank = { core: 0, important: 1, secondary: 2, diagnostic: 3 };
   const statusRank = { selected: 0, deferred: 1, discovered: 2, not_applicable: 3 };
-  return importanceRank[capability.importance] * 10 + statusRank[capability.status];
+  return (
+    expectationRank[capability.selection_expectation ?? 'not_normally_tested'] * 100 +
+    importanceRank[capability.importance] * 10 +
+    statusRank[capability.status]
+  );
+}
+
+function capabilityExpectationLabel(capability: ReportCapability): string {
+  switch (capability.selection_expectation) {
+    case 'must_test':
+      return 'must test';
+    case 'should_test_or_explain':
+      return 'should test or explain';
+    default:
+      return 'not normally tested';
+  }
 }
 
 function renderDiscoveryCoverageSummary(report: ReportJson): string {
@@ -3243,7 +3328,7 @@ function renderDiscoveryCoverageSummary(report: ReportJson): string {
   if (surfaceCount === 0 && journeyCount === 0 && deferredCount === 0 && !rationale) return '';
   const parts = [
     surfaceCount > 0 && journeyCount > 0
-      ? `${surfaceCount} UI items observed -> ${journeyCount} candidate workflows -> ${generatedGoalCount || report.spec_compliance.goals.length} tasks`
+      ? `${surfaceCount} UI items observed -> ${journeyCount} candidate workflows -> ${generatedGoalCount || report.spec_compliance.goals.length} scenarios`
       : surfaceCount > 0
         ? `${surfaceCount} UI items observed`
         : '',
@@ -3499,7 +3584,7 @@ function renderDiscoveryCoverageMap(
           ${renderDiscoveryChips([journeyRef])}
         </div>
         <div class="discovery-map-field">
-          <span class="discovery-map-field-label">Task checked</span>
+          <span class="discovery-map-field-label">Scenario checked</span>
           ${renderDiscoveryChips(goalRefs)}
         </div>
         <div class="discovery-map-field">
@@ -3615,7 +3700,7 @@ function buildGoalEvidenceCards(
     const key = `goal:${goal.id}`;
     const existing = cards.find((card) => card.key === key);
     if (existing) {
-      existing.claim = appendClaim(existing.claim, `Task ${goal.id}`);
+      existing.claim = appendClaim(existing.claim, `Scenario ${goal.id}`);
       existing.status =
         existing.status === goalStatusLabel(effectiveStatus) ? existing.status : 'mixed';
       existing.details = [...(existing.details ?? []), `${goal.id}: ${goal.description}`];
@@ -3631,7 +3716,7 @@ function buildGoalEvidenceCards(
     }
     cards.push({
       key,
-      claim: `Task ${goal.id}`,
+      claim: `Scenario ${goal.id}`,
       primaryGoalId: goal.id,
       status: goalStatusLabel(effectiveStatus),
       title,
@@ -4284,14 +4369,14 @@ function renderFindingLinkedMediaNote(linkedGoals: FindingGoalLink[], clipPath: 
   const goalLinks = linkedGoals
     .map(
       (link) =>
-        `<a href="#${escapeAttr(goalAnchorId(link.goalId))}">Task ${escapeHtml(link.goalId)} (${escapeHtml(link.goalStatus)})</a>`,
+        `<a href="#${escapeAttr(goalAnchorId(link.goalId))}">Scenario ${escapeHtml(link.goalId)} (${escapeHtml(link.goalStatus)})</a>`,
     )
     .join(', ');
   const fullClip = /\.(webm|mp4)$/i.test(clipPath)
     ? `<div style="margin-top: 6px;"><a href="${escapeAttr(clipPath)}" target="_blank" rel="noopener">open underlying clip</a></div>`
     : '';
   return `<div class="finding-linked-media-note">
-    Evidence is shown with ${goalLinks || `Task ${escapeHtml(first?.goalId ?? '')}`} to avoid a duplicate replay of the same journey.
+    Evidence is shown with ${goalLinks || `Scenario ${escapeHtml(first?.goalId ?? '')}`} to avoid a duplicate replay of the same journey.
     ${fullClip}
   </div>`;
 }
@@ -4301,11 +4386,11 @@ function renderFindingLinkedGoals(linkedGoals: FindingGoalLink[]): string {
   const goals = linkedGoals
     .map(
       (link) =>
-        `<a href="#${escapeAttr(goalAnchorId(link.goalId))}">Task ${escapeHtml(link.goalId)} (${escapeHtml(link.goalStatus)})</a>`,
+        `<a href="#${escapeAttr(goalAnchorId(link.goalId))}">Scenario ${escapeHtml(link.goalId)} (${escapeHtml(link.goalStatus)})</a>`,
     )
     .join('');
   return `<div class="finding-linked-goals">
-    <span class="label">Explains tested task</span>
+    <span class="label">Explains tested scenario</span>
     ${goals}
   </div>`;
 }
@@ -4516,7 +4601,7 @@ function renderAuditTrailSection(
     citedEvents.length > 0
       ? `<div class="audit-block">
           <h3>Trace events cited by this report</h3>
-          <p>Only events referenced by findings, tasks, or score rationales are shown here. The complete trace stays in <a href="${escapeAttr(report.artifacts?.trace ?? './trace.jsonl')}" target="_blank" rel="noopener">trace.jsonl</a>.</p>
+          <p>Only events referenced by findings, scenarios, or score rationales are shown here. The complete trace stays in <a href="${escapeAttr(report.artifacts?.trace ?? './trace.jsonl')}" target="_blank" rel="noopener">trace.jsonl</a>.</p>
           <div class="trace-events cited-events">${citedEvents.map((event) => renderTraceEvent(event, runData)).join('')}</div>
         </div>`
       : '';
@@ -4532,7 +4617,7 @@ function renderAuditTrailSection(
       <span>Audit trail</span>
       <span class="trace-meta">${escapeHtml(`${citedEvents.length} cited events, ${runData.events.length} total events`)}</span>
     </summary>
-    <p class="audit-note">The findings and tested tasks above are the primary evidence. This appendix is for verification and debugging, so noisy raw artifacts are folded away.</p>
+    <p class="audit-note">The findings and tested scenarios above are the primary evidence. This appendix is for verification and debugging, so noisy raw artifacts are folded away.</p>
     ${sourceEvents}
     ${walkthrough}
     ${recordings}

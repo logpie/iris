@@ -9,6 +9,7 @@ import type { TraceEvent } from '../trace/schema.js';
 import { collectClaimEvidenceArtifacts, collectTraceEvidenceArtifacts } from './evidence-clips.js';
 
 const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
+const hasFfprobe = spawnSync('ffprobe', ['-version'], { stdio: 'ignore' }).status === 0;
 
 describe('collectClaimEvidenceArtifacts', () => {
   it('slices evidence for findings and goal claims, resolving goal_status pointers', async () => {
@@ -224,6 +225,95 @@ describe('collectClaimEvidenceArtifacts', () => {
     expect(existsSync(result.clips.G1 ?? '')).toBe(true);
     expect(existsSync(result.clips.G2 ?? '')).toBe(true);
   });
+
+  it('builds variable-length evidence reels from the scenario trace window', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'iris-trace-reel-variable-'));
+    const screenshotsDir = join(runDir, 'evidence', 'screenshots');
+    mkdirSync(screenshotsDir, { recursive: true });
+    const screenshots = Array.from({ length: 6 }, (_, index) =>
+      join(screenshotsDir, `step-${String(index + 1).padStart(4, '0')}.png`),
+    );
+    for (const screenshot of screenshots) writeTinyPng(screenshot);
+    const trace = screenshots.map((screenshot, index) =>
+      event(`OBS${index + 1}`, 'observation', 10 + index, {
+        ref: `OBS-${String(index + 1).padStart(6, '0')}`,
+        perception_state: { screenshot_ref: screenshot },
+      }),
+    );
+    const judge = {
+      v: 1,
+      findings: [],
+      discarded_findings: [],
+      scores: { overall: { score: 9, weighted_from: [] }, profiles: {} },
+      spec_compliance: {
+        applicable: true,
+        goals: [
+          {
+            id: 'G1',
+            description: 'Confirm final state',
+            status: 'verified',
+            evidence: ['OBS3'],
+          },
+          {
+            id: 'G2',
+            description: 'Complete a multi-step edit',
+            status: 'verified',
+            evidence: ['OBS2', 'OBS5'],
+          },
+        ],
+        summary: '',
+      },
+      coverage_review: { surfaces_explored: 1, surfaces_unexplored: 0, judgement: '' },
+      meta: { confidence_overall: 1, confidence_caveats: [], would_re_explore_with: [] },
+    } satisfies JudgeOutput;
+
+    const result = await collectTraceEvidenceArtifacts({ judge, trace, runDir });
+
+    if (!expectStoryboardOutput(result.files) || !hasFfprobe) return;
+    const shortDuration = videoDurationSeconds(result.clips.G1 ?? '');
+    const longerDuration = videoDurationSeconds(result.clips.G2 ?? '');
+    expect(shortDuration).toBeGreaterThan(0.5);
+    expect(longerDuration).toBeGreaterThan(shortDuration + 0.5);
+  });
+
+  it('caps long scenario reels without hanging during frame thinning', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'iris-trace-reel-long-'));
+    const screenshotsDir = join(runDir, 'evidence', 'screenshots');
+    mkdirSync(screenshotsDir, { recursive: true });
+    const trace = Array.from({ length: 25 }, (_, index) => {
+      const screenshot = join(screenshotsDir, `step-${String(index + 1).padStart(4, '0')}.png`);
+      writeTinyPng(screenshot);
+      return event(`OBS${index + 1}`, 'observation', 10 + index, {
+        ref: `OBS-${String(index + 1).padStart(6, '0')}`,
+        perception_state: { screenshot_ref: screenshot },
+      });
+    });
+    const judge = {
+      v: 1,
+      findings: [],
+      discarded_findings: [],
+      scores: { overall: { score: 9, weighted_from: [] }, profiles: {} },
+      spec_compliance: {
+        applicable: true,
+        goals: [
+          {
+            id: 'G1',
+            description: 'Complete a long multi-step scenario',
+            status: 'verified',
+            evidence: ['OBS25'],
+          },
+        ],
+        summary: '',
+      },
+      coverage_review: { surfaces_explored: 1, surfaces_unexplored: 0, judgement: '' },
+      meta: { confidence_overall: 1, confidence_caveats: [], would_re_explore_with: [] },
+    } satisfies JudgeOutput;
+
+    const result = await collectTraceEvidenceArtifacts({ judge, trace, runDir });
+
+    if (!expectStoryboardOutput(result.files) || !hasFfprobe) return;
+    expect(videoDurationSeconds(result.clips.G1 ?? '')).toBeLessThan(12);
+  });
 });
 
 function event(
@@ -252,4 +342,14 @@ function expectStoryboardOutput(files: unknown[]): boolean {
   }
   expect(files.length).toBeGreaterThan(0);
   return true;
+}
+
+function videoDurationSeconds(path: string): number {
+  const result = spawnSync(
+    'ffprobe',
+    ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', path],
+    { encoding: 'utf8' },
+  );
+  expect(result.status).toBe(0);
+  return Number.parseFloat(result.stdout.trim());
 }

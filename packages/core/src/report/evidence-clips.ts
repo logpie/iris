@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import type { EvidenceFile, EvidenceRef, TargetAdapter } from '@iris/adapter-types';
 import type { TraceEvent } from '../trace/schema.js';
 import type { JudgeOutput } from '../judge/judge.js';
+import { buildTaskRuns } from '../task-runs/task-runs.js';
 
 export interface ClaimEvidenceArtifactsResult {
   clips: Record<string, string>;
@@ -90,8 +91,19 @@ function buildClaimEvidenceRefs(
     if (eventIds.length > 0) refs.push({ finding_id: finding.id, event_ids: eventIds });
   }
   if (includeGoals && judge.spec_compliance.applicable) {
+    const taskRunByGoalId = new Map(
+      buildTaskRuns({ goals: judge.spec_compliance.goals, trace }).map((run) => [
+        run.goal_id,
+        run,
+      ]),
+    );
     for (const goal of judge.spec_compliance.goals) {
-      const eventIds = unique(resolveEvidenceEventIds(goal.evidence, trace, eventIndex));
+      const taskRun = taskRunByGoalId.get(goal.id);
+      const scenarioObservationIds = taskRun?.observations.map((observation) => observation.event_id) ?? [];
+      const eventIds = unique([
+        ...scenarioObservationIds,
+        ...resolveEvidenceEventIds(goal.evidence, trace, eventIndex),
+      ]);
       if (eventIds.length > 0) refs.push({ finding_id: goal.id, event_ids: eventIds });
     }
   }
@@ -159,8 +171,19 @@ interface TraceScreenshotFrame {
   ts: number;
 }
 
-const STORYBOARD_FRAME_DURATION_S = 1.35;
-const STORYBOARD_MAX_FRAMES = 6;
+interface EvidenceReelFrame {
+  frame: TraceScreenshotFrame;
+  role: 'before' | 'action' | 'result' | 'proof';
+  duration_s: number;
+}
+
+const EVIDENCE_REEL_MAX_FRAMES = 10;
+const EVIDENCE_REEL_ROLE_DURATION_S: Record<EvidenceReelFrame['role'], number> = {
+  before: 0.8,
+  action: 0.65,
+  result: 1.05,
+  proof: 1.25,
+};
 
 async function sliceTraceEvidenceStoryboards(
   refs: EvidenceRef[],
@@ -175,12 +198,12 @@ async function sliceTraceEvidenceStoryboards(
 
   const out: EvidenceFile[] = [];
   for (const ref of refs) {
-    const selected = selectTraceStoryboardFrames(ref, frames);
+    const selected = selectTraceEvidenceReelFrames(ref, frames);
     if (selected.length === 0) continue;
     const clipPath = join(outDir, `story-${safeClipName(ref.finding_id)}.webm`);
     try {
       await spawnFfmpegScreenshotClip(
-        selected.map((frame) => frame.path),
+        selected,
         clipPath,
       );
     } catch {
@@ -250,11 +273,11 @@ function resolveRunArtifactPath(value: string, runDir: string): string | undefin
   return candidates.find((path) => existsSync(path));
 }
 
-function selectTraceStoryboardFrames(
+function selectTraceEvidenceReelFrames(
   ref: EvidenceRef,
   frames: TraceScreenshotFrame[],
-): TraceScreenshotFrame[] {
-  const wanted = new Set(ref.event_ids);
+): EvidenceReelFrame[] {
+  const wanted = new Set<string>(ref.event_ids);
   const anchors = frames
     .map((frame, index) => ({ frame, index }))
     .filter(({ frame }) => Array.from(frame.refs).some((alias) => wanted.has(alias)))
@@ -262,25 +285,82 @@ function selectTraceStoryboardFrames(
   if (anchors.length === 0) return [];
 
   const selected = new Set<number>();
-  for (const index of anchors) {
-    selected.add(index);
-    if (selected.size >= STORYBOARD_MAX_FRAMES) break;
+  const firstAnchor = Math.min(...anchors);
+  const lastAnchor = Math.max(...anchors);
+  const before = nearestDistinctFrameIndex(frames, firstAnchor, -1);
+  const after = nearestDistinctFrameIndex(frames, lastAnchor, 1);
+  if (before !== undefined) selected.add(before);
+  for (const index of anchors) selected.add(index);
+  const spanLength = lastAnchor - firstAnchor + 1;
+  if (spanLength > 2) {
+    selected.add(Math.floor((firstAnchor + lastAnchor) / 2));
   }
-  for (let radius = 1; selected.size < STORYBOARD_MAX_FRAMES && radius <= frames.length; radius++) {
-    for (const anchor of anchors) {
-      const before = anchor - radius;
-      const after = anchor + radius;
-      if (before >= 0) selected.add(before);
-      if (selected.size >= STORYBOARD_MAX_FRAMES) break;
-      if (after < frames.length) selected.add(after);
-      if (selected.size >= STORYBOARD_MAX_FRAMES) break;
-    }
+  if (after !== undefined) selected.add(after);
+
+  for (const anchor of anchors) {
+    if (selected.size >= EVIDENCE_REEL_MAX_FRAMES) break;
+    const prev = nearestDistinctFrameIndex(frames, anchor, -1);
+    if (prev !== undefined) selected.add(prev);
+    if (selected.size >= EVIDENCE_REEL_MAX_FRAMES) break;
+    const next = nearestDistinctFrameIndex(frames, anchor, 1);
+    if (next !== undefined) selected.add(next);
   }
 
-  return Array.from(selected)
+  const deduped = Array.from(selected)
     .sort((a, b) => a - b)
     .map((index) => frames[index]!)
     .filter((frame, index, arr) => index === 0 || frame.path !== arr[index - 1]?.path);
+  const bounded = thinFrames(deduped, EVIDENCE_REEL_MAX_FRAMES);
+  return bounded.map((frame) => {
+    const frameIndex = frames.indexOf(frame);
+    const role = evidenceFrameRole(frameIndex, firstAnchor, lastAnchor, wanted, frame);
+    return {
+      frame,
+      role,
+      duration_s: EVIDENCE_REEL_ROLE_DURATION_S[role],
+    };
+  });
+}
+
+function nearestDistinctFrameIndex(
+  frames: TraceScreenshotFrame[],
+  anchor: number,
+  direction: -1 | 1,
+): number | undefined {
+  const anchorPath = frames[anchor]?.path;
+  for (let index = anchor + direction; index >= 0 && index < frames.length; index += direction) {
+    if (frames[index]?.path !== anchorPath) return index;
+  }
+  return undefined;
+}
+
+function thinFrames<T>(frames: T[], maxFrames: number): T[] {
+  if (frames.length <= maxFrames) return frames;
+  if (maxFrames <= 0) return [];
+  if (maxFrames === 1) return [frames[frames.length - 1]!];
+  const keep: number[] = [];
+  let last = -1;
+  for (let slot = 0; slot < maxFrames; slot += 1) {
+    const index = Math.round((slot * (frames.length - 1)) / (maxFrames - 1));
+    if (index === last) continue;
+    keep.push(index);
+    last = index;
+  }
+  return keep.map((index) => frames[index]!);
+}
+
+function evidenceFrameRole(
+  frameIndex: number,
+  firstAnchor: number,
+  lastAnchor: number,
+  wanted: Set<string>,
+  frame: TraceScreenshotFrame,
+): EvidenceReelFrame['role'] {
+  const isAnchor = Array.from(frame.refs).some((alias) => wanted.has(alias));
+  if (isAnchor && frameIndex === lastAnchor) return 'proof';
+  if (frameIndex < firstAnchor) return 'before';
+  if (frameIndex > lastAnchor) return 'result';
+  return isAnchor ? 'result' : 'action';
 }
 
 function isFfmpegAvailable(): Promise<boolean> {
@@ -291,18 +371,18 @@ function isFfmpegAvailable(): Promise<boolean> {
   });
 }
 
-async function spawnFfmpegScreenshotClip(imagePaths: string[], outPath: string): Promise<void> {
-  const existing = imagePaths.filter((path) => existsSync(path));
+async function spawnFfmpegScreenshotClip(frames: EvidenceReelFrame[], outPath: string): Promise<void> {
+  const existing = frames.filter((frame) => existsSync(frame.frame.path));
   if (existing.length === 0) throw new Error('no screenshot frames for clip');
   const tmp = mkdtempSync(join(tmpdir(), 'iris-trace-storyboard-'));
   try {
     const listPath = join(tmp, 'frames.txt');
     const lines: string[] = [];
-    for (const imagePath of existing) {
-      lines.push(`file '${escapeConcatPath(imagePath)}'`);
-      lines.push(`duration ${STORYBOARD_FRAME_DURATION_S}`);
+    for (const item of existing) {
+      lines.push(`file '${escapeConcatPath(item.frame.path)}'`);
+      lines.push(`duration ${item.duration_s}`);
     }
-    lines.push(`file '${escapeConcatPath(existing[existing.length - 1]!)}'`);
+    lines.push(`file '${escapeConcatPath(existing[existing.length - 1]!.frame.path)}'`);
     writeFileSync(listPath, `${lines.join('\n')}\n`);
     await new Promise<void>((resolvePromise, reject) => {
       const args = [

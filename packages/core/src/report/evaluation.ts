@@ -1,4 +1,7 @@
-import type { DiscoveryCapability } from '../discovery/discovery.js';
+import type {
+  DiscoveryCapability,
+  DiscoveryCapabilitySelectionExpectation,
+} from '../discovery/discovery.js';
 import type { JudgeOutput } from '../judge/judge.js';
 
 type Scores = JudgeOutput['scores'];
@@ -43,6 +46,16 @@ export interface CapabilityCoverageSummary {
   partial: number;
   untested: number;
   deferred: number;
+  important_total: number;
+  important_covered: number;
+  important_partial: number;
+  important_skipped: number;
+  must_total: number;
+  must_covered: number;
+  must_skipped: number;
+  should_total: number;
+  should_covered: number;
+  should_skipped: number;
   core_total: number;
   core_covered: number;
   core_partial: number;
@@ -52,6 +65,16 @@ export interface CapabilityCoverageSummary {
   label: string;
   summary: string;
   gaps: string[];
+  scope_limits: CapabilityScopeLimit[];
+}
+
+export interface CapabilityScopeLimit {
+  label: string;
+  expectation: DiscoveryCapabilitySelectionExpectation;
+  importance: DiscoveryCapability['importance'];
+  status: DiscoveryCapability['status'];
+  coverage: 'covered' | 'partial' | 'untested' | 'deferred';
+  reason: string;
 }
 
 export interface DeriveReportEvaluationInput {
@@ -74,8 +97,11 @@ export function deriveReportEvaluation(inp: DeriveReportEvaluationInput): Report
   const verifiedRatio = hasGoals ? goalCounts.verified / goalCounts.total : 0.6;
   const metaConfidence = clamp01(inp.meta.confidence_overall);
   const capabilityCoverage = deriveCapabilityCoverage(inp.capabilities ?? [], inp.goals);
-  const evidenceScore = clamp01(
+  const baseEvidenceScore = clamp01(
     0.45 * verifiedRatio + 0.2 * attemptedRatio + 0.25 * metaConfidence + 0.1 * rubricCompleteness,
+  );
+  const evidenceScore = clamp01(
+    baseEvidenceScore * capabilityConfidenceMultiplier(capabilityCoverage),
   );
   const level = confidenceLevel(evidenceScore);
   const authority = scoreAuthority({
@@ -202,6 +228,7 @@ function scoreAuthority(inp: {
     (inp.hasGoals && inp.attemptedRatio < 0.5) ||
     inp.rubricCompleteness < 0.5 ||
     inp.metaConfidence < 0.35 ||
+    (coverage && coverage.must_skipped > 0) ||
     (coverage && coverage.core_total >= 4 && coverage.core_ratio < 0.5)
   ) {
     return 'insufficient';
@@ -213,11 +240,24 @@ function scoreAuthority(inp: {
     inp.goalCounts.skipped === 0 &&
     inp.rubricCompleteness === 1 &&
     inp.metaConfidence >= 0.7 &&
+    (!coverage || coverage.important_skipped === 0) &&
     (!coverage || coverage.core_total === 0 || coverage.core_ratio >= 0.75)
   ) {
     return 'authoritative';
   }
   return 'provisional';
+}
+
+function capabilityConfidenceMultiplier(
+  coverage: CapabilityCoverageSummary | undefined,
+): number {
+  if (!coverage) return 1;
+  if (coverage.must_skipped > 0) return 0.55;
+  if (coverage.should_skipped >= 3) return 0.72;
+  if (coverage.should_skipped > 0) return 0.85;
+  if (coverage.level === 'low') return 0.75;
+  if (coverage.level === 'medium') return 0.92;
+  return 1;
 }
 
 function evaluationReasons(inp: {
@@ -231,27 +271,27 @@ function evaluationReasons(inp: {
   const reasons: string[] = [];
   const counts = inp.goalCounts;
   if (counts.total > 0) {
-    reasons.push(`${counts.verified}/${counts.total} tasks verified`);
+    reasons.push(`${counts.verified}/${counts.total} scenarios verified`);
     if (counts.partial > 0) {
       reasons.push(
-        `${countPhrase(counts.partial, 'partial task')} ${counts.partial === 1 ? 'indicates' : 'indicate'} Iris did not fully prove outcomes`,
+        `${countPhrase(counts.partial, 'partial scenario')} ${counts.partial === 1 ? 'indicates' : 'indicate'} Iris did not fully prove outcomes`,
       );
     }
     if (counts.blocked > 0) {
-      reasons.push(`${countPhrase(counts.blocked, 'task')} showed blocked or failed outcomes`);
+      reasons.push(`${countPhrase(counts.blocked, 'scenario')} showed blocked or failed outcomes`);
     }
     if (counts.untested > 0) {
       reasons.push(
-        `${countPhrase(counts.untested, 'task')} ${counts.untested === 1 ? 'was' : 'were'} not exercised`,
+        `${countPhrase(counts.untested, 'scenario')} ${counts.untested === 1 ? 'was' : 'were'} not exercised`,
       );
     }
     if (counts.skipped > 0) {
       reasons.push(
-        `${countPhrase(counts.skipped, 'task')} ${counts.skipped === 1 ? 'was' : 'were'} skipped as not applicable or out of scope`,
+        `${countPhrase(counts.skipped, 'scenario')} ${counts.skipped === 1 ? 'was' : 'were'} skipped as not applicable or out of scope`,
       );
     }
   } else {
-    reasons.push('No product tasks were available to anchor the product score');
+    reasons.push('No product scenarios were available to anchor the product score');
   }
 
   const highImpactFindings = inp.findings.filter(
@@ -272,6 +312,9 @@ function evaluationReasons(inp: {
     reasons.push(
       `${coverage.core_covered}/${coverage.core_total} core product capabilities covered`,
     );
+    if (coverage.important_skipped > 0) {
+      reasons.push(`${coverage.important_skipped} important product capabilities skipped`);
+    }
     if (coverage.gaps.length > 0) {
       reasons.push(`Capability gaps: ${coverage.gaps.slice(0, 3).join('; ')}`);
     }
@@ -307,10 +350,10 @@ function productScoreInterpretation(
     return 'Iris did not gather enough evidence to grade product quality fairly.';
   }
   if (authority === 'authoritative') {
-    return 'The score is backed by completed task evidence for the exercised scope.';
+    return 'The score is backed by completed scenario evidence for the exercised scope.';
   }
   if (findings.length === 0 && counts.partial > 0) {
-    return 'No product defects were confirmed; partial tasks should be read as Iris proof gaps, not product failures.';
+    return 'No product defects were confirmed; partial scenarios should be read as Iris proof gaps, not product failures.';
   }
   if (findings.length === 0) {
     return 'No product defects were confirmed, but the run still has coverage or confidence limits.';
@@ -336,28 +379,54 @@ function deriveCapabilityCoverage(
   const core = classified.filter((item) => item.capability.importance === 'core');
   const coreCovered = core.filter((item) => item.coverage === 'covered').length;
   const corePartial = core.filter((item) => item.coverage === 'partial').length;
+  const must = classified.filter(
+    (item) => capabilityExpectation(item.capability) === 'must_test',
+  );
+  const should = classified.filter(
+    (item) => capabilityExpectation(item.capability) === 'should_test_or_explain',
+  );
+  const important = [...must, ...should];
+  const mustCovered = must.filter((item) => item.coverage === 'covered').length;
+  const shouldCovered = should.filter((item) => item.coverage === 'covered').length;
+  const importantCovered = important.filter((item) => item.coverage === 'covered').length;
+  const importantPartial = important.filter((item) => item.coverage === 'partial').length;
+  const scopeLimits = classified
+    .filter((item) => capabilityExpectation(item.capability) !== 'not_normally_tested')
+    .filter((item) => item.coverage !== 'covered')
+    .sort((a, b) => capabilityImportanceRank(a.capability) - capabilityImportanceRank(b.capability))
+    .map((item) => capabilityScopeLimit(item.capability, item.coverage))
+    .slice(0, 10);
+  const mustSkipped = scopeLimits.filter(
+    (item) => item.expectation === 'must_test' && item.coverage !== 'partial',
+  ).length;
+  const shouldSkipped = scopeLimits.filter(
+    (item) => item.expectation === 'should_test_or_explain' && item.coverage !== 'partial',
+  ).length;
+  const importantSkipped = scopeLimits.filter((item) => item.coverage !== 'partial').length;
   const ratio = relevant.length > 0 ? covered / relevant.length : 1;
   const coreRatio = core.length > 0 ? coreCovered / core.length : ratio;
-  const level = capabilityCoverageLevel(coreRatio, ratio);
-  const gaps = classified
-    .filter(
-      (item) =>
-        item.coverage !== 'covered' &&
-        (item.capability.importance === 'core' || item.capability.importance === 'important'),
-    )
-    .sort((a, b) => capabilityImportanceRank(a.capability) - capabilityImportanceRank(b.capability))
-    .map((item) => item.capability.label)
-    .slice(0, 8);
+  const level = capabilityCoverageLevel(coreRatio, ratio, mustSkipped, shouldSkipped);
+  const gaps = scopeLimits.map((item) => item.label).slice(0, 8);
   const summary =
     core.length > 0
-      ? `${coreCovered}/${core.length} core capabilities covered; ${covered}/${relevant.length} total capabilities covered.`
-      : `${covered}/${relevant.length} capabilities covered.`;
+      ? `${coreCovered}/${core.length} core capabilities covered; ${importantCovered}/${important.length} important capabilities covered; ${importantSkipped} important skipped.`
+      : `${covered}/${relevant.length} capabilities covered; ${importantSkipped} important skipped.`;
   return {
     total: relevant.length,
     covered,
     partial,
     untested,
     deferred,
+    important_total: important.length,
+    important_covered: importantCovered,
+    important_partial: importantPartial,
+    important_skipped: importantSkipped,
+    must_total: must.length,
+    must_covered: mustCovered,
+    must_skipped: mustSkipped,
+    should_total: should.length,
+    should_covered: shouldCovered,
+    should_skipped: shouldSkipped,
     core_total: core.length,
     core_covered: coreCovered,
     core_partial: corePartial,
@@ -367,6 +436,7 @@ function deriveCapabilityCoverage(
     label: `${capitalize(level)} product coverage`,
     summary,
     gaps,
+    scope_limits: scopeLimits,
   };
 }
 
@@ -377,18 +447,55 @@ function capabilityRuntimeStatus(
   const statuses = capability.scenario_ids
     .map((id) => statusByGoalId.get(id))
     .filter((status): status is Goal['status'] => Boolean(status));
-  if (statuses.some((status) => status === 'verified' || status === 'satisfied')) return 'covered';
   if (statuses.some((status) => status === 'partial' || status === 'blocked' || status === 'not_satisfied')) {
     return 'partial';
   }
+  if (statuses.some((status) => status === 'verified' || status === 'satisfied')) return 'covered';
   if (capability.status === 'selected') return 'untested';
   return 'deferred';
 }
 
-function capabilityCoverageLevel(coreRatio: number, ratio: number): EvidenceConfidenceLevel {
+function capabilityCoverageLevel(
+  coreRatio: number,
+  ratio: number,
+  mustSkipped: number,
+  shouldSkipped: number,
+): EvidenceConfidenceLevel {
+  if (mustSkipped > 0) return 'low';
+  if (shouldSkipped >= 3) return 'medium';
   if (coreRatio >= 0.75 && ratio >= 0.55) return 'high';
   if (coreRatio >= 0.5 && ratio >= 0.35) return 'medium';
   return 'low';
+}
+
+function capabilityExpectation(
+  capability: DiscoveryCapability,
+): DiscoveryCapabilitySelectionExpectation {
+  if (capability.selection_expectation) return capability.selection_expectation;
+  if (capability.importance === 'core') return 'must_test';
+  if (capability.importance === 'important') return 'should_test_or_explain';
+  return 'not_normally_tested';
+}
+
+function capabilityScopeLimit(
+  capability: DiscoveryCapability,
+  coverage: 'covered' | 'partial' | 'untested' | 'deferred',
+): CapabilityScopeLimit {
+  const expectation = capabilityExpectation(capability);
+  return {
+    label: capability.label,
+    expectation,
+    importance: capability.importance,
+    status: capability.status,
+    coverage,
+    reason:
+      capability.skip_reason ||
+      capability.coverage_gap ||
+      capability.denominator_reason ||
+      (expectation === 'must_test'
+        ? 'Central product capability was expected but not covered by selected evidence.'
+        : 'Important product capability was not covered by selected evidence.'),
+  };
 }
 
 function capabilityImportanceRank(capability: DiscoveryCapability): number {
@@ -413,7 +520,7 @@ function evidenceRationale(
     return 'The run is useful for debugging Iris, but not for a fair product-quality judgement.';
   }
   if (counts.total > 0 && counts.partial > 0) {
-    return `${capitalize(level)} confidence because Iris attempted all or most tasks but left outcome proof incomplete.`;
+    return `${capitalize(level)} confidence because Iris attempted all or most scenarios but left outcome proof incomplete.`;
   }
   return `${capitalize(level)} confidence in the observed product score.`;
 }

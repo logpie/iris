@@ -13,7 +13,7 @@ describe('buildReportJson', () => {
     expect(r.evaluation?.product_score.authority).toBe('provisional');
   });
 
-  it('treats mature-product partial tasks as evaluator uncertainty, not product failure', () => {
+  it('treats mature-product partial scenarios as evaluator uncertainty, not product failure', () => {
     const judge = fakeJudge();
     judge.findings = [];
     judge.scores.overall.score = 7.5;
@@ -33,7 +33,7 @@ describe('buildReportJson', () => {
     expect(r.evaluation?.product_score.label).toBe('Provisional product score');
     expect(r.evaluation?.product_score.interpretation).toContain('Iris proof gaps');
     expect(r.evaluation?.evidence_confidence.reasons).toContain(
-      '4 partial tasks indicate Iris did not fully prove outcomes',
+      '4 partial scenarios indicate Iris did not fully prove outcomes',
     );
     expect(r.evaluation?.evidence_confidence.reasons).toContain('No confirmed product findings');
   });
@@ -142,11 +142,14 @@ describe('buildReportJson', () => {
       ],
     });
     expect(r.evaluation?.capability_coverage?.summary).toBe(
-      '1/5 core capabilities covered; 1/5 total capabilities covered.',
+      '1/5 core capabilities covered; 1/5 important capabilities covered; 4 important skipped.',
     );
     expect(r.evaluation?.product_score.authority).toBe('insufficient');
     expect(r.evaluation?.evidence_confidence.reasons).toContain(
       '1/5 core product capabilities covered',
+    );
+    expect(r.evaluation?.evidence_confidence.reasons).toContain(
+      '4 important product capabilities skipped',
     );
   });
 
@@ -277,6 +280,100 @@ describe('buildReportJson', () => {
     // 2/4 = 50% — exactly at the floor.
     const r = buildReportJson({ judge, run: fakeRun(), threshold: 5.0 });
     expect(r.headline.threshold_passed).toBe(true);
+  });
+
+  it('threshold_passed stays false when score authority is insufficient', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 9;
+    judge.meta.confidence_overall = 0.9;
+    judge.meta.confidence_caveats = [];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'filter rows', status: 'verified', evidence: ['OBS-1'] },
+      { id: 'G2', description: 'sort rows', status: 'partial', evidence: ['OBS-2'] },
+    ];
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      threshold: 5.0,
+      trace_events: [
+        {
+          v: 1,
+          id: 'DISCOVERY_1',
+          ts: 1,
+          step: 0,
+          target_kind: 'web',
+          kind: 'discovery',
+          actor: 'system',
+          payload: {
+            capabilities: [
+              {
+                id: 'C1',
+                label: 'Sort or page data-grid rows',
+                product_kind: 'data_grid',
+                importance: 'core',
+                status: 'selected',
+                confidence: 0.9,
+                source: 'product_kind_prior',
+                scenario_ids: ['G1', 'G2'],
+                journey_ids: ['J1', 'J2'],
+                surface_ids: ['S1'],
+                evidence: [],
+                denominator_reason: 'Sorting is core.',
+                coverage_gap: '',
+              },
+              {
+                id: 'C2',
+                label: 'Filter data-grid rows',
+                product_kind: 'data_grid',
+                importance: 'core',
+                status: 'deferred',
+                confidence: 0.9,
+                source: 'product_kind_prior',
+                scenario_ids: [],
+                journey_ids: [],
+                surface_ids: ['S1'],
+                evidence: [],
+                denominator_reason: 'Filtering is core.',
+                coverage_gap: 'Not selected.',
+              },
+              {
+                id: 'C3',
+                label: 'Read implementation code or dependencies',
+                product_kind: 'developer_documentation',
+                importance: 'core',
+                status: 'deferred',
+                confidence: 0.9,
+                source: 'product_kind_prior',
+                scenario_ids: [],
+                journey_ids: [],
+                surface_ids: ['S2'],
+                evidence: [],
+                denominator_reason: 'Code docs are core.',
+                coverage_gap: 'Not selected.',
+              },
+              {
+                id: 'C4',
+                label: 'Navigate related examples',
+                product_kind: 'developer_documentation',
+                importance: 'core',
+                status: 'deferred',
+                confidence: 0.9,
+                source: 'model',
+                scenario_ids: [],
+                journey_ids: [],
+                surface_ids: ['S2'],
+                evidence: [],
+                denominator_reason: 'Related examples are core.',
+                coverage_gap: 'Not selected.',
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(r.evaluation?.product_score.authority).toBe('insufficient');
+    expect(r.headline.threshold_passed).toBe(false);
   });
 
   it('threshold_passed false when report is blocked', () => {

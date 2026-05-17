@@ -18,15 +18,28 @@ export interface SummaryInput {
   goals_attempted?: number;
   goals_verified?: number;
   goals_total?: number;
+  scenario_evidence_verified?: number;
+  scenario_evidence_downgraded?: number;
+  finding_evidence_verified?: number;
+  finding_evidence_downgraded?: number;
+  unsupported_finding_drafts_discarded?: number;
+  /** @deprecated Use finding_evidence_* fields. */
   evidence_verified?: number;
+  /** @deprecated Use finding_evidence_* fields. */
   evidence_downgraded?: number;
+  /** @deprecated Use unsupported_finding_drafts_discarded. */
   evidence_discarded?: number;
   exit_code?: number;
 }
 
 export function buildSummaryLine(input: SummaryInput): string {
+  const findingEvidenceVerified = input.finding_evidence_verified ?? input.evidence_verified;
+  const findingEvidenceDowngraded =
+    input.finding_evidence_downgraded ?? input.evidence_downgraded;
+  const findingDraftsDiscarded =
+    input.unsupported_finding_drafts_discarded ?? input.evidence_discarded;
   const out = {
-    v: 2,
+    v: 3,
     score: round2(input.score),
     threshold_passed: input.threshold_passed,
     findings: input.findings,
@@ -45,12 +58,20 @@ export function buildSummaryLine(input: SummaryInput): string {
           },
         }
       : {}),
-    ...(input.evidence_verified !== undefined
+    ...(input.scenario_evidence_verified !== undefined
       ? {
-          evidence: {
-            verified: input.evidence_verified,
-            downgraded: input.evidence_downgraded ?? 0,
-            discarded: input.evidence_discarded ?? 0,
+          scenario_evidence: {
+            verified: input.scenario_evidence_verified,
+            downgraded: input.scenario_evidence_downgraded ?? 0,
+          },
+        }
+      : {}),
+    ...(findingEvidenceVerified !== undefined || findingDraftsDiscarded !== undefined
+      ? {
+          finding_evidence: {
+            verified: findingEvidenceVerified ?? 0,
+            downgraded: findingEvidenceDowngraded ?? 0,
+            unsupported_drafts_discarded: findingDraftsDiscarded ?? 0,
           },
         }
       : {}),

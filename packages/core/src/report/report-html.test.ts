@@ -39,7 +39,7 @@ describe('buildReportHtml', () => {
     expect(html).toContain('Provisional product score');
     expect(html).toContain('No product defects were confirmed');
     expect(html).toContain('Iris proof gaps');
-    expect(html).toContain('4 partial tasks indicate Iris did not fully prove outcomes');
+    expect(html).toContain('4 partial scenarios indicate Iris did not fully prove outcomes');
   });
 
   it('does not show a second competing confidence percentage in caveats', () => {
@@ -182,9 +182,9 @@ describe('buildReportHtml', () => {
     expect(html).toContain('Screenshot storyboard');
     expect(html).not.toContain('<h2>Run walkthrough</h2>');
     expect(html).toContain('G1');
-    expect(html).toContain('Task G1');
-    expect(html).toContain('Task G2');
-    expect(html).not.toContain('<span class="claim">Task G2</span>');
+    expect(html).toContain('Scenario G1');
+    expect(html).toContain('Scenario G2');
+    expect(html).not.toContain('<span class="claim">Scenario G2</span>');
     expect(html).toContain('<span class="goal-proof-title">load article</span>');
     expect(html).not.toContain('<span class="goal-proof-title">OpenAI - Wikipedia</span>');
     expect(html).toContain('evidence/screenshots/step-0001.png');
@@ -350,7 +350,7 @@ describe('buildReportHtml', () => {
 
     expect(html.indexOf('Findings (1)')).toBeLessThan(html.indexOf('Scenario audit'));
     expect(html).toContain('Issue from this evidence');
-    expect(html).toContain('Explains tested task');
+    expect(html).toContain('Explains tested scenario');
     expect(html).toContain('#goal-G3');
     expect(html).toContain('#finding-F-001');
     expect(html).toContain('Evidence is shown with');
@@ -592,8 +592,8 @@ describe('buildReportHtml', () => {
       { id: 'G3', description: 'Export board', status: 'verified', evidence: [] },
     ];
     const html = buildReportHtml(buildReportJson({ judge, run: fakeRun() }));
-    expect(html.indexOf('Task G1')).toBeLessThan(html.indexOf('Task G2'));
-    expect(html.indexOf('Task G2')).toBeLessThan(html.indexOf('Task G3'));
+    expect(html.indexOf('Scenario G1')).toBeLessThan(html.indexOf('Scenario G2'));
+    expect(html.indexOf('Scenario G2')).toBeLessThan(html.indexOf('Scenario G3'));
   });
 
   it('renders goal scope and observed result without product-specific inference', () => {
@@ -766,10 +766,10 @@ describe('buildReportHtml', () => {
     });
     const html = buildReportHtml(r);
     expect(html).toContain('Discovery map (debug)');
-    expect(html).toContain('1 UI items observed -&gt; 1 candidate workflows -&gt; 1 tasks');
+    expect(html).toContain('1 UI items observed -&gt; 1 candidate workflows -&gt; 1 scenarios');
     expect(html).toContain('1/1 UI areas covered');
     expect(html).toContain('Coverage map');
-    expect(html).toContain('Task checked');
+    expect(html).toContain('Scenario checked');
     expect(html).toContain('UI areas covered');
     expect(html).toContain('UI inventory (1)');
     expect(html).toContain('What Iris tried to prove');
@@ -778,7 +778,8 @@ describe('buildReportHtml', () => {
     expect(html).not.toContain('User journeys checked');
     expect(html).toContain('Proof standard');
     expect(html).toContain('Product abilities Iris counted');
-    expect(html).toContain('3/3 core covered');
+    expect(html).toContain('3/3 must-test covered');
+    expect(html).toContain('Important capabilities skipped');
     expect(html).toContain('Navigate within content');
     expect(html).toContain('Scenario map');
     expect(html).toContain('Search, open, and read a relevant content page.');
@@ -786,7 +787,7 @@ describe('buildReportHtml', () => {
     expect(html).toContain('Find and read content');
     expect(html).toContain('enter query, open result');
     expect(html).toContain('search box visible');
-    expect(html).toContain('<span class="goal-id-badge">Task G1</span>');
+    expect(html).toContain('<span class="goal-id-badge">Scenario G1</span>');
     expect(html).toContain(
       '<span class="goal-proof-title">Search for OpenAI and verify content loads.</span>',
     );
@@ -930,7 +931,8 @@ describe('buildReportHtml', () => {
     const html = buildReportHtml(r);
     expect(html).toContain('class="report-hero tldr');
     expect(html).toContain('Verdict');
-    expect(html).toContain('Tasks tested');
+    expect(html).toContain('Scenarios verified');
+    expect(html).toContain('Important capabilities skipped');
     expect(html).toContain('Findings');
   });
 });

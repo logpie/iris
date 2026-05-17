@@ -12,10 +12,10 @@ describe('buildReportMd', () => {
     expect(md).toMatch(/❌/);
   });
 
-  it('lists task checks when applicable', () => {
+  it('lists scenario checks when applicable', () => {
     const r = buildReportJson({ judge: fakeJudge(), run: fakeRun() });
     const md = buildReportMd(r);
-    expect(md).toMatch(/Task checks/);
+    expect(md).toMatch(/Scenario checks/);
     expect(md).toMatch(/G1: sign in/);
     expect(md).toMatch(/G2: export/);
   });
@@ -27,7 +27,7 @@ describe('buildReportMd', () => {
     ];
     const r = buildReportJson({ judge, run: fakeRun() });
     const md = buildReportMd(r);
-    expect(md).toMatch(/Task checks — 1 \/ 1/);
+    expect(md).toMatch(/Scenario checks — 1 \/ 1/);
     expect(md).toMatch(/✅ G1: load article/);
   });
 

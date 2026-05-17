@@ -75,7 +75,8 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
   const reasons: string[] = [];
 
   const next = goals.map((g) => {
-    if (g.status !== 'verified') return g;
+    if (g.status !== 'verified' && g.status !== 'partial') return g;
+    const wasPartial = g.status === 'partial';
     const statusInfo = goalStatusInfo.get(g.id);
     // Phase 14: every verified goal MUST have a notes field with substantive
     // explanation. Empty notes are how audit drift starts — verifications
@@ -87,6 +88,7 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
     const statusRationale = (statusInfo?.rationale ?? '').trim();
     const noteBackfill = notes.length < 20 && statusRationale.length >= 20 ? statusRationale : '';
     if (notes.length < 20 && !noteBackfill) {
+      if (wasPartial) return g;
       downgraded++;
       const reason = `${g.id}: verified without substantive notes (mandatory under Phase 14)`;
       reasons.push(reason);
@@ -118,6 +120,7 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
       statusRationale,
     });
     if (!productUseCheck.ok) {
+      if (wasPartial) return g;
       downgraded++;
       reasons.push(`${g.id}: ${productUseCheck.reason}`);
       const caveat = `[goal-claim validator: ${productUseCheck.reason}]`;
@@ -153,6 +156,14 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
 
     if (cited) {
       verifiedKept++;
+      if (wasPartial) {
+        const upgradeNote = '[goal-claim validator: partial upgraded after cited outcome evidence satisfied the product-use contract]';
+        return {
+          ...g,
+          status: 'verified' as const,
+          notes: notes ? `${notes} ${upgradeNote}` : upgradeNote,
+        };
+      }
       return noteBackfill
         ? {
             ...g,
@@ -161,6 +172,7 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
         : g;
     }
     if (hasSideEffectOnly || uniqueArtifacts.length === 0) {
+      if (wasPartial) return g;
       downgraded++;
       const reason =
         uniqueArtifacts.length === 0
@@ -176,6 +188,7 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
     }
     // Outcome artifacts exist but the Judge did not cite them. Treat as
     // downgrade — Judge needs to cite outcome to claim verified.
+    if (wasPartial) return g;
     downgraded++;
     reasons.push(`${g.id}: outcome artifacts exist but none cited in evidence`);
     const caveat = '[goal-claim validator: outcome artifact uncited]';
@@ -601,6 +614,44 @@ function observedUserVisibleScenarioText(goalWindow: OutcomeContractTraceEvent[]
     }
     if (event.kind === 'action_result' && typeof payload.description === 'string') {
       chunks.push(payload.description);
+    }
+    if (event.kind === 'probe_result') {
+      chunks.push(String(payload.probe ?? ''));
+      chunks.push(String(payload.summary ?? ''));
+      const data = payload.data;
+      if (data && typeof data === 'object') {
+        const d = data as {
+          visibleText?: unknown;
+          text_sample?: unknown;
+          outline_sample?: unknown;
+          selectors?: unknown;
+          activeElement?: unknown;
+        };
+        chunks.push(String(d.visibleText ?? ''));
+        chunks.push(String(d.text_sample ?? ''));
+        chunks.push(String(d.outline_sample ?? ''));
+        if (Array.isArray(d.selectors)) {
+          for (const selector of d.selectors.slice(0, 80)) {
+            if (!selector || typeof selector !== 'object') continue;
+            const s = selector as {
+              selector?: unknown;
+              name?: unknown;
+              text?: unknown;
+              value?: unknown;
+            };
+            chunks.push(String(s.selector ?? ''));
+            chunks.push(String(s.name ?? ''));
+            chunks.push(String(s.text ?? ''));
+            chunks.push(String(s.value ?? ''));
+          }
+        }
+        if (d.activeElement && typeof d.activeElement === 'object') {
+          const active = d.activeElement as { name?: unknown; text?: unknown; value?: unknown };
+          chunks.push(String(active.name ?? ''));
+          chunks.push(String(active.text ?? ''));
+          chunks.push(String(active.value ?? ''));
+        }
+      }
     }
   }
   return normalizeText(chunks.join(' '));

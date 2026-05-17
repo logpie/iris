@@ -100,6 +100,75 @@ describe('scenarioVisibleDataTokens', () => {
       'Design review',
     ]);
   });
+
+  it('extracts concrete examples from explanatory required-output prose', () => {
+    expect(
+      scenarioVisibleDataTokens([
+        'Products or equivalent inventory heading',
+        'At least one product name such as Sauce Labs Backpack',
+        'Price low to high or equivalent selected option',
+        'Multiple product prices visible',
+        'Product cards remain accessible',
+        'standard_user credentials submitted',
+        'standard_user was used as input',
+        'standard_user was entered before submit',
+        'standard_user was used',
+        'standard_user credentials were used',
+        'locked_out_user submitted',
+        'locked_out_user was entered before submit',
+        'secret_sauce was used as password input',
+        'secret_sauce was entered before submit',
+        'secret_sauce was used',
+        'customer information fields submitted',
+        'completed-order confirmation message',
+      ]),
+    ).toEqual([
+      'Products',
+      'Sauce Labs Backpack',
+      'Price low to high',
+      'standard_user',
+      'locked_out_user',
+      'secret_sauce',
+    ]);
+  });
+
+  it('keeps concrete auth values but drops abstract auth state assertions', () => {
+    expect(
+      scenarioVisibleDataTokens([
+        'Username: standard_user',
+        'Password: secret_sauce',
+        'standard_user credentials submitted',
+        'locked_out_user submitted',
+        'Login page no longer blocks access',
+        'Login action was submitted',
+        'Login button was submitted',
+        'Authenticated destination or app content visible',
+        'The original username/password login form is not the only visible state',
+        'No login error blocking the user',
+        'Error message visible',
+        'No authenticated app page visible',
+        'Login form remains available',
+        'post-action evidence shows the product outcome required by this capability',
+        'Epic sadface: Sorry, this user has been locked out.',
+      ]),
+    ).toEqual([
+      'standard_user',
+      'secret_sauce',
+      'locked_out_user',
+      'Epic sadface: Sorry, this user has been locked out',
+    ]);
+  });
+
+  it('extracts commerce and data-grid labels while dropping reversed absence claims', () => {
+    expect(
+      scenarioVisibleDataTokens([
+        'Product: Sauce Labs Backpack',
+        'Search: London',
+        'Sort column: Age',
+        'Login error absent',
+      ]),
+    ).toEqual(['Sauce Labs Backpack', 'London', 'Age']);
+  });
 });
 
 describe('scenarioProofVisibleTextTokens', () => {
@@ -122,6 +191,28 @@ describe('scenarioProofVisibleTextTokens', () => {
       'Design complete',
       'Beta launch',
       'Approve?',
+    ]);
+  });
+
+  it('keeps concrete product/grid proof but does not treat inputs or absence as visible proof', () => {
+    expect(
+      scenarioProofVisibleTextTokens([
+        'standard_user credentials submitted',
+        'Authenticated product or inventory content visible',
+        'Login error absent',
+        'Product: Sauce Labs Backpack',
+        'Sauce Labs Backpack visible in cart',
+        'Search: London',
+        '25 entries per page',
+        'Showing 1 to 25 of 57 entries',
+        'Sort column: Age',
+      ]),
+    ).toEqual([
+      'Products',
+      'Sauce Labs Backpack',
+      'London',
+      'Showing 1 to 25 of 57 entries',
+      'Age',
     ]);
   });
 });

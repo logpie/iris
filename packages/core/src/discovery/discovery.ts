@@ -101,6 +101,7 @@ export const ProductKindSchema = z.enum([
   'search_content',
   'crud_workflow',
   'dashboard_filtering',
+  'data_grid',
   'commerce_checkout',
   'auth_account',
   'media_tool',
@@ -108,6 +109,8 @@ export const ProductKindSchema = z.enum([
   'content_site',
   'communication_tool',
   'developer_tool',
+  'developer_documentation',
+  'calculator_tool',
   'unknown',
 ]);
 export type ProductKind = z.infer<typeof ProductKindSchema>;
@@ -128,12 +131,23 @@ export const DiscoveryCapabilityStatusSchema = z.enum([
 ]);
 export type DiscoveryCapabilityStatus = z.infer<typeof DiscoveryCapabilityStatusSchema>;
 
+export const DiscoveryCapabilitySelectionExpectationSchema = z.enum([
+  'must_test',
+  'should_test_or_explain',
+  'not_normally_tested',
+]);
+export type DiscoveryCapabilitySelectionExpectation = z.infer<
+  typeof DiscoveryCapabilitySelectionExpectationSchema
+>;
+
 export const DiscoveryCapabilitySchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   product_kind: ProductKindSchema.default('unknown'),
   importance: DiscoveryCapabilityImportanceSchema.default('important'),
   status: DiscoveryCapabilityStatusSchema.default('discovered'),
+  selection_expectation: DiscoveryCapabilitySelectionExpectationSchema.optional(),
+  skip_reason: z.string().optional(),
   confidence: z.number().min(0).max(1).default(0.7),
   source: z
     .enum([
@@ -410,6 +424,20 @@ function closeDiscoveryCapabilityGaps(input: {
   const addedCapabilityLabels: string[] = [];
   for (const capability of capabilityGapsWorthPlanning(input.capabilities, productKinds)) {
     if (capabilityAlreadySelected(capability, out, selectedJourneyIds)) continue;
+    const existingGapJourneyIds = capability.journey_ids.filter((journeyId) => {
+      const journey = out.find((candidate) => candidate.id === journeyId);
+      return journey && !selectedJourneyIds.has(journeyId)
+        ? isSeedGoalClass(journey.goal_class ?? 'core')
+        : false;
+    });
+    if (existingGapJourneyIds.length > 0) {
+      for (const journeyId of existingGapJourneyIds) {
+        selectedJourneyIds.add(journeyId);
+        addedJourneyIds.push(journeyId);
+      }
+      if (existingGapJourneyIds.length > 0) addedCapabilityLabels.push(capability.label);
+      continue;
+    }
     const surfaceIds = selectSurfacesForCapabilityGap(capability, input.surfaces);
     if (surfaceIds.length === 0 && capability.importance !== 'core') continue;
     const gapJourney = journeyForCapabilityGap({
@@ -417,7 +445,12 @@ function closeDiscoveryCapabilityGaps(input: {
       surfaces: input.surfaces,
       surfaceIds,
       productUseContract: input.productUseContract,
-      journeyId: nextJourneyId(out),
+      journeyId: nextJourneyId(
+        out,
+        input.productUseContract?.user_jobs
+          .map((job) => job.journey_id)
+          .filter((id): id is string => Boolean(id)) ?? [],
+      ),
       hasSelectedCoreJourney: out.some(
         (journey) =>
           selectedJourneyIds.has(journey.id) &&
@@ -454,6 +487,8 @@ function capabilityGapsWorthPlanning(
         return false;
       }
       if (capability.importance === 'core') return true;
+      if (capability.selection_expectation === 'not_normally_tested') return false;
+      if (capability.selection_expectation === 'must_test') return true;
       if (capability.importance !== 'important') return false;
       if (!productKinds.includes(capability.product_kind)) return false;
       return capability.surface_ids.length > 0 || capability.status === 'deferred';
@@ -472,6 +507,7 @@ function capabilityAlreadySelected(
   journeys: DiscoveryJourney[],
   selectedJourneyIds: Set<string>,
 ): boolean {
+  if (coverageGapIndicatesUncovered(capability.coverage_gap)) return false;
   if (capability.journey_ids.some((journeyId) => selectedJourneyIds.has(journeyId))) return true;
   return journeys.some((journey) => {
     if (!selectedJourneyIds.has(journey.id)) return false;
@@ -490,6 +526,8 @@ function capabilityToSeed(capability: DiscoveryCapability): DiscoveryCapabilityS
     product_kind: capability.product_kind,
     importance: capability.importance,
     status: capability.status,
+    selection_expectation: capability.selection_expectation,
+    skip_reason: capability.skip_reason,
     confidence: capability.confidence,
     source: capability.source,
     evidence: capability.evidence,
@@ -698,9 +736,10 @@ function normalizeProductUseContract(
     .filter((job) => job.title.trim() || job.expected_artifact.trim() || job.scenario_brief.trim())
     .map((job, index) => {
       const { journey_id, value_loop_id, ...rest } = job;
+      const declaredJourneyId = journey_id?.trim();
       const linkedJourneyId =
-        journey_id && journeyIds.has(journey_id)
-          ? journey_id
+        declaredJourneyId
+          ? declaredJourneyId
           : matchingProductUseJobJourneyId(job, journeys);
       const normalizedJob: ProductUseJob = {
         ...rest,
@@ -864,10 +903,12 @@ function deriveProductUseJobFromJourney(
     ...scaffold.requiredOutputs,
     ...scaffold.proofObligations,
   ].join(' ');
-  const useScaffold = scaffoldCoversAnchor(
-    [journey.title, journey.user_intent, journey.suggested_goal].join(' '),
-    scaffoldText,
-  );
+  const useScaffold =
+    (isArtifactEditorProduct(productKinds) || !hasSpecificJourneyScenario(journey)) &&
+    scaffoldCoversAnchor(
+      [journey.title, journey.user_intent, journey.suggested_goal].join(' '),
+      scaffoldText,
+    );
   return {
     id: `PU${index}`,
     title:
@@ -895,6 +936,47 @@ function deriveProductUseJobFromJourney(
     weak_evidence: useScaffold ? scaffold.weakEvidence : [],
     risk: journey.risk,
   };
+}
+
+function hasSpecificJourneyScenario(journey: DiscoveryJourney): boolean {
+  const text = normalizeTextForMatching(
+    [
+      journey.title,
+      journey.suggested_goal,
+      journey.sample_input ?? '',
+      ...journey.expected_evidence,
+    ].join(' '),
+  );
+  if (!text) return false;
+  const generic = new Set([
+    'create',
+    'created',
+    'update',
+    'updated',
+    'edit',
+    'edited',
+    'delete',
+    'deleted',
+    'clear',
+    'cleared',
+    'visible',
+    'verify',
+    'verified',
+    'state',
+    'item',
+    'items',
+    'record',
+    'records',
+    'product',
+    'workflow',
+    'surface',
+    'scenario',
+  ]);
+  const concreteTokens = importantGoalTokens(text).filter((token) => !generic.has(token));
+  const carriesConcreteData =
+    /\b(named|called|titled|labeled|labelled|exact)\b/.test(text) ||
+    Boolean(journey.sample_input?.trim());
+  return concreteTokens.length >= 4 && (carriesConcreteData || journey.expected_evidence.length >= 2);
 }
 
 function enrichProductUseJob(job: ProductUseJob, productKinds: ProductKind[]): ProductUseJob {
@@ -952,14 +1034,31 @@ function enrichProductUseJob(job: ProductUseJob, productKinds: ProductKind[]): P
 }
 
 function shouldMergeScenarioScaffold(job: ProductUseJob, scaffold: MaterialityScaffold): boolean {
-  if (!job.scenario_brief || !scaffold.scenarioBrief) return true;
+  if (!job.scenario_brief) return true;
+  if (!scaffold.scenarioBrief) {
+    const scaffoldText = [
+      scaffold.scenarioTitle,
+      scaffold.expectedArtifact,
+      ...scaffold.requiredActions,
+      ...scaffold.proofObligations,
+      ...scaffold.requiredOutputs,
+    ].join(' ');
+    return scaffoldCoversAnchor(job.scenario_brief, scaffoldText);
+  }
   const existing = normalizeTextForMatching(job.scenario_brief);
   const candidate = normalizeTextForMatching(scaffold.scenarioBrief);
   if (!existing || !candidate) return true;
   if (existing === candidate || existing.includes(candidate) || candidate.includes(existing)) {
     return true;
   }
-  return false;
+  const scaffoldText = [
+    scaffold.scenarioTitle,
+    scaffold.expectedArtifact,
+    ...scaffold.requiredActions,
+    ...scaffold.proofObligations,
+    ...scaffold.requiredOutputs,
+  ].join(' ');
+  return scaffoldCoversAnchor(job.scenario_brief, `${candidate} ${scaffoldText}`);
 }
 
 function mergeScaffoldStrings(
@@ -967,7 +1066,7 @@ function mergeScaffoldStrings(
   scaffold: string[],
   mergeScaffold: boolean,
 ): string[] {
-  if (existing.length === 0) return uniqueNonEmptyStrings(scaffold);
+  if (existing.length === 0) return mergeScaffold ? uniqueNonEmptyStrings(scaffold) : [];
   return mergeScaffold
     ? uniqueNonEmptyStrings([...existing, ...scaffold])
     : uniqueNonEmptyStrings(existing);
@@ -1096,10 +1195,21 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
     !shareLike &&
     !mediaImportLike &&
     (settingsTermLike || (productKinds.includes('settings_tool') && !artifactEditor));
+  const developerDocsLike =
+    (productKinds.includes('developer_tool') ||
+      productKinds.includes('developer_documentation')) &&
+    /\b(api|code|snippet|javascript|html|css|docs?|documentation|example|dependency|cdn|source|manual|guide)\b/.test(
+      text,
+    ) &&
+    !/\b(run|execute|build|deploy|console|logs?|debug)\b/.test(text);
+  const calculatorLike =
+    productKinds.includes('calculator_tool') || isCalculatorProductText(text);
   const contentLike =
     productKinds.includes('search_content') || productKinds.includes('content_site');
   const crudLike = productKinds.includes('crud_workflow');
+  const dataGridLike = productKinds.includes('data_grid') || isDataGridProductText(text);
   const dashboardLike = productKinds.includes('dashboard_filtering');
+  const dashboardViewControlLike = isDashboardViewControlText(text);
   const commerceLike = productKinds.includes('commerce_checkout');
 
   if (artifactEditor && exportLike) {
@@ -1149,6 +1259,55 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
           'share, invite, collaboration, or auth state tied to the current artifact',
         ],
         qualityBar: ['the proof must show artifact context, not a generic marketing or login page'],
+      },
+    );
+  }
+  if (developerDocsLike) {
+    return withScenario(
+      {
+        requiredActions: [
+          'open or confirm the relevant documentation, example, or source-code section',
+          'inspect the visible code, API, dependency, or implementation text',
+        ],
+        proofObligations: [
+          'The proof shows concrete developer-facing instructions, code, or dependency content.',
+          'A generic help/settings page or tab label alone is not enough.',
+        ],
+        expectedArtifact: 'visible developer documentation, example code, or dependency details',
+        acceptableEvidence: ['post-action evidence showing the selected docs/code content'],
+        weakEvidence: ['tab label visible only', 'generic help link visible only'],
+      },
+      {
+        scenarioTitle: 'Inspect implementation documentation',
+        scenarioBrief:
+          'Open or confirm the relevant docs/example/source section and verify concrete code, API, or dependency text is visible.',
+        requiredOutputs: ['visible code, API, dependency, or implementation text'],
+        qualityBar: ['the evidence must include the actual developer content, not just navigation'],
+      },
+    );
+  }
+  if (calculatorLike) {
+    return withScenario(
+      {
+        requiredActions: [
+          'fill the calculator form with non-default values',
+          'submit or calculate the result',
+          'inspect the computed result and interpretation',
+        ],
+        proofObligations: [
+          'The result is computed from the entered inputs.',
+          'The proof shows a visible numeric result or category, not only the initial form.',
+        ],
+        expectedArtifact: 'computed calculator result with visible interpretation',
+        acceptableEvidence: ['post-action evidence showing updated calculator result text'],
+        weakEvidence: ['calculator form loaded', 'input focused with no computed result'],
+      },
+      {
+        scenarioTitle: 'Calculate a concrete result',
+        scenarioBrief:
+          'Enter realistic non-default values, calculate, and verify the computed result or classification is visible.',
+        requiredOutputs: ['computed result value, category, or interpretation'],
+        qualityBar: ['the proof must show a result derived from submitted inputs'],
       },
     );
   }
@@ -1453,7 +1612,31 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
       },
     );
   }
-  if (dashboardLike) {
+  if (dataGridLike && dashboardViewControlLike) {
+    return withScenario(
+      {
+        requiredActions: [
+          'apply a table search, sort, page-length, pagination, grouping, or row-detail control',
+          'inspect the resulting table rows, count, order, or detail state',
+        ],
+        proofObligations: [
+          'The table state changes in response to the control.',
+          'The proof includes row/count/order/detail evidence, not only an opened menu or focused input.',
+        ],
+        expectedArtifact: 'changed data-grid rows, count, order, page range, or detail state',
+        acceptableEvidence: ['post-action evidence showing changed data-grid state'],
+        weakEvidence: ['filter menu opened', 'search input focused', 'column header clicked without rows'],
+      },
+      {
+        scenarioTitle: 'Change the data grid with a real control',
+        scenarioBrief:
+          'Apply a table search, sort, page length, pagination, grouping, or row-detail control and verify row, count, order, or detail output changes.',
+        requiredOutputs: ['changed table rows, count, order, range, or detail state'],
+        qualityBar: ['the grid data must change; a focused input or open dropdown alone is weak evidence'],
+      },
+    );
+  }
+  if (dashboardLike && dashboardViewControlLike) {
     return withScenario(
       {
         requiredActions: ['apply a filter, sort, drilldown, or data-view control'],
@@ -1525,6 +1708,29 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
+function isDashboardViewControlText(text: string): boolean {
+  return /\b(filter|search|sort|page length|entries per page|pagination|drill|drilldown|data view|dashboard view|date range|segment|facet|pivot|grouping|column control|view control)\b/i.test(
+    text,
+  );
+}
+
+function isCalculatorProductText(text: string): boolean {
+  return (
+    /\b(calculator|calculate|computed?|estimate|converter|convert|bmi|mortgage|loan|calorie|bmr|result panel)\b/i.test(
+      text,
+    ) &&
+    /\b(input|field|form|submit|calculate|result|value|classification|category|unit|height|weight|age)\b/i.test(
+      text,
+    )
+  );
+}
+
+function isDataGridProductText(text: string): boolean {
+  return /\b(data\s*grid|datatable|data table|employee table|row grouping|column headers?|page length|entries per page)\b/i.test(
+    text,
+  );
+}
+
 function normalizeContractProductKinds(
   contract: ProductUseContract,
   journeys: DiscoveryJourney[],
@@ -1533,8 +1739,7 @@ function normalizeContractProductKinds(
   const rawKinds = uniqueNonEmptyStrings(contract.product_kinds).filter(
     (kind): kind is ProductKind => ProductKindSchema.safeParse(kind).success,
   );
-  const nonUnknownKinds = rawKinds.filter((kind) => kind !== 'unknown');
-  if (nonUnknownKinds.length === 0) return ['unknown'];
+  let nonUnknownKinds: ProductKind[] = rawKinds.filter((kind) => kind !== 'unknown');
 
   const contractText = normalizeTextForMatching(
     [
@@ -1569,11 +1774,41 @@ function normalizeContractProductKinds(
       .join(' '),
   );
   const supportText = `${contractText} ${materialSurfaceText} ${journeyText}`;
+  const inferredKinds: ProductKind[] = [];
+  if (isCalculatorProductText(supportText)) inferredKinds.push('calculator_tool');
+  if (isDataGridProductText(supportText)) inferredKinds.push('data_grid');
+  if (
+    /\b(api|code|snippet|javascript|html|css|docs?|documentation|example|dependency|cdn|source)\b/.test(
+      supportText,
+    ) &&
+    !/\b(run|execute|build|deploy|console|logs?|debug)\b/.test(contractText)
+  ) {
+    inferredKinds.push('developer_documentation');
+  }
+  nonUnknownKinds = uniqueNonEmptyStrings([...nonUnknownKinds, ...inferredKinds]) as ProductKind[];
+  if (nonUnknownKinds.includes('calculator_tool')) {
+    nonUnknownKinds = nonUnknownKinds.filter(
+      (kind) =>
+        kind === 'calculator_tool' ||
+        !['content_site', 'search_content', 'dashboard_filtering', 'data_grid'].includes(kind),
+    );
+  }
+  if (nonUnknownKinds.length === 0) return ['unknown'];
   const primaryKinds = nonUnknownKinds.filter(isPrimaryProductKind);
   const hasOtherPrimary = (kind: ProductKind) =>
     primaryKinds.some((candidate) => candidate !== kind && !areContentPeerKinds(candidate, kind));
 
   const kept = nonUnknownKinds.filter((kind) => {
+    if (kind === 'content_site' || kind === 'search_content') {
+      return shouldKeepContentKind({
+        kind,
+        primaryText: normalizeTextForMatching(
+          [contract.primary_value_loop, ...contract.core_artifacts].join(' '),
+        ),
+        supportText,
+        hasOtherPrimary: hasOtherPrimary(kind),
+      });
+    }
     if (kind === 'document_editor') {
       return shouldKeepDocumentEditorKind({
         contractText,
@@ -1628,6 +1863,24 @@ function areContentPeerKinds(a: ProductKind, b: ProductKind): boolean {
   );
 }
 
+function shouldKeepContentKind(input: {
+  kind: 'content_site' | 'search_content';
+  primaryText: string;
+  supportText: string;
+  hasOtherPrimary: boolean;
+}): boolean {
+  const contentCentricPrimary =
+    /\b(search|query|lookup|find|read|article|content result|content page|documentation|docs|wiki|encyclopedia|knowledge base)\b/.test(
+      input.primaryText,
+    );
+  const appWorkflowPrimary =
+    /\b(calculate|calculator|computed result|checkout|cart|purchase|product catalog|grid|data grid|datatable|dashboard|filter|sort|table|todo|task|record|canvas|whiteboard|diagram|editor|media|image|video|workflow)\b/.test(
+      input.primaryText,
+    );
+  if (input.hasOtherPrimary) return contentCentricPrimary && !appWorkflowPrimary;
+  return contentCentricPrimary || productKindTextPattern(input.kind).test(input.supportText);
+}
+
 function productKindTextPattern(kind: ProductKind): RegExp {
   switch (kind) {
     case 'canvas_editor':
@@ -1642,12 +1895,18 @@ function productKindTextPattern(kind: ProductKind): RegExp {
       return /\b(create|record|item|task|ticket|issue|row|status|workflow|save)\b/;
     case 'dashboard_filtering':
       return /\b(dashboard|metric|chart|table|filter|sort|drill|data)\b/;
+    case 'data_grid':
+      return /\b(data grid|datatable|data table|table|rows?|columns?|filter|search|sort|pagination|entries per page|page length|grouping)\b/;
     case 'commerce_checkout':
       return /\b(product|catalog|cart|checkout|buy|purchase|order|price)\b/;
     case 'communication_tool':
       return /\b(message|chat|conversation|channel|thread|comment|team|invite|collaborat)\b/;
     case 'developer_tool':
       return /\b(api|sdk|developer|code|console|deploy|build|run|logs?|debug|integration)\b/;
+    case 'developer_documentation':
+      return /\b(api|sdk|developer|code|snippet|javascript|html|css|docs?|documentation|examples?|dependency|cdn|source|guide)\b/;
+    case 'calculator_tool':
+      return /\b(calculator|calculate|computed?|estimate|convert|converter|bmi|mortgage|loan|payment|result|category|unit)\b/;
     case 'media_tool':
       return /\b(media|image|video|audio|crop|trim|filter|transform|upload|export)\b/;
     case 'auth_account':
@@ -1872,6 +2131,7 @@ interface DiscoveryCapabilityPrior {
   surfacePattern: RegExp;
   textPattern: RegExp;
   requiresSurfaceMatch?: boolean;
+  requiresEvidenceAlways?: boolean;
 }
 
 interface DiscoveryCapabilitySeed {
@@ -1880,6 +2140,8 @@ interface DiscoveryCapabilitySeed {
   product_kind: ProductKind;
   importance: DiscoveryCapabilityImportance;
   status: DiscoveryCapabilityStatus;
+  selection_expectation?: DiscoveryCapabilitySelectionExpectation | undefined;
+  skip_reason?: string | undefined;
   confidence: number;
   source: DiscoveryCapability['source'];
   evidence: string[];
@@ -2063,6 +2325,25 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     textPattern: /\b(open|read|consume|inspect).{0,60}\b(content|article|post|documentation|docs|media)\b/i,
   },
   {
+    key: 'calculator.calculate',
+    label: 'Calculate a concrete result',
+    productKind: 'calculator_tool',
+    importance: 'core',
+    denominatorReason: 'Calculator tools must prove submitted inputs produce a computed result.',
+    surfacePattern: /\b(calculator|calculate|input|form|result|bmi|mortgage|payment|converter)\b/i,
+    textPattern: /\b(calculate|computed?|estimate|convert).{0,80}\b(result|value|category|payment|bmi|output)\b/i,
+  },
+  {
+    key: 'calculator.inputs_units',
+    label: 'Use input fields and unit options',
+    productKind: 'calculator_tool',
+    importance: 'important',
+    denominatorReason: 'Form calculators usually expose unit, option, or input variants that affect the result.',
+    surfacePattern: /\b(units?|input|field|height|weight|age|metric|imperial|option|selector)\b/i,
+    textPattern: /\b(unit|input|field|metric|imperial|option|selector|non[- ]default)\b/i,
+    requiresSurfaceMatch: true,
+  },
+  {
     key: 'crud.create',
     label: 'Create a record or item',
     productKind: 'crud_workflow',
@@ -2096,8 +2377,10 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     productKind: 'dashboard_filtering',
     importance: 'core',
     denominatorReason: 'Dashboards must prove controls change data, charts, or tables.',
-    surfacePattern: /\b(filter|sort|date|segment|chart|table|metric|dashboard)\b/i,
+    surfacePattern: /\b(filter|sort|date range|segment|facet|pivot|grouping|column control|view control|drilldown)\b/i,
     textPattern: /\b(filter|sort|drill|change|apply).{0,60}\b(chart|table|metric|dashboard|data)\b/i,
+    requiresSurfaceMatch: true,
+    requiresEvidenceAlways: true,
   },
   {
     key: 'dashboard.drilldown',
@@ -2105,8 +2388,40 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     productKind: 'dashboard_filtering',
     importance: 'important',
     denominatorReason: 'Complex dashboards often need drilldowns or detail inspection.',
-    surfacePattern: /\b(drill|details|expand|breakdown|table|row|tooltip)\b/i,
+    surfacePattern: /\b(drill|drilldown|details panel|detail view|expand|breakdown|tooltip)\b/i,
     textPattern: /\b(drill|detail|breakdown|inspect|expand)\b/i,
+    requiresSurfaceMatch: true,
+  },
+  {
+    key: 'data_grid.search_filter',
+    label: 'Filter data-grid rows',
+    productKind: 'data_grid',
+    importance: 'core',
+    denominatorReason: 'Data grids must prove table search/filter controls change visible rows or counts.',
+    surfacePattern: /\b(search|filter|table|rows?|data grid|datatable|entries)\b/i,
+    textPattern: /\b(search|filter).{0,80}\b(table|rows?|entries|data grid|datatable|count)\b/i,
+    requiresSurfaceMatch: true,
+    requiresEvidenceAlways: true,
+  },
+  {
+    key: 'data_grid.sort_page',
+    label: 'Sort or page data-grid rows',
+    productKind: 'data_grid',
+    importance: 'core',
+    denominatorReason: 'Data grids should prove sorting, page length, pagination, or row order changes.',
+    surfacePattern: /\b(sort|column|pagination|page length|entries per page|next|previous|rows?)\b/i,
+    textPattern: /\b(sort|page length|entries per page|pagination|row order|column)\b/i,
+    requiresSurfaceMatch: true,
+    requiresEvidenceAlways: true,
+  },
+  {
+    key: 'developer_docs.read_code',
+    label: 'Read implementation code or dependencies',
+    productKind: 'developer_documentation',
+    importance: 'core',
+    denominatorReason: 'Developer documentation should prove users can find concrete code, API, or dependency instructions.',
+    surfacePattern: /\b(code|snippet|javascript|html|css|api|docs?|documentation|dependency|cdn|source|example)\b/i,
+    textPattern: /\b(code|snippet|javascript|html|css|api|dependency|cdn|source|example)\b/i,
     requiresSurfaceMatch: true,
   },
   {
@@ -2204,6 +2519,8 @@ function normalizeDiscoveryCapabilities(
       product_kind: capability.product_kind,
       importance: capability.importance,
       status: capability.status,
+      selection_expectation: undefined,
+      skip_reason: capability.skip_reason,
       confidence: capability.confidence,
       source: 'model',
       evidence: capability.evidence,
@@ -2234,7 +2551,10 @@ function normalizeDiscoveryCapabilities(
       prior.surfacePattern.test(surfaceText) ||
       prior.textPattern.test(journeyText);
     if (!kindMatches && !(surfaceInferenceAllowed && evidenceMatches)) continue;
-    if (prior.requiresSurfaceMatch && !singleKind && !evidenceMatches) continue;
+    if (
+      (prior.requiresEvidenceAlways || (prior.requiresSurfaceMatch && !singleKind)) &&
+      !evidenceMatches
+    ) continue;
     mergeCapabilitySeed(seeds, {
       key: prior.key,
       label: prior.label,
@@ -2285,6 +2605,8 @@ function normalizeDiscoveryCapabilities(
       ...(job.required_actions ?? []),
       ...(job.required_outputs ?? []),
     ].join(' ');
+    const selectedJourneyIds = new Set(coveragePlan?.selected_journey_ids ?? []);
+    const jobSelected = job.journey_id ? selectedJourneyIds.has(job.journey_id) : false;
     const matchedPrior = compatibleCapabilityPriorForText(text, productKinds);
     if (matchedPrior) {
       mergeCapabilitySeed(seeds, seedFromPrior(matchedPrior, {
@@ -2293,12 +2615,15 @@ function normalizeDiscoveryCapabilities(
         evidence: [`scenario ${job.id}: ${job.title}`],
         journey_ids: job.journey_id ? [job.journey_id] : [],
       }));
-    } else if (productKinds.length === 0 || productKinds.includes('unknown')) {
-      mergeCapabilitySeed(seeds, {
-        ...seedFromFreeformCapability(job.title, 'unknown', job.risk === 'high' ? 'core' : 'important', 'user_job'),
-        journey_ids: job.journey_id ? [job.journey_id] : [],
-        evidence: [`scenario ${job.id}: ${job.title}`],
-      });
+      if (!jobSelected && shouldSeedFreeformUserJobCapability(job)) {
+        mergeCapabilitySeed(seeds, seedFromUserJobCapability(job, productKinds));
+      }
+    } else if (
+      productKinds.length === 0 ||
+      productKinds.includes('unknown') ||
+      shouldSeedFreeformUserJobCapability(job)
+    ) {
+      mergeCapabilitySeed(seeds, seedFromUserJobCapability(job, productKinds));
     }
   }
   if (seeds.size === 0) {
@@ -2359,6 +2684,39 @@ function filterModelCapabilitiesForProductKinds(
   });
 }
 
+function shouldSeedFreeformUserJobCapability(job: ProductUseJob): boolean {
+  if (job.risk === 'low') return false;
+  const text = normalizeTextForMatching(
+    [
+      job.title,
+      job.scenario_brief,
+      job.expected_artifact,
+      ...(job.required_actions ?? []),
+      ...(job.proof_obligations ?? []),
+      ...(job.required_outputs ?? []),
+      ...(job.quality_bar ?? []),
+    ].join(' '),
+  );
+  if (!text || isLowSignalSetupText(text)) return false;
+  return true;
+}
+
+function seedFromUserJobCapability(
+  job: ProductUseJob,
+  productKinds: ProductKind[],
+): DiscoveryCapabilitySeed {
+  return {
+    ...seedFromFreeformCapability(
+      job.title,
+      productKinds.find((kind) => kind !== 'unknown') ?? 'unknown',
+      job.risk === 'high' ? 'core' : 'important',
+      'user_job',
+    ),
+    journey_ids: job.journey_id ? [job.journey_id] : [],
+    evidence: [`scenario ${job.id}: ${job.title}`],
+  };
+}
+
 function isArtifactEditorKind(kind: ProductKind): boolean {
   return kind === 'canvas_editor' || kind === 'document_editor' || kind === 'media_tool';
 }
@@ -2376,6 +2734,8 @@ function seedFromPrior(
     product_kind: prior.productKind,
     importance: prior.importance,
     status: 'discovered',
+    selection_expectation: undefined,
+    skip_reason: '',
     confidence: overrides.confidence ?? 0.75,
     source: overrides.source ?? 'product_kind_prior',
     evidence: overrides.evidence ?? [],
@@ -2402,6 +2762,8 @@ function seedFromFreeformCapability(
     product_kind: productKind,
     importance,
     status: 'discovered',
+    selection_expectation: undefined,
+    skip_reason: '',
     confidence: 0.58,
     source,
     evidence: [],
@@ -2441,6 +2803,11 @@ function mergeCapabilitySeed(
         : existing.product_kind,
     importance: strongerCapabilityImportance(existing.importance, seed.importance),
     status: strongerCapabilityStatus(existing.status, seed.status),
+    selection_expectation: strongerCapabilitySelectionExpectation(
+      existing.selection_expectation,
+      seed.selection_expectation,
+    ),
+    skip_reason: existing.skip_reason || seed.skip_reason || '',
     confidence: Math.max(existing.confidence, seed.confidence),
     source:
       existing.source === 'model' || seed.source === 'model'
@@ -2517,6 +2884,7 @@ function finalizeCapabilitySeed(
       .map((surface) => surface.id),
   ]);
   const finalGoalIds = new Set(input.goals.map((goal) => goal.id));
+  const rawGapIndicatesUncovered = coverageGapIndicatesUncovered(seed.coverage_gap);
   const matchedGoalIds = input.goals
     .filter((goal) => {
       if (goal.journey_id && journeyIds.includes(goal.journey_id)) return true;
@@ -2526,6 +2894,13 @@ function finalizeCapabilitySeed(
       return capabilityMatchesText(seed, goal.description);
     })
     .map((goal) => goal.id);
+  const gapCoveredByStrongGoal =
+    rawGapIndicatesUncovered &&
+    matchedGoalIds.some((id) => {
+      const goal = goalById.get(id);
+      return goal ? capabilityStronglyMatchesText(seed, goal.description) : false;
+    });
+  const gapIndicatesUncovered = rawGapIndicatesUncovered && !gapCoveredByStrongGoal;
   const scenarioIds = uniqueNonEmptyStrings([
     ...seed.scenario_ids
       .filter((id) => input.goals.length === 0 ? /^G\d+/i.test(id) : finalGoalIds.has(id))
@@ -2535,9 +2910,11 @@ function finalizeCapabilitySeed(
         return goal ? capabilityMatchesText(seed, goal.description) : false;
       }),
     ...matchedGoalIds,
-  ]);
+  ]).filter(() => !gapIndicatesUncovered);
   const selected =
-    scenarioIds.length > 0 || journeyIds.some((journeyId) => input.selectedJourneyIds.has(journeyId));
+    !gapIndicatesUncovered &&
+    (scenarioIds.length > 0 ||
+      journeyIds.some((journeyId) => input.selectedJourneyIds.has(journeyId)));
   const status: DiscoveryCapabilityStatus =
     seed.status === 'not_applicable'
       ? 'not_applicable'
@@ -2546,10 +2923,31 @@ function finalizeCapabilitySeed(
         : journeyIds.length > 0 || surfaceIds.length > 0
           ? 'deferred'
           : 'discovered';
+  const selection_expectation =
+    seed.selection_expectation ??
+    deriveCapabilitySelectionExpectation({
+      seed,
+      status,
+      journeyIds,
+      surfaceIds,
+      journeys: input.journeys,
+      surfaces: input.surfaces,
+    });
+  const skip_reason = normalizedCapabilitySkipReason(
+    seed.skip_reason ?? '',
+    status,
+    selection_expectation,
+    seed,
+    journeyIds,
+    surfaceIds,
+    input.journeys,
+    input.surfaces,
+  );
   const coverage_gap = normalizedCapabilityCoverageGap(
-    seed.coverage_gap,
+    gapCoveredByStrongGoal ? '' : seed.coverage_gap,
     status,
     scenarioIds,
+    skip_reason,
   );
   return {
     id: seed.key,
@@ -2557,6 +2955,8 @@ function finalizeCapabilitySeed(
     product_kind: seed.product_kind,
     importance: seed.importance,
     status,
+    selection_expectation,
+    skip_reason,
     confidence: Number(seed.confidence.toFixed(2)),
     source: seed.source,
     evidence: seed.evidence,
@@ -2568,15 +2968,26 @@ function finalizeCapabilitySeed(
   };
 }
 
+function coverageGapIndicatesUncovered(rawCoverageGap: string): boolean {
+  const raw = rawCoverageGap.trim();
+  if (!raw) return false;
+  return /\b(not selected|not covered|uncovered|untested|deferred|deeper audit|follow[- ]?up|future audit|future run|not exercised|not attempted|should be covered|needs? (?:separate|deeper|follow[- ]?up)|left for later)\b/i.test(
+    raw,
+  );
+}
+
 function normalizedCapabilityCoverageGap(
   rawCoverageGap: string,
   status: DiscoveryCapabilityStatus,
   scenarioIds: string[],
+  skipReason = '',
 ): string {
   const raw = rawCoverageGap.trim();
   if (status === 'selected') {
     return raw || `Selected for this run${scenarioIds.length > 0 ? ` via ${scenarioIds.join(', ')}` : ''}.`;
   }
+  if (coverageGapIndicatesUncovered(raw)) return raw;
+  if (skipReason) return skipReason;
   if (status === 'deferred') {
     if (!raw || /\b(covers?|covered|selected|none)\b/i.test(raw)) {
       return 'Discovered, but not selected for a scenario in this run.';
@@ -2590,6 +3001,84 @@ function normalizedCapabilityCoverageGap(
     return raw;
   }
   return raw || 'Not applicable to the observed product state.';
+}
+
+function deriveCapabilitySelectionExpectation(input: {
+  seed: DiscoveryCapabilitySeed;
+  status: DiscoveryCapabilityStatus;
+  journeyIds: string[];
+  surfaceIds: string[];
+  journeys: DiscoveryJourney[];
+  surfaces: DiscoverySurface[];
+}): DiscoveryCapabilitySelectionExpectation {
+  if (input.status === 'not_applicable') return 'not_normally_tested';
+  if (input.seed.importance === 'core') return 'must_test';
+  if (input.seed.importance === 'important') return 'should_test_or_explain';
+  if (input.seed.importance === 'diagnostic') return 'not_normally_tested';
+  const relatedJourneys = input.journeys.filter((journey) => input.journeyIds.includes(journey.id));
+  const relatedSurfaces = input.surfaces.filter((surface) => input.surfaceIds.includes(surface.id));
+  if (
+    relatedJourneys.some(isProductNativeJourney) ||
+    relatedSurfaces.some(isProductNativeSurface)
+  ) {
+    return 'should_test_or_explain';
+  }
+  return 'not_normally_tested';
+}
+
+function normalizedCapabilitySkipReason(
+  rawSkipReason: string,
+  status: DiscoveryCapabilityStatus,
+  expectation: DiscoveryCapabilitySelectionExpectation,
+  seed: DiscoveryCapabilitySeed,
+  journeyIds: string[],
+  surfaceIds: string[],
+  journeys: DiscoveryJourney[],
+  surfaces: DiscoverySurface[],
+): string {
+  const raw = rawSkipReason.trim();
+  if (status === 'selected' || status === 'not_applicable') return raw;
+  if (expectation === 'must_test') {
+    return raw || 'Central product capability was expected to be tested, but no selected scenario covered it.';
+  }
+  if (expectation === 'should_test_or_explain') {
+    const relatedJourney = journeys.find((journey) => journeyIds.includes(journey.id));
+    const relatedSurface = surfaces.find((surface) => surfaceIds.includes(surface.id));
+    if (raw) return raw;
+    if (relatedJourney) {
+      return `Important product-native capability was discovered through "${relatedJourney.title}", but it was not selected for this run.`;
+    }
+    if (relatedSurface) {
+      return `Important product-native capability was discovered on "${relatedSurface.label}", but it was not selected for this run.`;
+    }
+    return `Important capability "${seed.label}" was inferred, but no selected scenario covered it.`;
+  }
+  if (raw) return raw;
+  return 'Peripheral, setup-only, external, or diagnostic scope is not normally tested unless it blocks product use.';
+}
+
+function isProductNativeJourney(journey: DiscoveryJourney): boolean {
+  if (journey.goal_class === 'peripheral' || journey.goal_class === 'diagnostic') return false;
+  if (journey.priority === 'could') return false;
+  const text = journeyScenarioText(journey);
+  if (isLowSignalSetupText(text)) return false;
+  return true;
+}
+
+function isProductNativeSurface(surface: DiscoverySurface): boolean {
+  if (surface.value === 'peripheral') return false;
+  if (surface.kind === 'banner' || surface.kind === 'footer' || surface.kind === 'external') {
+    return false;
+  }
+  if (surface.source === 'banner_dismiss') return false;
+  if (isLowSignalSetupText(surfaceSearchText(surface))) return false;
+  return true;
+}
+
+function isLowSignalSetupText(text: string): boolean {
+  return /\b(cookie|privacy|terms|legal|footer|promo|advert|newsletter|donate|sponsor)\b/i.test(
+    text,
+  );
 }
 
 function normalizedProductKinds(productUseContract: ProductUseContract | undefined): ProductKind[] {
@@ -2618,6 +3107,16 @@ function capabilityMatchesText(seed: DiscoveryCapabilitySeed, text: string): boo
   return shared.length >= Math.min(2, tokens.length);
 }
 
+function capabilityStronglyMatchesText(seed: DiscoveryCapabilitySeed, text: string): boolean {
+  const normalized = normalizeTextForMatching(text);
+  if (!normalized) return false;
+  const tokens = capabilityTokens(seed.label);
+  if (tokens.length === 0) return false;
+  const shared = tokens.filter((token) => normalized.includes(token));
+  const required = Math.max(2, Math.min(4, Math.ceil(tokens.length * 0.6)));
+  return shared.length >= required;
+}
+
 function capabilityTokens(label: string): string[] {
   const generic = new Set([
     'visible',
@@ -2634,6 +3133,10 @@ function capabilityTokens(label: string): string[] {
     'add',
     'open',
     'inspect',
+    'login',
+    'account',
+    'auth',
+    'feedback',
   ]);
   return importantGoalTokens(label)
     .map((token) => token.replace(/s$/i, ''))
@@ -2666,6 +3169,20 @@ function strongerCapabilityStatus(
     deferred: 1,
     discovered: 2,
     not_applicable: 3,
+  };
+  return rank[b] < rank[a] ? b : a;
+}
+
+function strongerCapabilitySelectionExpectation(
+  a: DiscoveryCapabilitySelectionExpectation | undefined,
+  b: DiscoveryCapabilitySelectionExpectation | undefined,
+): DiscoveryCapabilitySelectionExpectation | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  const rank: Record<DiscoveryCapabilitySelectionExpectation, number> = {
+    must_test: 0,
+    should_test_or_explain: 1,
+    not_normally_tested: 2,
   };
   return rank[b] < rank[a] ? b : a;
 }
@@ -2926,6 +3443,9 @@ function ensureJourneysForUnlinkedProductUseJobs(
   const jobs = productUseContract?.user_jobs ?? [];
   if (jobs.length === 0) return journeys;
   const out = [...journeys];
+  const reservedJobJourneyIds = jobs
+    .map((candidate) => candidate.journey_id)
+    .filter((id): id is string => Boolean(id));
   for (const job of jobs) {
     if (job.journey_id && out.some((journey) => journey.id === job.journey_id)) continue;
     if (matchingProductUseJobJourneyId(job, out)) continue;
@@ -2959,8 +3479,11 @@ function ensureJourneysForUnlinkedProductUseJobs(
       productKinds: productUseContract?.product_kinds ?? [],
     });
     if (!isSeedGoalClass(goalClass)) continue;
+    const id = job.journey_id && !out.some((journey) => journey.id === job.journey_id)
+      ? job.journey_id
+      : nextJourneyId(out, reservedJobJourneyIds);
     out.push({
-      id: nextJourneyId(out),
+      id,
       title: job.title,
       priority: job.risk === 'high' ? 'must' : 'should',
       goal_class: goalClass,
@@ -3448,8 +3971,8 @@ function selectArtifactCapabilitySurfaces(
   return [...new Set([...canvasContext, ...ids])];
 }
 
-function nextJourneyId(journeys: DiscoveryJourney[]): string {
-  const used = new Set(journeys.map((journey) => journey.id));
+function nextJourneyId(journeys: DiscoveryJourney[], reservedIds: string[] = []): string {
+  const used = new Set([...journeys.map((journey) => journey.id), ...reservedIds]);
   let index = journeys.length + 1;
   while (used.has(`J${index}`)) index++;
   return `J${index}`;
@@ -3905,14 +4428,17 @@ function classifyJourneyMateriality(
     productKinds,
   });
   if (!journey.goal_class) return computed;
+  if (contractBacked && isSeedGoalClass(journey.goal_class)) {
+    const text = journeyScenarioText(journey);
+    if (isLowSignalSetupText(text)) return computed;
+    if (computed === 'setup') return journey.goal_class;
+    if (computed === 'peripheral' || computed === 'diagnostic') return computed;
+    return computed;
+  }
   if (contractBacked && isSeedGoalClass(computed)) return computed;
   if (computed === 'setup' || computed === 'peripheral' || computed === 'diagnostic')
     return computed;
-  if (
-    isArtifactEditorProduct(productKinds) &&
-    isSeedGoalClass(computed) &&
-    (journey.goal_class === 'setup' || journey.goal_class === 'peripheral')
-  ) {
+  if (isSeedGoalClass(computed) && (journey.goal_class === 'setup' || journey.goal_class === 'peripheral')) {
     return computed;
   }
   if (journey.goal_class === 'setup' || journey.goal_class === 'peripheral')
@@ -3984,7 +4510,7 @@ function isPeripheralText(text: string): boolean {
 }
 
 function isSetupText(text: string): boolean {
-  return /\b(dismiss|close|clear|hide|accept|reject|consent|obstruct|obstructs|obstructing|obstruction|blocking|blocked|banner|modal|popup|pop-up|overlay|promo|promotion|newsletter|donation prompt|fundraiser prompt)\b/.test(
+  return /\b(dismiss|close|hide|accept|reject|consent|obstruct|obstructs|obstructing|obstruction|blocking|blocked|banner|modal|popup|pop-up|overlay|promo|promotion|newsletter|donation prompt|fundraiser prompt)\b/.test(
     text,
   );
 }
@@ -4221,7 +4747,7 @@ export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
       (capability) =>
         capability.status !== 'selected' &&
         capability.status !== 'not_applicable' &&
-        (capability.importance === 'core' || capability.importance === 'important'),
+        capability.selection_expectation !== 'not_normally_tested',
     );
     if (selected.length > 0) {
       lines.push(
@@ -4235,9 +4761,16 @@ export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
       lines.push(
         `- capability gaps to prefer when proposing follow-up work: ${gaps
           .slice(0, 10)
-          .map((capability) => capability.label)
+          .map((capability) =>
+            `${capability.label} (${(capability.selection_expectation ?? 'should_test_or_explain').replace(/_/g, ' ')})`,
+          )
           .join('; ')}`,
       );
+      for (const capability of gaps.slice(0, 5)) {
+        if (capability.skip_reason || capability.coverage_gap) {
+          lines.push(`  - ${capability.label}: ${capability.skip_reason || capability.coverage_gap}`);
+        }
+      }
     }
   }
   if (out.product_use_contract) {

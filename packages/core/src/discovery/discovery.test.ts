@@ -257,6 +257,157 @@ describe('runDiscovery', () => {
     );
   });
 
+  it('keeps supporting content/search from becoming core when an app workflow is primary', async () => {
+    const result = await runDiscovery({
+      url: 'https://calculator.example/mortgage',
+      observation_summary:
+        'Mortgage calculator page with loan inputs, Calculate button, result table, amortization schedule, article text, related calculator links, and site search.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A mortgage calculator with supporting educational content.',
+          product_use_contract: {
+            product_kinds: ['dashboard_filtering', 'content_site', 'search_content'],
+            primary_value_loop:
+              'Calculate mortgage payment and inspect amortization for a concrete loan scenario.',
+            core_artifacts: ['changed mortgage payment result', 'amortization table'],
+            value_loops: [],
+            user_jobs: [],
+          },
+          surfaces: [
+            { id: 'S1', label: 'Mortgage input form with Calculate', kind: 'form', url: 'https://calculator.example/mortgage', source: 'initial', value: 'core', confidence: 0.9 },
+            { id: 'S2', label: 'Mortgage result and amortization table', kind: 'content', url: 'https://calculator.example/mortgage', source: 'initial', value: 'core', confidence: 0.9 },
+            { id: 'S3', label: 'Educational article and related calculator links', kind: 'nav', url: 'https://calculator.example/mortgage', source: 'scroll', value: 'important_secondary', confidence: 0.8 },
+            { id: 'S4', label: 'Site search', kind: 'search', url: 'https://calculator.example/mortgage', source: 'scroll', value: 'important_secondary', confidence: 0.8 },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Calculate a mortgage scenario',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1', 'S2'],
+              user_intent: 'Estimate payment for a concrete mortgage.',
+              suggested_goal:
+                'Enter a $525,000 home purchase with 15% down and 6.25% interest, calculate, and verify monthly payment and amortization output.',
+              expected_evidence: ['monthly payment result', 'amortization row'],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Read supporting mortgage article',
+              priority: 'could',
+              goal_class: 'secondary_workflow',
+              surface_ids: ['S3'],
+              user_intent: 'Read educational context.',
+              suggested_goal: 'Read the supporting mortgage article.',
+              expected_evidence: ['article text visible'],
+              risk: 'low',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: ['S3', 'S4'],
+            rationale: 'Calculation is primary; article/search are supporting.',
+            coverage_risk: 'medium',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    expect(result.output.product_use_contract?.product_kinds).toEqual(['calculator_tool']);
+    const capabilityLabels = result.output.capabilities.map((capability) => capability.label);
+    expect(capabilityLabels).toContain('Calculate a concrete result');
+    expect(capabilityLabels).not.toContain('Change a dashboard view');
+    expect(capabilityLabels).not.toContain('Search for specific content');
+    expect(capabilityLabels).not.toContain('Consume visible content');
+    expect(result.output.goals.map((goal) => goal.description).join('\n')).not.toMatch(
+      /filter|sort|drilldown/i,
+    );
+    expect(result.output.goals.map((goal) => goal.description).join('\n')).toContain(
+      '$525,000 home purchase',
+    );
+  });
+
+  it('promotes form calculators out of content/search scaffolds', async () => {
+    const result = await runDiscovery({
+      url: 'https://calculator.example/bmi',
+      observation_summary:
+        'BMI calculator page with age, gender, height, weight fields, Calculate button, BMI result panel, educational article, and site search.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A BMI calculator with supporting article content.',
+          product_use_contract: {
+            product_kinds: ['content_site', 'search_content'],
+            primary_value_loop:
+              'Enter age, gender, height, and weight, calculate BMI, and inspect the BMI result category.',
+            core_artifacts: ['BMI result value and weight-status category'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Calculate a BMI result',
+                journey_id: 'J1',
+                scenario_brief:
+                  'Enter age 38, height 5 ft 4 in, weight 185 lb, calculate, and verify BMI around 31.8 with obesity category.',
+                required_actions: [],
+                required_outputs: ['BMI around 31.8 kg/m2', 'Obesity category'],
+                expected_artifact: 'Updated BMI result panel',
+                risk: 'high',
+              },
+            ],
+          },
+          surfaces: [
+            { id: 'S1', label: 'BMI calculator form and result panel', kind: 'form', url: 'https://calculator.example/bmi', source: 'initial', value: 'core', confidence: 0.9 },
+            { id: 'S2', label: 'BMI article and site search', kind: 'content', url: 'https://calculator.example/bmi', source: 'scroll', value: 'important_secondary', confidence: 0.8 },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Calculate BMI',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Calculate a personal BMI result.',
+              suggested_goal: 'Calculate BMI around 31.8 and verify the obesity category appears.',
+              expected_evidence: ['BMI around 31.8 kg/m2', 'Obesity category'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: ['S2'],
+            rationale: 'The calculation is primary.',
+            coverage_risk: 'medium',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    expect(result.output.product_use_contract?.product_kinds).toEqual(['calculator_tool']);
+    expect(result.output.product_use_contract?.user_jobs[0]?.test_data).not.toContain('OpenAI');
+    expect(result.output.product_use_contract?.user_jobs[0]?.required_actions.join('\n')).not.toMatch(
+      /open and consume a content result/i,
+    );
+  });
+
   it('strips a leading prose preamble before the JSON object', async () => {
     const result = await runDiscovery({
       url: 'https://example.com',
@@ -2854,8 +3005,399 @@ describe('runDiscovery', () => {
     );
     expect(donationCapability?.status).toBe('deferred');
     expect(donationCapability?.coverage_gap).toBe(
-      'Discovered, but not selected for a scenario in this run.',
+      'Peripheral, setup-only, external, or diagnostic scope is not normally tested unless it blocks product use.',
     );
+    expect(donationCapability?.selection_expectation).toBe('not_normally_tested');
+  });
+
+  it('does not count a contradictory selected capability gap as covered', () => {
+    const capabilities = deriveDiscoveryCapabilitiesForReport({
+      capabilities: [
+        {
+          id: 'C1',
+          label: 'Read manual/reference documentation beyond examples',
+          product_kind: 'developer_tool',
+          importance: 'important',
+          status: 'selected',
+          selection_expectation: 'should_test_or_explain',
+          confidence: 0.9,
+          source: 'model',
+          evidence: ['Manual and Reference links are visible.'],
+          scenario_ids: ['G1'],
+          journey_ids: ['J1'],
+          surface_ids: ['S1'],
+          denominator_reason: 'Developer documentation should support deeper lookup.',
+          coverage_gap: 'Manual/reference article consumption should be covered in a deeper documentation audit.',
+        },
+      ],
+      product_use_contract: {
+        product_kinds: ['developer_tool'],
+        primary_value_loop: 'Use a developer example.',
+        core_artifacts: ['visible implementation snippet'],
+        value_loops: [],
+        user_jobs: [],
+      },
+      journeys: [
+        {
+          id: 'J1',
+          title: 'Inspect example code tabs',
+          priority: 'must',
+          surface_ids: ['S1'],
+          user_intent: 'Read implementation code',
+          suggested_goal: 'Inspect Javascript, HTML, and CSS tabs.',
+          expected_evidence: ['visible code snippet'],
+          risk: 'medium',
+        },
+      ],
+      surfaces: [
+        {
+          id: 'S1',
+          label: 'Code tabs',
+          kind: 'content',
+          url: 'https://docs.example',
+          source: 'initial',
+          value: 'core',
+          confidence: 0.9,
+          evidence: [],
+          controls: [],
+          prerequisites: [],
+        },
+      ],
+      coverage_plan: {
+        selected_journey_ids: ['J1'],
+        deferred_surface_ids: [],
+        rationale: 'Code tabs selected.',
+        coverage_risk: 'medium',
+      },
+      goals: [
+        {
+          id: 'G1',
+          description: 'Inspect Javascript, HTML, and CSS tabs.',
+          priority: 'must',
+          journey_id: 'J1',
+          surface_ids: ['S1'],
+        },
+      ],
+    });
+
+    const docsCapability = capabilities.find((capability) =>
+      capability.label.includes('manual/reference'),
+    );
+    expect(docsCapability?.status).toBe('deferred');
+    expect(docsCapability?.scenario_ids).toEqual([]);
+    expect(docsCapability?.coverage_gap).toContain('deeper documentation audit');
+  });
+
+  it('adds a scenario for an uncovered must-test capability even when adjacent journeys were selected', async () => {
+    const result = await runDiscovery({
+      url: 'https://docs.example',
+      observation_summary:
+        'Developer example page with a live table, search box, and visible Javascript source tabs.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A developer documentation example.',
+          product_use_contract: {
+            product_kinds: ['developer_tool'],
+            primary_value_loop: 'Use the live example and learn how to implement it.',
+            core_artifacts: ['filtered example state', 'visible implementation snippet'],
+            value_loops: [],
+            user_jobs: [],
+          },
+          capabilities: [
+            {
+              id: 'C1',
+              label: 'Read implementation guidance and source-code snippets for the example',
+              product_kind: 'developer_tool',
+              importance: 'core',
+              status: 'deferred',
+              selection_expectation: 'must_test',
+              confidence: 0.9,
+              source: 'model',
+              evidence: ['Javascript source tab is visible.'],
+              scenario_ids: [],
+              journey_ids: ['J1'],
+              surface_ids: ['S2'],
+              denominator_reason: 'A developer example must prove how to reproduce the behavior.',
+              coverage_gap: 'Source-code snippets should be covered in a deeper audit.',
+            },
+          ],
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Live example table search',
+              kind: 'search',
+              url: 'https://docs.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+              evidence: [],
+            },
+            {
+              id: 'S2',
+              label: 'Javascript source-code tab',
+              kind: 'content',
+              url: 'https://docs.example',
+              source: 'primary_journey',
+              value: 'core',
+              confidence: 0.9,
+              evidence: [],
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Filter the live example',
+              priority: 'must',
+              surface_ids: ['S1'],
+              user_intent: 'Use the live example',
+              suggested_goal: 'Filter the example table and verify the result count changes.',
+              expected_evidence: ['filtered table state'],
+              risk: 'high',
+              goal_class: 'core',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Live example selected.',
+            coverage_risk: 'medium',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Filter the example table and verify the result count changes.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    const sourceGoal = result.output.goals.find((goal) =>
+      /implementation|source-code|snippet/i.test(goal.description),
+    );
+    expect(sourceGoal).toBeDefined();
+    const sourceCapability = result.output.capabilities.find(
+      (capability) =>
+        capability.label.includes('implementation guidance') ||
+        capability.label === 'Read implementation code or dependencies',
+    );
+    expect(sourceCapability?.status).toBe('selected');
+    expect(sourceCapability?.scenario_ids).toContain(sourceGoal?.id);
+    expect(sourceCapability?.coverage_gap).toContain('Selected for this run');
+  });
+
+  it('uses data-grid and documentation scaffolds for DataTables-style example pages', async () => {
+    const result = await runDiscovery({
+      url: 'https://datatables.example',
+      observation_summary:
+        'Developer example page with DataTables live employee table, table Search input, entries-per-page selector, sortable Age column, and visible Javascript source-code tab.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A DataTables developer example with a live data grid.',
+          product_use_contract: {
+            product_kinds: ['developer_tool', 'dashboard_filtering'],
+            primary_value_loop:
+              'Use the live DataTables employee grid and read source code needed to reproduce it.',
+            core_artifacts: ['filtered table state', 'visible implementation snippet'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Filter the employee table',
+                journey_id: 'J1',
+                scenario_brief:
+                  'Use the in-table Search field to find London employees and verify rows/count update.',
+                test_data: ['Search query: London'],
+                required_actions: [],
+                required_outputs: ['Search: London', 'filtered from 57 total entries'],
+                expected_artifact: 'Filtered DataTable state',
+                risk: 'high',
+              },
+              {
+                id: 'PU2',
+                title: 'Inspect the initialization code',
+                journey_id: 'J2',
+                scenario_brief:
+                  'Use the Javascript example area to confirm the initialization snippet and CDN dependency.',
+                test_data: [
+                  "Snippet: new DataTable('#example');",
+                  'Dependency: https://cdn.datatables.net/2.3.8/js/dataTables.js',
+                ],
+                required_actions: ['Open or confirm the Javascript tab.'],
+                required_outputs: ["new DataTable('#example');"],
+                expected_artifact: 'Visible DataTables implementation instructions',
+                risk: 'medium',
+              },
+            ],
+          },
+          surfaces: [
+            { id: 'S1', label: 'Employee DataTable with Search, Age column, and entries selector', kind: 'table', url: 'https://datatables.example', source: 'initial', value: 'core', confidence: 0.9 },
+            { id: 'S2', label: 'Javascript source-code tab and CDN dependencies', kind: 'content', url: 'https://datatables.example', source: 'primary_journey', value: 'core', confidence: 0.9 },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Filter employee table',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Filter grid rows.',
+              suggested_goal: 'Search London and verify the DataTable filtered count and rows update.',
+              expected_evidence: ['London', 'filtered from 57 total entries'],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Read implementation code',
+              priority: 'should',
+              goal_class: 'secondary_workflow',
+              surface_ids: ['S2'],
+              user_intent: 'Learn how to reproduce the table.',
+              suggested_goal: "Inspect Javascript code and verify new DataTable('#example'); is visible.",
+              expected_evidence: ["new DataTable('#example');"],
+              risk: 'medium',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1', 'J2'],
+            deferred_surface_ids: [],
+            rationale: 'Live grid and source code are both material.',
+            coverage_risk: 'medium',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    expect(result.output.product_use_contract?.product_kinds).toEqual(
+      expect.arrayContaining(['data_grid', 'developer_documentation']),
+    );
+    const docsJob = result.output.product_use_contract?.user_jobs.find((job) =>
+      /new DataTable|javascript|dependency|implementation/i.test(
+        [job.title, job.scenario_brief, job.expected_artifact, ...job.required_outputs].join(' '),
+      ),
+    );
+    expect(docsJob).toBeDefined();
+    expect(docsJob?.required_actions.join('\n')).not.toMatch(/settings|preferences|help/i);
+    expect(docsJob?.proof_obligations.join('\n')).toContain('developer-facing instructions');
+    expect(result.output.capabilities.map((capability) => capability.label)).toContain(
+      'Filter data-grid rows',
+    );
+  });
+
+  it('does not silently drop product-native content tools when the model labels them setup', async () => {
+    const result = await runDiscovery({
+      url: 'https://wiki.example',
+      observation_summary: 'Searchable article product with article content, references, and View history.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A searchable article site.',
+          product_use_contract: {
+            product_kinds: ['search_content', 'content_site'],
+            primary_value_loop: 'Search for and read article content.',
+            core_artifacts: ['loaded article'],
+            value_loops: [],
+            user_jobs: [],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Search input and article content',
+              kind: 'search',
+              url: 'https://wiki.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'References and View history article tools',
+              kind: 'nav',
+              url: 'https://wiki.example/article',
+              source: 'primary_journey',
+              value: 'important_secondary',
+              confidence: 0.85,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Search and read article',
+              priority: 'must',
+              surface_ids: ['S1'],
+              user_intent: 'Find and read a topic.',
+              suggested_goal: 'Search for OpenAI and verify article content loads.',
+              expected_evidence: ['article title and body text'],
+              risk: 'high',
+              goal_class: 'core',
+            },
+            {
+              id: 'J2',
+              title: 'Inspect article history',
+              priority: 'should',
+              surface_ids: ['S2'],
+              user_intent: 'Inspect article provenance.',
+              suggested_goal: 'Open View history and verify revision entries.',
+              expected_evidence: ['revision entries'],
+              risk: 'medium',
+              goal_class: 'setup',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: ['S2'],
+            rationale: 'Model selected only the search path.',
+            coverage_risk: 'medium',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Search for OpenAI and verify article content loads.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    const contentTools = result.output.capabilities.find(
+      (capability) => capability.label === 'Use visible content tools',
+    );
+    expect(contentTools?.selection_expectation).toBe('should_test_or_explain');
+    expect(contentTools?.status).not.toBe('not_applicable');
+    if (contentTools?.status !== 'selected') {
+      expect(contentTools?.skip_reason).toContain('not selected for this run');
+    }
   });
 
   it('keeps search and open-result capabilities distinct when deriving report coverage', () => {
@@ -3885,5 +4427,494 @@ describe('runDiscovery', () => {
     expect(result.output.product_use_contract?.user_jobs[0]?.required_outputs).toContain(
       'changed chart, table, metric, or filtered data view',
     );
+  });
+
+  it('repairs underselected CRUD products into saved-entity scenarios', async () => {
+    const result = await runDiscovery({
+      url: 'https://work.example',
+      observation_summary:
+        'Issue tracker with New issue form, title input, status selector, assignee, labels, issue list, filters, and table rows.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A workflow tracker for creating and updating issues.',
+          product_use_contract: {
+            product_kinds: ['crud_workflow'],
+            primary_value_loop: 'Create, update, and find work items.',
+            core_artifacts: ['saved issue'],
+            value_loops: [],
+            user_jobs: [],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'New issue form with title, status, assignee, labels, and save',
+              kind: 'form',
+              url: 'https://work.example/issues/new',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'Issue list table with filter and sort controls',
+              kind: 'table',
+              url: 'https://work.example/issues',
+              source: 'primary_journey',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [],
+          coverage_plan: {
+            selected_journey_ids: [],
+            deferred_surface_ids: [],
+            rationale: 'Model underselected the workflow product.',
+            coverage_risk: 'high',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    const descriptions = result.output.goals.map((goal) => goal.description).join('\n');
+    expect(descriptions).toContain('Create or update a realistic item named "Follow up with Maya"');
+    expect(descriptions).not.toContain('open a form');
+    expect(result.output.capabilities.find((capability) => capability.label === 'Create a record or item')?.status).toBe(
+      'selected',
+    );
+    expect(result.output.capabilities.find((capability) => capability.label === 'Update existing state')?.status).toBe(
+      'selected',
+    );
+  });
+
+  it('does not misclassify product-native clear/edit CRUD journeys as setup dismissal', async () => {
+    const result = await runDiscovery({
+      url: 'https://todo.example',
+      observation_summary:
+        'Todo app with What needs to be done input, todo list rows, item checkbox toggles, Active and Completed filters, double-click edit, delete buttons, and Clear completed.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A todo workflow app.',
+          product_use_contract: {
+            product_kinds: ['crud_workflow'],
+            primary_value_loop:
+              'Create todo records, update completion or title, filter the list, and clear completed work.',
+            core_artifacts: [
+              'visible todo rows',
+              'completed and active state',
+              'edited todo title',
+              'removed completed todo',
+            ],
+            value_loops: [],
+            user_jobs: [],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'New todo input',
+              kind: 'form',
+              url: 'https://todo.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'Todo rows with checkbox, inline edit, delete, filters, and Clear completed',
+              kind: 'content',
+              url: 'https://todo.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Create a named todo list',
+              priority: 'must',
+              goal_class: 'setup',
+              surface_ids: ['S1', 'S2'],
+              user_intent: 'Capture work as visible todo records.',
+              suggested_goal:
+                'Create two todos named Draft launch checklist and Email beta testers and verify both appear as list items.',
+              expected_evidence: [
+                'Both exact task labels appear in visible todo rows.',
+                'The input is clear or ready for another todo after submission.',
+              ],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Complete and filter todos',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S2'],
+              user_intent: 'Track done and remaining work.',
+              suggested_goal:
+                'Mark Draft launch checklist complete, then use Active and Completed filters to verify the right tasks appear.',
+              expected_evidence: [
+                'Active filter shows only the active task.',
+                'Completed filter shows only the completed task.',
+              ],
+              risk: 'medium',
+            },
+            {
+              id: 'J3',
+              title: 'Edit and clean up todo records',
+              priority: 'should',
+              goal_class: 'setup',
+              surface_ids: ['S2'],
+              user_intent: 'Correct an existing task and remove completed work.',
+              suggested_goal:
+                'Edit Email beta testers to Email 20 beta testers, then use Clear completed to remove Draft launch checklist.',
+              expected_evidence: [
+                'Email 20 beta testers is visible.',
+                'Email beta testers is no longer visible.',
+                'Draft launch checklist is removed after Clear completed.',
+              ],
+              risk: 'medium',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J2'],
+            deferred_surface_ids: [],
+            rationale: 'Model underselected create and cleanup because it thought clear/edit were setup.',
+            coverage_risk: 'high',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    expect(result.output.coverage_plan?.selected_journey_ids).toEqual(
+      expect.arrayContaining(['J1', 'J2', 'J3']),
+    );
+    const goals = result.output.goals.map((goal) => goal.description).join('\n');
+    expect(goals).toContain('Create two todos named Draft launch checklist and Email beta testers');
+    expect(goals).toContain('Edit Email beta testers to Email 20 beta testers');
+    expect(goals).toContain('Clear completed');
+    expect(goals).not.toContain('Follow up with Maya');
+    expect(result.output.capabilities.find((capability) => capability.label === 'Update existing state')?.status).toBe(
+      'selected',
+    );
+  });
+
+  it('repairs commerce products to the cart or checkout boundary without requiring payment', async () => {
+    const result = await runDiscovery({
+      url: 'https://shop.example',
+      observation_summary:
+        'Storefront with catalog products, product detail page, variant option, Add to cart, cart drawer, checkout button, and payment provider step.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A commerce storefront.',
+          product_use_contract: {
+            product_kinds: ['commerce_checkout'],
+            primary_value_loop: 'Select a product and reach cart or checkout boundary.',
+            core_artifacts: ['selected product in cart'],
+            value_loops: [],
+            user_jobs: [],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Product catalog cards with price and detail links',
+              kind: 'content',
+              url: 'https://shop.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'Add to cart, cart drawer, checkout button, payment boundary',
+              kind: 'form',
+              url: 'https://shop.example/cart',
+              source: 'primary_journey',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [],
+          coverage_plan: {
+            selected_journey_ids: [],
+            deferred_surface_ids: [],
+            rationale: 'Model underselected commerce.',
+            coverage_risk: 'high',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: ['Do not submit real payment.'],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    const descriptions = result.output.goals.map((goal) => goal.description).join('\n');
+    expect(descriptions).toContain('Choose a concrete product or option');
+    expect(descriptions).toContain('item-specific cart or checkout state');
+    expect(descriptions).not.toMatch(/\bsubmit real payment\b/i);
+    expect(
+      result.output.capabilities.find(
+        (capability) => capability.label === 'Reach cart or checkout with a selected item',
+      )?.status,
+    ).toBe('selected');
+  });
+
+  it('keeps learned product-native user jobs in the selected scenario denominator', async () => {
+    const result = await runDiscovery({
+      url: 'https://shop.example',
+      observation_summary:
+        'Storefront with login, product catalog, sort menu, cart, checkout form, and a locked-out user error state.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A commerce storefront.',
+          product_use_contract: {
+            product_kinds: ['commerce_checkout'],
+            primary_value_loop:
+              'Sign in, choose products from the catalog, and reach the checkout boundary.',
+            core_artifacts: ['authenticated catalog', 'selected product in cart'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Buy an in-stock product',
+                journey_id: 'J1',
+                scenario_brief:
+                  'Log in, add Sauce Labs Backpack to the cart, and complete checkout to the confirmation boundary.',
+                required_actions: ['Log in as a valid shopper', 'Add a product to cart', 'Complete checkout form'],
+                proof_obligations: ['Order confirmation is visible'],
+                expected_artifact: 'completed checkout confirmation',
+                acceptable_evidence: ['Confirmation page for the selected product'],
+                required_outputs: ['Sauce Labs Backpack', 'Thank you for your order'],
+                risk: 'high',
+              },
+              {
+                id: 'PU2',
+                title: 'Verify locked user cannot sign in',
+                journey_id: 'J2',
+                scenario_brief:
+                  'Attempt login as a locked-out shopper and verify the product shows the blocked-account error.',
+                required_actions: ['Submit locked-out shopper credentials'],
+                proof_obligations: ['Locked-out user error is visible'],
+                expected_artifact: 'visible blocked-account error state',
+                acceptable_evidence: ['Locked-out user error message'],
+                required_outputs: ['locked out'],
+                risk: 'medium',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Login form with username and password fields',
+              kind: 'form',
+              url: 'https://shop.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'Product catalog cards with price, sort menu, and Add to cart buttons',
+              kind: 'content',
+              url: 'https://shop.example/inventory',
+              source: 'primary_journey',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S3',
+              label: 'Locked-out shopper login error',
+              kind: 'form',
+              url: 'https://shop.example',
+              source: 'primary_journey',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Buy an in-stock product',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1', 'S2'],
+              user_intent: 'Reach a checkout confirmation for a selected product.',
+              suggested_goal:
+                'Log in, add Sauce Labs Backpack to the cart, and complete checkout to the confirmation boundary.',
+              expected_evidence: ['Sauce Labs Backpack is selected', 'Thank you for your order is visible'],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Verify locked user cannot sign in',
+              priority: 'should',
+              goal_class: 'secondary_workflow',
+              surface_ids: ['S1', 'S3'],
+              user_intent: 'Check an important negative auth path exposed by the product.',
+              suggested_goal:
+                'Attempt login as a locked-out shopper and verify the blocked-account error appears.',
+              expected_evidence: ['Locked-out user error is visible'],
+              risk: 'medium',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Model selected only the happy-path checkout.',
+            coverage_risk: 'medium',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: ['Do not submit real payment.'],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    expect(result.output.coverage_plan?.selected_journey_ids).toEqual(
+      expect.arrayContaining(['J1', 'J2']),
+    );
+    expect(result.output.coverage_plan?.selected_journey_ids).not.toContain('J3');
+    expect(result.output.goals.map((goal) => goal.description).join('\n')).toContain(
+      'locked-out shopper',
+    );
+  });
+
+  it('does not reuse hidden product-use journey ids for synthesized capability gaps', async () => {
+    const result = await runDiscovery({
+      url: 'https://shop.example',
+      observation_summary:
+        'Login-gated demo shop with standard_user, locked_out_user, shared password, and an inferred shopping surface after login.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A login-gated demo shop.',
+          product_use_contract: {
+            product_kinds: ['commerce_checkout'],
+            primary_value_loop: 'Log in, then use the authenticated shopping surface.',
+            core_artifacts: ['authenticated shopping state'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Log in as the standard demo user',
+                journey_id: 'J1',
+                scenario_brief: 'Log in as standard_user and reach the authenticated app.',
+                required_actions: [],
+                proof_obligations: [],
+                expected_artifact: 'authenticated app state',
+                acceptable_evidence: [],
+                required_outputs: ['standard_user was entered before submit'],
+                risk: 'high',
+              },
+              {
+                id: 'PU2',
+                title: 'Verify locked-out account denial',
+                journey_id: 'J2',
+                scenario_brief: 'Use locked_out_user and verify the app blocks access.',
+                required_actions: [],
+                proof_obligations: [],
+                expected_artifact: 'locked-out error state',
+                acceptable_evidence: [],
+                required_outputs: ['locked_out_user was entered before submit'],
+                risk: 'medium',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Login form with published demo credentials',
+              kind: 'form',
+              url: 'https://shop.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Standard user signs in',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Enter the demo shop.',
+              suggested_goal: 'Log in as standard_user and verify authenticated state appears.',
+              expected_evidence: ['Authenticated state appears'],
+              risk: 'high',
+            },
+          ],
+          capabilities: [
+            {
+              id: 'C-shop',
+              label: 'Reach and use the authenticated shopping surface',
+              product_kind: 'commerce_checkout',
+              importance: 'core',
+              status: 'discovered',
+              confidence: 0.8,
+              source: 'model',
+              evidence: ['Shopping surface is expected after successful login'],
+              scenario_ids: [],
+              journey_ids: [],
+              surface_ids: [],
+              denominator_reason: 'Shopping is the product value after login.',
+              coverage_gap: '',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Model selected only login.',
+            coverage_risk: 'medium',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    const shoppingGoal = result.output.goals.find((goal) =>
+      /authenticated shopping surface/i.test(goal.description),
+    );
+    expect(shoppingGoal?.journey_id).toBeTruthy();
+    expect(shoppingGoal?.journey_id).not.toBe('J2');
+    expect(
+      result.output.product_use_contract?.user_jobs.find((job) => job.id === 'PU2')?.journey_id,
+    ).toBe('J2');
   });
 });

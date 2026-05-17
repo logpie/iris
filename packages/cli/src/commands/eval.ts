@@ -287,6 +287,9 @@ export function evalCommand(): Command {
             blocked_reasons?: string[];
           };
           meta: { confidence_caveats: string[] };
+          spec_compliance?: {
+            goal_claim_validation?: { verified_kept: number; downgraded: number } | undefined;
+          };
           evidence_validation?: { verified: number; downgraded: number; discarded: number };
         };
         out_dir: string;
@@ -405,6 +408,7 @@ export function evalCommand(): Command {
             evidence_validation?: { verified: number; downgraded: number; discarded: number };
           }
         ).evidence_validation;
+        const goalClaimValidation = result.report.spec_compliance?.goal_claim_validation;
         process.stdout.write(
           buildSummaryLine({
             score: counts.score,
@@ -429,11 +433,17 @@ export function evalCommand(): Command {
                   goals_total: counts.goals_total,
                 }
               : {}),
+            ...(goalClaimValidation
+              ? {
+                  scenario_evidence_verified: goalClaimValidation.verified_kept,
+                  scenario_evidence_downgraded: goalClaimValidation.downgraded,
+                }
+              : {}),
             ...(ev
               ? {
-                  evidence_verified: ev.verified,
-                  evidence_downgraded: ev.downgraded,
-                  evidence_discarded: ev.discarded,
+                  finding_evidence_verified: ev.verified,
+                  finding_evidence_downgraded: ev.downgraded,
+                  unsupported_finding_drafts_discarded: ev.discarded,
                 }
               : {}),
             exit_code: result.exit_code,

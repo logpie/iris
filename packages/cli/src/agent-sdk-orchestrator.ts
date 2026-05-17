@@ -326,6 +326,7 @@ export async function runIrisViaSdk(
   process.on('unhandledRejection', sdkNoiseHandler);
 
   const adapter = createAdapter();
+  const reportMode = config.mode;
   const startedAt = new Date();
   const startMs = Date.now();
   mkdirSync(config.out_dir, { recursive: true });
@@ -438,7 +439,7 @@ export async function runIrisViaSdk(
         run: {
           id: startedAt.toISOString().replace(/[:]/g, '-'),
           target: { kind: 'web', url: config.target.url },
-          mode: config.mode,
+          mode: reportMode,
           started_at: startedAt.toISOString(),
           ended_at: new Date().toISOString(),
           duration_s: (Date.now() - startMs) / 1000,
@@ -1077,6 +1078,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
     return {
       report: emptyReport(
         config,
+        reportMode,
         startedAt,
         totalCost,
         explorerResult.termination,
@@ -1122,7 +1124,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
     run: {
       id: startedAt.toISOString().replace(/[:]/g, '-'),
       target: { kind: 'web', url: config.target.url },
-      mode: config.mode,
+      mode: reportMode,
       started_at: startedAt.toISOString(),
       ended_at: endedAt.toISOString(),
       duration_s,
@@ -1185,6 +1187,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
 
 function emptyReport(
   config: AgentSdkRunConfig,
+  reportMode: Mode,
   startedAt: Date,
   cost_usd: number,
   termination: string,
@@ -1207,7 +1210,7 @@ function emptyReport(
     run: {
       id: startedAt.toISOString().replace(/[:]/g, '-'),
       target: { kind: 'web', url: config.target.url },
-      mode: config.mode,
+      mode: reportMode,
       started_at: startedAt.toISOString(),
       ended_at: new Date().toISOString(),
       duration_s: (Date.now() - startedAt.getTime()) / 1000,

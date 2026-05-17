@@ -204,7 +204,7 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
   const scorePass = inp.threshold === undefined ? true : score >= inp.threshold;
   const coveragePass = coverage.total === 0 || coverageRatio >= COVERAGE_FLOOR;
   const noBlockingFindings = counts.blocker === 0 && counts.major === 0;
-  const threshold_passed = !inp.blocked && scorePass && coveragePass && noBlockingFindings;
+  const baseThresholdPassed = !inp.blocked && scorePass && coveragePass && noBlockingFindings;
 
   // Phase 5 G4: compute a stable finding_hash for every finding. Uses content
   // hashes of the cited trace events when available, so the same finding from
@@ -241,6 +241,17 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
       ...(f.suggested_fix?.code_pointer ? { code_pointer: f.suggested_fix.code_pointer } : {}),
     }));
 
+  const evaluation = deriveReportEvaluation({
+    score,
+    scores,
+    goals: judge.spec_compliance.goals,
+    findings: findingsWithHash,
+    meta,
+    capabilities: discovery?.capabilities,
+  });
+  const threshold_passed =
+    baseThresholdPassed && evaluation.product_score.authority !== 'insufficient';
+
   const headline: ReportJson['headline'] = {
     score,
     threshold_passed,
@@ -258,14 +269,6 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
       : {}),
     ...(inp.blocked ? { blocked: true, blocked_reasons: inp.blocked.reasons } : {}),
   };
-  const evaluation = deriveReportEvaluation({
-    score,
-    scores,
-    goals: judge.spec_compliance.goals,
-    findings: findingsWithHash,
-    meta,
-    capabilities: discovery?.capabilities,
-  });
 
   return {
     v: 2,

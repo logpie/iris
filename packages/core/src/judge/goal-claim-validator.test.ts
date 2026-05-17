@@ -153,6 +153,154 @@ describe('validateGoalClaims', () => {
     expect(result.goals[0]?.status).toBe('verified');
   });
 
+  it('upgrades partial when cited evidence satisfies the product-use contract', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'complete checkout', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['commerce_checkout'],
+          primary_value_loop: 'Complete a purchase.',
+          core_artifacts: ['checkout confirmation'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Complete checkout',
+              journey_id: 'J1',
+              required_outputs: ['Checkout complete'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation', { summary: 'Checkout complete confirmation is visible.' }),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'partial',
+        evidence_event_ids: ['B'],
+        rationale: 'Checkout complete confirmation is visible, but status was conservative.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'complete checkout',
+        status: 'partial',
+        evidence: ['B'],
+        notes: 'Observation B shows Checkout complete confirmation after submit.',
+      },
+    ]);
+    const contract = stubContract({ G1: ['B'] });
+    const result = validateGoalClaims({ judge, trace, outcome_contract: contract });
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+    expect(result.goals[0]?.notes).toContain('partial upgraded');
+  });
+
+  it('does not accept typed credentials alone as post-login proof', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'sign in as standard_user', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['auth_account'],
+          primary_value_loop: 'Sign in and reach authenticated inventory.',
+          core_artifacts: ['authenticated inventory page'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Log in as standard_user',
+              journey_id: 'J1',
+              required_outputs: [
+                'standard_user credentials submitted',
+                'Authenticated product or inventory content visible',
+                'Login error absent',
+              ],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'type', ok: true }),
+      ev('B', 'observation', { summary: 'Login\nUsername\nstandard_user\nPassword\nsecret_sauce' }),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['B'],
+        rationale: 'standard_user credentials were entered.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'sign in as standard_user',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'standard_user credentials were entered into the login form.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.summary.downgrade_reasons[0]).toContain('Products');
+    expect(result.goals[0]?.status).toBe('partial');
+  });
+
+  it('accepts post-login inventory text and probe_result selector values as scenario proof', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'sign in as standard_user', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['auth_account'],
+          primary_value_loop: 'Sign in and reach authenticated inventory.',
+          core_artifacts: ['authenticated inventory page'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Log in as standard_user',
+              journey_id: 'J1',
+              required_outputs: [
+                'standard_user credentials submitted',
+                'Authenticated product or inventory content visible',
+                'Login error absent',
+              ],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'type', ok: true }),
+      ev('B', 'probe_result', {
+        probe: 'ui_state',
+        data: {
+          selectors: [{ selector: '.title', text: 'Products' }],
+        },
+      }),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['B'],
+        rationale: 'Products inventory is visible after login.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'sign in as standard_user',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Products inventory is visible after login.',
+      },
+    ]);
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
   it('downgrades verified → partial when no outcome artifact exists', () => {
     const trace: TraceEvent[] = [
       ev('A', 'action_result', { tool: 'vision_click', ok: true }),

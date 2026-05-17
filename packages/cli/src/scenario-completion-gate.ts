@@ -113,6 +113,39 @@ function tracePayloadEvidenceText(kind: string, payload: Record<string, unknown>
   if (kind === 'action_result' && typeof payload.description === 'string') {
     chunks.push(payload.description);
   }
+  if (kind === 'probe_result') {
+    chunks.push(String(payload.probe ?? ''));
+    chunks.push(String(payload.summary ?? ''));
+    const data = payload.data;
+    if (data && typeof data === 'object') {
+      const d = data as {
+        visibleText?: unknown;
+        text_sample?: unknown;
+        outline_sample?: unknown;
+        selectors?: unknown;
+        activeElement?: unknown;
+      };
+      chunks.push(String(d.visibleText ?? ''));
+      chunks.push(String(d.text_sample ?? ''));
+      chunks.push(String(d.outline_sample ?? ''));
+      if (Array.isArray(d.selectors)) {
+        for (const selector of d.selectors.slice(0, 80)) {
+          if (!selector || typeof selector !== 'object') continue;
+          const s = selector as { name?: unknown; text?: unknown; value?: unknown; selector?: unknown };
+          chunks.push(String(s.selector ?? ''));
+          chunks.push(String(s.name ?? ''));
+          chunks.push(String(s.text ?? ''));
+          chunks.push(String(s.value ?? ''));
+        }
+      }
+      if (d.activeElement && typeof d.activeElement === 'object') {
+        const active = d.activeElement as { name?: unknown; text?: unknown; value?: unknown };
+        chunks.push(String(active.name ?? ''));
+        chunks.push(String(active.text ?? ''));
+        chunks.push(String(active.value ?? ''));
+      }
+    }
+  }
   return chunks.join(' ');
 }
 

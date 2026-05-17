@@ -42,6 +42,22 @@ export function buildReportMd(report: ReportJson): string {
   if (evaluation.evidence_confidence.reasons.length > 0) {
     lines.push(`**Why:** ${mdCell(evaluation.evidence_confidence.reasons.slice(0, 4).join('; '))}`);
   }
+  if (evaluation.capability_coverage) {
+    const coverage = evaluation.capability_coverage;
+    lines.push(
+      `**Important capabilities covered:** ${coverage.important_covered}/${coverage.important_total}  •  **Important skipped:** ${coverage.important_skipped}`,
+    );
+    if (coverage.scope_limits.length > 0) {
+      lines.push(
+        `**Scope limits:** ${mdCell(
+          coverage.scope_limits
+            .slice(0, 4)
+            .map((limit) => `${limit.label}: ${limit.reason}`)
+            .join('; '),
+        )}`,
+      );
+    }
+  }
   if (report.testing_plan) {
     const plan = report.testing_plan;
     const primaryJourney =
@@ -56,7 +72,7 @@ export function buildReportMd(report: ReportJson): string {
       lines.push('**User journeys checked:**');
       for (const journey of plan.journeys) {
         lines.push(
-          `- ${mdCell(journey.id)}: ${mdCell(journey.title)} (${journey.scenario_ids.length} task${journey.scenario_ids.length === 1 ? '' : 's'})`,
+          `- ${mdCell(journey.id)}: ${mdCell(journey.title)} (${journey.scenario_ids.length} scenario${journey.scenario_ids.length === 1 ? '' : 's'})`,
         );
       }
     }
@@ -101,7 +117,7 @@ export function buildReportMd(report: ReportJson): string {
     const sat = report.spec_compliance.goals.filter(
       (g) => g.status === 'satisfied' || g.status === 'verified',
     ).length;
-    lines.push(`## Task checks — ${sat} / ${report.spec_compliance.goals.length}`);
+    lines.push(`## Scenario checks — ${sat} / ${report.spec_compliance.goals.length}`);
     for (const g of report.spec_compliance.goals) {
       const icon =
         g.status === 'satisfied' || g.status === 'verified'

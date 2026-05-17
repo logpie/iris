@@ -1069,3 +1069,237 @@ Target design:
 - Persist actual `capabilities` in trace `discovery` events for both SDK and Codex App Server paths.
 - Verify with unit tests that under-compressed tldraw-like Discovery expands to material scenarios before Explorer, and that content products expand content-navigation gaps without canvas-specific behavior.
 - Verify with actual e2e runs, at minimum tldraw and Wikipedia, using report artifacts and screenshots/videos rather than trusting unit tests alone.
+
+## 2026-05-16 Fair product evaluation root-fix research
+
+Timestamp: 2026-05-16 15:48 PDT
+
+Trigger:
+
+- The user created an explicit goal to root-fix Iris as a general software-product evaluator, not a tldraw/Wikipedia patch.
+- Prior work improved Discovery v2, scenario grounding, capability denominators, mouse overlays, and report layout, but the ideal-state loop is still incomplete: selected-scenario success can still read as broad product coverage, important product-native scope can be silently deferred, and evidence clips are often fixed-length screenshot storyboards rather than meaningful scenario arcs.
+
+What exists today:
+
+- `packages/core/src/discovery/prompts.ts` asks the model to learn product kind, value loops, user jobs, scenarios, surfaces, journeys, and a coverage plan.
+- `packages/core/src/discovery/discovery.ts` normalizes Discovery output and now carries a capability denominator. It still trusts model-selected journeys too much: `normalizeDiscoveryCoveragePlan()` requires only core/contract journeys, filters selection by `goal_class`, and records unselected material surfaces as deferred rather than forcing a fair selection/explanation pass.
+- `DiscoveryCapabilityStatusSchema` currently has `selected`, `deferred`, `discovered`, and `not_applicable`. That mixes three different meanings: important but untested, lower-signal but intentionally skipped, and merely observed.
+- `finalizeCapabilitySeed()` marks a capability `selected` when any selected journey/scenario matches it, otherwise `deferred` if related journeys/surfaces exist. It does not preserve the higher-level evaluator question: "Would a capable user expect this product-native ability to matter?"
+- `packages/core/src/report/evaluation.ts` reports capability coverage but still allows high coverage labels when all core-selected scenarios pass and only a subset of the denominator was tested. Gaps only include uncovered `core`/`important` capabilities, so misclassified product-native scope can disappear.
+- `packages/core/src/report/evidence-clips.ts` creates trace storyboards before raw slicing, caps them at six frames, and gives every frame the same duration. This explains uniform clips around eight seconds and weak "slideshow" evidence. Raw browser recordings are available but too long/static to be primary evidence.
+
+Observed root causes:
+
+- Selection is model-output-driven instead of denominator-audited. If Discovery labels a product-native journey as `setup`, `sample`, or low-priority, the normalizer can drop it even when a skeptical evaluator would expect it to be tested or explicitly scoped out.
+- Iris lacks a small public semantic model for scope. The system has many internal labels, but the evaluator needs only: must test, should test or explain, and not normally tested. More granular labels are useful only as private hints, not as the report or scoring truth.
+- Deferral is not score-relevant enough. "All selected scenarios passed" can dominate even when important capability scope is skipped.
+- Evidence generation optimizes for available screenshots instead of useful proof. A fixed six-frame storyboard can hide the actual before/action/result/proof arc, and raw recordings remain debug artifacts rather than user-facing evidence.
+
+Minimal general design:
+
+- Add a product-agnostic selection gate after Discovery normalization and before Explorer:
+  - Derive a capability expectation for every non-`not_applicable` capability using general signals: centrality to the learned value loop, product-native material action/output, existing importance, selected scenario coverage, and whether the related surfaces are peripheral/setup/external.
+  - Use only three evaluator-facing buckets: `must_test`, `should_test_or_explain`, and `not_normally_tested`.
+  - Do not hardcode named products or inflate a large product-kind enum matrix. Existing product kinds may supply generic materiality priors, but the gate decision must be explainable in plain language.
+- Repair or flag the selection:
+  - `must_test` capabilities require at least one selected material scenario unless they are truly blocked/unsafe/external.
+  - `should_test_or_explain` capabilities may be skipped, but the report must show why and confidence/scope must reflect the skip.
+  - `not_normally_tested` capabilities stay in debug/detail scope unless they block the primary value loop.
+- Replace fuzzy deferral in public artifacts:
+  - Report every important capability as tested, skipped with reason, or not relevant.
+  - Keep raw surfaces/journeys in debug details; make the public report about product abilities and user scenarios.
+- Make score authority depend on denominator coverage:
+  - Selected scenario pass rate answers "did the sampled tasks work?"
+  - Capability coverage answers "how much important product scope did Iris actually exercise?"
+  - Any skipped `must_test` or unexplained important skip should cap confidence and make the scope limit impossible to miss.
+- Replace fixed-duration primary clips with context-aware evidence reels:
+  - Build clips from scenario-relevant trace anchors and label/frame roles such as before, action, result, and proof when available.
+  - Prefer visual/state-change windows around evidence anchors; keep full raw recordings as debug artifacts.
+  - Avoid uniform fixed six-frame output. Clip length should follow the scenario evidence arc, with bounded maximums and static-frame deduplication.
+
+Verification plan:
+
+- Unit/canary coverage must include archetypes rather than named-site hacks:
+  - content/search product: search, read/navigate, source/history or alternate content path surfaced as tested or explicitly skipped.
+  - artifact/editor product: create, revise/manipulate, style/structure, import/export/share represented as capabilities; selected tasks must include material artifact change.
+  - CRUD/workflow product: create, update, status/assignment/list filtering, and destructive/unsafe boundaries handled honestly.
+  - dashboard/filtering product: inspect summary, filter/sort/drill down, and verify metric/detail changes.
+  - commerce/transaction-boundary product: browse/select/configure/cart and stop or explain at payment/external-risk boundary.
+- Report tests must assert top-level separation between selected scenarios verified, important capabilities covered, important capabilities skipped, confidence, and scope limits.
+- Evidence tests must assert variable, scenario-specific evidence reels and preserve raw recordings as debug artifacts only.
+- Real e2e must be rerun from scratch on at least two different product types after implementation. The reports must pass skeptical manual audit before this goal can be marked complete.
+
+Plan-gate constraint:
+
+- The project AGENTS instructions require `/codex-gate`, but no Codex MCP or codex-gate tool is available in this session after tool discovery. The review trail for this goal must therefore be a written self-review plus executable tests/e2e artifacts unless the tool becomes available later.
+
+Final validation notes:
+
+- Timestamp: 2026-05-16 17:31 PDT.
+- Fresh final e2e run, content/search archetype: `iris-runs/wikipedia-rootfix-final-20260516-171606`.
+  - Target: `https://www.wikipedia.org/`.
+  - Transport/model: Codex App Server, `gpt-5.5`, high reasoning for discovery/explorer/judge.
+  - Result: 5/5 selected scenarios verified, 8/9 important capabilities covered, 1 important capability skipped and score-relevant.
+  - Score authority: provisional, because donation/fundraising prompt handling was discovered as important product-native scope but not selected, and a minor axe image-alt finding was confirmed.
+  - Manual audit: top summary clearly separates scenarios verified, important capabilities covered, important capabilities skipped, evidence confidence, findings, runtime, and rubric completeness. Header correctly reports `free mode`. No visible `Task G...`, `grounded mode`, or `tested goal` copy remains in the report HTML.
+- Fresh final e2e run, artifact/editor archetype: `iris-runs/tldraw-rootfix-final-20260516-170325`.
+  - Target: `https://www.tldraw.com/`.
+  - Transport/model: Codex App Server, `gpt-5.5`, high reasoning for discovery/explorer/judge.
+  - Result: 9/9 selected scenarios verified, 9/10 important capabilities covered, 1 important capability skipped and score-relevant.
+  - Score authority: provisional, because canvas zoom/minimap navigation was discovered as important product-native scope but not selected; axe was not scored because CSP blocked instrumentation.
+  - Manual audit: scenarios are material product use rather than menu-click checks: create a Q3 launch board, revise board state, style content, use non-default shapes, add note/media, reach share boundary, and export/save. Evidence clips show scenario arcs and are variable-length, not uniform fixed clips.
+- Evidence reel validation:
+  - Wikipedia final clip durations: finding 2.08s; scenarios 3.16s to 8.64s.
+  - tldraw final clip durations: scenarios 3.16s to 10.48s.
+  - Full raw recordings remain available under each run's `evidence/videos/` and primary report proof uses per-scenario reels under `evidence/clips/`.
+- During the final tldraw rerun, a real post-Judge hang exposed a bug in frame thinning: the loop could fail to make progress when rounded frame indices repeated. Fixed `thinFrames()` to use a bounded for-loop and added a long-scenario evidence reel regression test.
+- Final verification commands completed:
+  - `pnpm --filter @iris/core test -- evidence-clips --pool=forks`
+  - `pnpm --filter @iris/core test -- report-html --pool=forks`
+  - `pnpm -r run typecheck`
+  - `pnpm -r run build`
+  - Workspace test run: 73 test files passed, 551 tests passed, 1 skipped.
+
+## 2026-05-16 Five-product verification extension
+
+Timestamp: 2026-05-16 17:56 PDT
+
+Trigger:
+
+- The active goal was strengthened after the first root-fix close: Iris must be verified on at least five distinct real software products before we call the evaluator solid.
+- The previous root-fix has strong evidence for only two products: Wikipedia as content/search and tldraw as artifact/editor. That is not enough to prove generality.
+
+Verification matrix:
+
+- Already counted only if current artifacts remain inspectable and honest:
+  - Content/search: `https://www.wikipedia.org/`, run `iris-runs/wikipedia-rootfix-final-20260516-171606`.
+  - Artifact/editor: `https://www.tldraw.com/`, run `iris-runs/tldraw-rootfix-final-20260516-170325`.
+- New products to run from scratch:
+  - CRUD/workflow: `https://demo.playwright.dev/todomvc/`.
+  - Dashboard/filtering/data grid: `https://www.ag-grid.com/example/`.
+  - Commerce/cart/transaction boundary: `https://www.demoblaze.com/`.
+- Backup if a target is unreachable or blocks automation for environmental reasons:
+  - Commerce/auth boundary: `https://www.saucedemo.com/`.
+  - Calculator/form workflow: `https://www.calculator.net/mortgage-calculator.html`.
+
+Audit rule:
+
+- A product counts only when the report demonstrates all of these:
+  - scenario selection is explainable from the learned important-capability denominator,
+  - important product-native skipped capabilities are explicit and affect score authority or confidence,
+  - selected scenarios are material real use, not menu/promo/setup checks,
+  - evidence reels show a meaningful scenario arc instead of uniform/static clips,
+  - the top report summary makes "selected scenarios passed" visibly different from "important product scope covered."
+
+Known risk:
+
+- The three new targets are public products/demos, so some flows may legitimately stop at auth/payment/external boundaries. That is acceptable only if Iris explains the boundary and scope impact; silent omission does not count.
+
+## 2026-05-17 Continuation audit
+
+Timestamp: 2026-05-17 04:33 PDT
+
+What changed during continuation:
+
+- Fixed a Discovery consistency bug where a capability could be counted as covered even when its own `coverage_gap` said it belonged in a deeper or future audit. The normalizer now treats that contradiction as uncovered unless a strongly matching selected scenario is added.
+- Fixed a selection-gate bug where uncovered must-test capabilities were considered already selected merely because adjacent journey IDs were selected. If no unselected existing journey covers the gap, Iris synthesizes a product-agnostic gap scenario.
+- Clarified CLI summary output: scenario evidence is now reported separately from finding-draft evidence. The previous `evidence.verified=0` line was misleading because it referred to finding validation, not goal evidence.
+- Added a bounded partial-goal reconciliation path: a partial can be upgraded only when cited outcome evidence satisfies the same product-use contract and outcome-artifact checks used to prevent false verified claims.
+
+Counted product audits so far:
+
+- Wikipedia, content/search: `iris-runs/wikipedia-rootfix-final-20260516-171606`.
+  - 5/5 scenarios verified; 8/9 important capabilities covered; 1 important skipped and score-relevant.
+  - Manual audit still counts this as a fair report: selected scenarios covered search/open/read/navigation/language/account boundary, and the skipped donation/fundraising scope is explicit.
+- tldraw, artifact/editor: `iris-runs/tldraw-rootfix-final-20260516-170325`.
+  - 9/9 scenarios verified; 9/10 important capabilities covered; 1 important skipped and score-relevant.
+  - Manual audit still counts this as a fair report: evidence shows material board creation/edit/style/export/share rather than menu-only use.
+- TodoMVC, CRUD/workflow: `iris-runs/todomvc-rootfix-5prod-fixed-20260516-174511`.
+  - 4/4 scenarios verified; 5/5 important capabilities covered; authoritative/high evidence.
+  - Manual audit counts this as fair CRUD coverage: create, complete/filter, edit/persist-ish list state, and delete/clear style workflows were exercised.
+- Mortgage Calculator, form/calculator workflow: `iris-runs/mortgagecalc-rootfix-5prod-final-20260517-012840`.
+  - 4/4 scenarios verified; 5/5 important capabilities covered; authoritative/high evidence.
+  - Manual audit counts this as fair utility coverage: input scenarios produced changed monthly-payment outputs, amortization/output content, and related calculator/navigation scope.
+- Hacker News, content/community product: `iris-runs/hackernews-rootfix-5prod-final-20260517-041900`.
+  - 8/9 scenarios verified; 6/6 core capabilities covered; 11/13 important capabilities covered; 2 important skipped.
+  - Manual audit counts this as fair evaluator behavior, not a high product score: story source, comments, alternate feeds, jobs, and login/submission boundary were exercised; authenticated mutation was blocked rather than faked; vote/hide and profile/domain inspection were explicit scope limits.
+
+Negative/productive audits not counted as clean passes:
+
+- DataTables:
+  - `iris-runs/datatables-rootfix-5prod-final-20260517-025616` originally looked strong, but exposed a misleading evidence summary and over-counted a manual/reference capability.
+  - `iris-runs/datatables-rootfix-5prod-final2-20260517-031645` correctly refused to overclaim after the fix, marking implementation/source-code reading as skipped.
+  - `iris-runs/datatables-rootfix-5prod-final3-20260517-033200` still produced only 1/5 verified; this remains an execution/proof weakness for developer-doc/data-grid products.
+- SauceDemo:
+  - `iris-runs/saucedemo-rootfix-5prod-final10-20260517-034300` improved to 2/4 verified and kept locked-out login in scope.
+  - `iris-runs/saucedemo-rootfix-5prod-final11-20260517-040600` improved to 3/5 verified with all core capabilities covered, but standard login and cart remained partial despite trace evidence showing inventory and cart state. This indicates remaining friction in product-use required-action windows and partial-to-verified reconciliation.
+- BMI Calculator:
+  - `iris-runs/bmicalc-rootfix-5prod-final-20260517-035600` produced 2/6 verified and revealed a classification gap: form/calculator products can be over-read as content/search when result pages contain rich educational text.
+
+Remaining confidence note:
+
+- The five counted products now cover content/search, artifact/editor, CRUD/list workflow, calculator/form workflow, and content/community navigation. That is materially broader than the original two-product state.
+- I am not fully satisfied with Iris on transaction-boundary commerce or developer-doc/data-grid products. The evaluator is much more honest about those gaps now, but not consistently capable enough to count those runs as clean passes.
+
+Final automated verification:
+
+- Focused changed-path tests passed:
+  - `pnpm --filter @iris/core exec vitest run src/scenario/scenario-data.test.ts src/discovery/discovery.test.ts src/judge/goal-claim-validator.test.ts src/report/report-json.test.ts src/report/report-md.test.ts src/report/report-html.test.ts src/report/evidence-clips.test.ts --pool=forks`
+  - `pnpm --filter @iris/cli exec vitest run src/scenario-completion-gate.test.ts src/render/summary.test.ts --pool=forks`
+- Workspace verification passed:
+  - `pnpm -r run typecheck`
+  - `pnpm -r run build`
+  - `pnpm -r run test -- --pool=forks`
+- Full test sweep result: each workspace package completed with 73 test files passed, 562 tests passed, 1 skipped.
+
+## 2026-05-17 Known gap fix and system audit research
+
+Timestamp: 2026-05-17 15:27 PDT
+
+Trigger:
+
+- The five-product breadth goal was met, but the final notes kept three classes open: transaction-boundary commerce/auth, developer-doc/data-grid proof, and form/calculator classification.
+- The user asked to fix those first, then zoom out across system design, prompt design, wiring, data/module/prompt flow, brittleness, duplicates, and bugs with multiple agents.
+
+Current gap evidence:
+
+- Commerce/auth: `iris-runs/saucedemo-rootfix-5prod-final11-20260517-040600` ended `3/5` verified with medium confidence. The earlier note says all core capabilities were covered, but standard login and cart stayed partial despite trace evidence showing inventory/cart state. This points at proof reconciliation and scenario-gate semantics, not only Explorer behavior.
+- Developer-doc/data-grid: `iris-runs/datatables-rootfix-5prod-final3-20260517-033200` ended `1/5` verified. The preceding DataTables attempts exposed both sides of the problem: over-counting manual/source-code reading when it is only deeper documentation scope, then under-proving material data-grid interactions.
+- Calculator/form: `iris-runs/bmicalc-rootfix-5prod-final-20260517-035600` ended `2/6` verified and exposed a classification gap where rich result/educational text can make a calculator look like content/search even though the primary loop is form inputs -> computed output.
+
+Relevant code paths:
+
+- Discovery normalization and product-kind repair: `packages/core/src/discovery/discovery.ts`.
+- Discovery archetype tests and canaries: `packages/core/src/discovery/discovery.test.ts`.
+- Scenario required-output extraction: `packages/core/src/scenario/scenario-data.ts`.
+- Scenario completion gate: `packages/cli/src/scenario-completion-gate.ts`.
+- Goal claim validation and partial-to-verified reconciliation: `packages/core/src/judge/goal-claim-validator.ts`.
+- Report score authority and capability coverage: `packages/core/src/report/evaluation.ts`.
+- CLI summary honesty: `packages/cli/src/render/summary.ts`.
+
+Constraints:
+
+- Fix generic evaluator behavior, not named-site branches.
+- Keep public scope semantics small: must test, should test or explain, not normally tested.
+- Do not make partial scenarios look verified unless cited evidence satisfies the same product-use and outcome-artifact checks.
+- Do not punish product score for evaluator scope gaps; cap score authority/confidence instead.
+- Use written artifacts and verification logs because chat context is not durable.
+
+Implemented generic fixes:
+
+- Scenario proof extraction now preserves structured visible values (`Product: Sauce Labs Backpack`, `Search: London`, `Sort column: Age`) and drops non-visible inputs/absence prose from proof gates.
+- Scenario gates and goal-claim validation now read `probe_result` UI-state text/selectors as proof evidence.
+- Auth gates no longer verify from typed credentials alone; commerce/auth inventory gates require post-login product/inventory text.
+- Discovery now infers `calculator_tool`, `data_grid`, and `developer_documentation` and applies specific scaffolds for computed results, row/count/order/range proof, and concrete code/API/dependency proof.
+- Report JSON now refuses `threshold_passed` when score authority is `insufficient`.
+- Capability runtime coverage now treats linked partial goals as partial before counting linked verified goals as covered.
+
+Focused verification so far:
+
+- `pnpm --filter @iris/core exec vitest run src/scenario/scenario-data.test.ts src/discovery/discovery.test.ts src/judge/goal-claim-validator.test.ts src/report/report-json.test.ts --pool=forks`
+- `pnpm --filter @iris/core build`
+- `pnpm --filter @iris/cli exec vitest run src/scenario-completion-gate.test.ts src/render/summary.test.ts --pool=forks`
+- `pnpm -r run typecheck`
+- `pnpm -r run build`
+- `pnpm -r run test -- --pool=forks`
+- Full workspace result: each package reported 73 test files passed, 571 tests passed, 1 skipped.

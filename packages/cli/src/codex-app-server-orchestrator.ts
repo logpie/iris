@@ -420,6 +420,7 @@ export async function runIrisViaCodexAppServer(
   config: CodexAppServerRunConfig,
   adapter: TargetAdapter,
 ): Promise<CodexAppServerRunResult> {
+  const reportMode = config.mode;
   const appServerCwd = mkdtempSync(join(tmpdir(), 'iris-codex-appserver-cwd-'));
   const client = new CodexAppServerClient();
   await client.start();
@@ -554,7 +555,7 @@ export async function runIrisViaCodexAppServer(
           run: {
             id: startedAt.toISOString().replace(/[:]/g, '-'),
             target: { kind: 'web', url: config.target.url },
-            mode: config.mode,
+            mode: reportMode,
             started_at: startedAt.toISOString(),
             ended_at: new Date().toISOString(),
             duration_s: (Date.now() - startMs) / 1000,
@@ -903,7 +904,7 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
       run: {
         id: startedAt.toISOString().replace(/[:]/g, '-'),
         target: { kind: 'web', url: config.target.url },
-        mode: config.mode,
+        mode: reportMode,
         started_at: startedAt.toISOString(),
         ended_at: new Date().toISOString(),
         duration_s,
