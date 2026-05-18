@@ -342,4 +342,124 @@ describe('deriveTestingPlan', () => {
     expect(plan?.scenarios[0]?.source_goal_ids).toEqual(['G1', 'G2']);
     expect(plan?.journeys.find((journey) => journey.id === 'VL1')?.scenario_ids).toEqual(['G1']);
   });
+
+  it('keeps distinct product-use jobs that share one discovery journey', () => {
+    const plan = deriveTestingPlan({
+      discovery: {
+        product_description: 'A live employee data grid.',
+        goals: [
+          {
+            id: 'G1',
+            description: 'Filter the employee table for London rows.',
+            priority: 'must',
+            journey_id: 'J1',
+            surface_ids: ['S1'],
+          },
+          {
+            id: 'G2',
+            description: 'Sort the employee table by Age and verify ascending ages.',
+            priority: 'must',
+            journey_id: 'J1',
+            surface_ids: ['S1'],
+          },
+          {
+            id: 'G3',
+            description: 'Set 25 entries per page and verify Showing 26 to 50 of 57 entries.',
+            priority: 'must',
+            journey_id: 'J1',
+            surface_ids: ['S1'],
+          },
+        ],
+        journeys: [
+          {
+            id: 'J1',
+            title: 'Use employee grid controls',
+            priority: 'must',
+            surface_ids: ['S1'],
+            user_intent: 'Change table state.',
+            suggested_goal: 'Use employee table controls and verify changed rows.',
+            expected_evidence: ['changed grid state'],
+            risk: 'high',
+          },
+        ],
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use employee table controls.',
+          core_artifacts: ['changed employee table state'],
+          value_loops: [
+            {
+              id: 'VL1',
+              title: 'Data grid controls',
+              artifact: 'changed employee table',
+              required_capabilities: ['filter rows', 'sort columns', 'paginate rows'],
+              proof_obligations: ['changed rows and status text'],
+              weak_evidence: ['focused control only'],
+            },
+          ],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Filter the employee table to London rows',
+              journey_id: 'J1',
+              value_loop_id: 'VL1',
+              scenario_brief: 'Use table Search to filter London rows.',
+              test_data: ['London'],
+              required_actions: ['type London'],
+              proof_obligations: ['filtered count visible'],
+              expected_artifact: 'Filtered rows',
+              required_outputs: ['London', 'filtered from 57 total entries'],
+              quality_bar: ['row filtering is visible'],
+              acceptable_evidence: ['filtered row screenshot'],
+              weak_evidence: ['input focus only'],
+              risk: 'high',
+            },
+            {
+              id: 'PU2',
+              title: 'Sort employees by age',
+              journey_id: 'J1',
+              value_loop_id: 'VL1',
+              scenario_brief: 'Sort the employee table by Age.',
+              test_data: ['Age column'],
+              required_actions: ['click Age'],
+              proof_obligations: ['ascending ages visible'],
+              expected_artifact: 'Age sorted rows',
+              required_outputs: ['Age', '19', '20', '21'],
+              quality_bar: ['numeric order is proven'],
+              acceptable_evidence: ['sorted row screenshot'],
+              weak_evidence: ['header focus only'],
+              risk: 'high',
+            },
+            {
+              id: 'PU3',
+              title: 'Change page length and move to the next page',
+              journey_id: 'J1',
+              value_loop_id: 'VL1',
+              scenario_brief: 'Set page length to 25 and navigate to page 2.',
+              test_data: ['25 entries per page', 'Page 2'],
+              required_actions: ['select 25', 'click page 2'],
+              proof_obligations: ['second page range visible'],
+              expected_artifact: 'Second page rows',
+              required_outputs: ['25 entries per page', 'Showing 26 to 50 of 57 entries'],
+              quality_bar: ['page size and pagination both changed'],
+              acceptable_evidence: ['second page screenshot'],
+              weak_evidence: ['dropdown open only'],
+              risk: 'medium',
+            },
+          ],
+        },
+      },
+    });
+
+    expect(plan?.scenarios).toHaveLength(3);
+    expect(plan?.scenarios.map((scenario) => scenario.title)).toEqual([
+      'Filter the employee table to London rows',
+      'Sort employees by age',
+      'Change page length and move to the next page',
+    ]);
+    expect(plan?.scenarios[1]?.required_outputs).toEqual(['Age', '19', '20', '21']);
+    expect(plan?.scenarios[2]?.required_outputs).toEqual([
+      '25 entries per page',
+      'Showing 26 to 50 of 57 entries',
+    ]);
+  });
 });

@@ -1,7 +1,12 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { WebTargetAdapter } from '@iris/adapter-web';
-import { judge as judgeMod, report as reportMod, trace as traceMod } from '@iris/core';
+import {
+  judge as judgeMod,
+  report as reportMod,
+  taskRuns as taskRunsMod,
+  trace as traceMod,
+} from '@iris/core';
 import { Command } from 'commander';
 import { parseJudgeOutput } from '../codex-app-server-orchestrator.js';
 
@@ -29,24 +34,29 @@ export function reportCommand(): Command {
         ? await traceMod.readTraceArray(tracePath)
         : undefined;
       if (opts.revalidate === true) {
-        report = revalidateStoredReport(report, traceEvents, dir);
-      }
-      if (traceEvents) {
-        report = await addTraceStoryboards(report, traceEvents, dir);
+        try {
+          report = revalidateStoredReport(report, traceEvents, dir);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`iris report: revalidation failed: ${message}\n`);
+          process.exit(65);
+        }
       }
       const renderedReport = refreshStoredReportForRender(report, traceEvents, dir);
-      writeFileSync(join(dir, 'report.md'), reportMod.buildReportMd(renderedReport));
+      if (traceEvents) {
+        report = await addTraceStoryboards(renderedReport, traceEvents, dir);
+      } else {
+        report = renderedReport;
+      }
+      writeFileSync(join(dir, 'report.md'), reportMod.buildReportMd(report));
       if (opts.html !== false) {
-        writeFileSync(
-          join(dir, 'report.html'),
-          reportMod.buildReportHtml(renderedReport, { runDir: dir }),
-        );
+        writeFileSync(join(dir, 'report.html'), reportMod.buildReportHtml(report, { runDir: dir }));
       }
       if (opts.revalidate === true) {
-        writeFileSync(reportPath, `${JSON.stringify(renderedReport, null, 2)}\n`);
+        writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
         writeFileSync(
           join(dir, 'findings.json'),
-          `${JSON.stringify(findingsSnapshotFromReport(renderedReport), null, 2)}\n`,
+          `${JSON.stringify(findingsSnapshotFromReport(report), null, 2)}\n`,
         );
       }
       process.stdout.write(
@@ -79,29 +89,40 @@ export function refreshStoredReportForRender(
   runDir: string,
 ): ReportJson {
   const threshold = resolveStoredReportThreshold(report, runDir);
+  const expectedGoals = expectedStoredReportGoals(report, runDir);
+  const reconciledReport = traceEvents
+    ? {
+        ...report,
+        spec_compliance: judgeMod.reconcileJudgeGoalStatusesWithTrace({
+          judge: judgeOutputFromReport(report),
+          trace: traceEvents,
+          ...(expectedGoals ? { expected_goals: expectedGoals } : {}),
+        }).judge.spec_compliance,
+      }
+    : report;
   const meta = reportMod.normalizeReportMeta(report.meta, traceEvents);
   const scores = reportMod.normalizeReportScores(report.scores, {
     ...(traceEvents ? { traceEvents } : {}),
     confidenceCaveats: meta.confidence_caveats,
   });
-  const counts = countSeverities(report.findings);
-  const coverage = countAttemptedGoals(report.spec_compliance.goals);
+  const counts = countSeverities(reconciledReport.findings);
+  const coverage = countAttemptedGoals(reconciledReport.spec_compliance.goals);
   const evaluation = reportMod.deriveReportEvaluationForReport({
-    ...report,
-    headline: { ...report.headline, score: scores.overall.score },
+    ...reconciledReport,
+    headline: { ...reconciledReport.headline, score: scores.overall.score },
     scores,
     meta,
   });
   return {
-    ...report,
+    ...reconciledReport,
     ...(threshold !== undefined ? { threshold } : {}),
-    run: enrichRunMetadata(report.run, traceEvents, runDir),
+    run: enrichRunMetadata(reconciledReport.run, traceEvents, runDir),
     headline: {
-      ...report.headline,
+      ...reconciledReport.headline,
       score: scores.overall.score,
       threshold_passed: computeThresholdPassed({
         score: scores.overall.score,
-        blocked: report.headline.blocked === true,
+        blocked: reconciledReport.headline.blocked === true,
         counts,
         coverage,
         scoreAuthority: evaluation.product_score.authority,
@@ -112,7 +133,7 @@ export function refreshStoredReportForRender(
       minors: counts.minor,
       nits: counts.nit,
       suggestions: counts.suggestion,
-      ...(report.spec_compliance.applicable
+      ...(reconciledReport.spec_compliance.applicable
         ? {
             goals_attempted: coverage.attempted,
             goals_verified: coverage.verified,
@@ -123,8 +144,22 @@ export function refreshStoredReportForRender(
     scores,
     meta,
     evaluation,
+    ...(traceEvents
+      ? {
+          task_runs:
+            reconciledReport.spec_compliance.applicable &&
+            reconciledReport.run.termination !== 'judge_failed'
+              ? taskRunsMod.buildTaskRuns({
+                  goals: reconciledReport.spec_compliance.goals,
+                  trace: traceEvents,
+                })
+              : [],
+        }
+      : reconciledReport.task_runs
+        ? { task_runs: reconciledReport.task_runs }
+        : {}),
     next_actions: {
-      ...report.next_actions,
+      ...reconciledReport.next_actions,
       for_re_evaluation: meta.would_re_explore_with,
     },
   };
@@ -183,14 +218,18 @@ function judgeOutputFromReport(report: ReportJson): judgeMod.JudgeOutput {
   };
 }
 
-function revalidateStoredReport(
+export function revalidateStoredReport(
   report: ReportJson,
   traceEvents: traceMod.TraceEvent[] | undefined,
   runDir: string,
 ): ReportJson {
-  if (!traceEvents) return report;
+  if (!traceEvents) {
+    throw new Error('trace.jsonl is required for --revalidate');
+  }
   const rawJudge = readRawJudgeOutput(runDir);
-  if (!rawJudge) return report;
+  if (!rawJudge) {
+    throw new Error('judge.raw.txt is required for --revalidate');
+  }
   const findingValidation = judgeMod.validateFindings(rawJudge.findings, traceEvents);
   let judge: judgeMod.JudgeOutput = {
     ...rawJudge,
@@ -198,6 +237,12 @@ function revalidateStoredReport(
     discarded_findings: [...(rawJudge.discarded_findings ?? []), ...findingValidation.discarded],
     evidence_validation: findingValidation.summary,
   };
+  const expectedGoals = expectedStoredReportGoals(report, runDir);
+  judge = judgeMod.reconcileJudgeGoalStatusesWithTrace({
+    judge,
+    trace: traceEvents,
+    ...(expectedGoals ? { expected_goals: expectedGoals } : {}),
+  }).judge;
   if (report.run.target.kind === 'web') {
     const adapter = new WebTargetAdapter({ headless: true });
     const goalClaimResult = judgeMod.validateGoalClaims({
@@ -224,6 +269,7 @@ function revalidateStoredReport(
     ...(report.preflight ? { preflight: report.preflight } : {}),
     ...(preserveBlocked ? { blocked: { reasons: report.headline.blocked_reasons ?? [] } } : {}),
     trace_events: traceEvents,
+    ...(expectedGoals ? { expected_goals: expectedGoals } : {}),
   });
 }
 
@@ -344,6 +390,49 @@ function readRunConfig(runDir: string): Record<string, unknown> {
   }
 }
 
+function expectedStoredReportGoals(
+  report: ReportJson,
+  runDir: string,
+): judgeMod.ExpectedJudgeGoal[] | undefined {
+  const interpretedPath = join(runDir, 'spec.interpreted.json');
+  if (existsSync(interpretedPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(interpretedPath, 'utf8')) as {
+        goals?: Array<{ description?: unknown }>;
+      };
+      const goals = parsed.goals
+        ?.map((goal) => ({
+          description: typeof goal.description === 'string' ? goal.description : '',
+        }))
+        .filter((goal) => goal.description.trim());
+      const expected = judgeMod.expectedJudgeGoalsWithSequentialIds(goals);
+      if (expected) return expected;
+    } catch {
+      // Fall through to config/report-derived contracts.
+    }
+  }
+
+  const config = readRunConfig(runDir);
+  if (Array.isArray(config.initial_tasks)) {
+    const goals = config.initial_tasks
+      .map((task) => ({
+        description:
+          typeof task === 'string'
+            ? task
+            : task && typeof task === 'object' && typeof task.description === 'string'
+              ? task.description
+              : '',
+      }))
+      .filter((goal) => goal.description.trim());
+    const expected = judgeMod.expectedJudgeGoalsWithSequentialIds(goals);
+    if (expected) return expected;
+  }
+
+  const discoveryGoals = judgeMod.expectedJudgeGoalsFromDescriptions(report.discovery?.goals);
+  if (discoveryGoals) return discoveryGoals;
+  return judgeMod.expectedJudgeGoalsFromDescriptions(report.spec_compliance.goals);
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
@@ -408,6 +497,6 @@ function computeThresholdPassed(input: {
     scorePass &&
     coveragePass &&
     noBlockingFindings &&
-    input.scoreAuthority !== 'insufficient'
+    input.scoreAuthority === 'authoritative'
   );
 }

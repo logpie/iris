@@ -86,6 +86,12 @@ function invalidEvidenceEventIdsMessage(input: {
   return `ERROR: goal_status evidence_event_ids must cite existing accepted outcome evidence events (post-action observation, screenshot/vision_describe action_result, or post-action/post-explorer probe_result). ${parts.join('; ')}.`;
 }
 
+function partialRationaleClaimsGateCouldNotVerify(rationale: string): boolean {
+  return /\b(completion gate|gate|checklist|could not see|couldn t see|cannot see|can't see|truncat|not accepted|not visibly confirmed|not visible|missing exact|exact .* not)\b/i.test(
+    rationale,
+  );
+}
+
 function matchesThreadTurn(
   params: Record<string, unknown> | undefined,
   threadId: string,
@@ -645,7 +651,7 @@ export async function runCodexAppServerExplorer(
         };
       }
       if (evidence.length > 0) {
-        const evidenceCheck = scenarioGate.checkEvidenceEventIds(evidence);
+        const evidenceCheck = scenarioGate.checkEvidenceEventIds(evidence, { goalId: id });
         if (!evidenceCheck.ok) {
           return {
             text: invalidEvidenceEventIdsMessage(evidenceCheck),
@@ -658,6 +664,20 @@ export async function runCodexAppServerExplorer(
         if (!check.ok) {
           return {
             text: `ERROR: scenario completion gate rejected verified for ${id}. Cited evidence is missing required visible output(s): ${check.missing.join('; ')}. Required checklist: ${check.required.join('; ')}. Repair the product state and call observe/vision_describe, then cite that evidence; otherwise mark the goal partial with evidence.`,
+            success: false,
+          };
+        }
+      }
+      if (
+        status === 'partial' &&
+        scenarioGate.enabled &&
+        evidence.length > 0 &&
+        partialRationaleClaimsGateCouldNotVerify(rationale)
+      ) {
+        const check = scenarioGate.check(id, evidence);
+        if (check.ok) {
+          return {
+            text: `ERROR: scenario completion gate accepts the cited evidence for ${id}; do not mark this partial because the required visible outputs are present. Call goal_status again with status="verified" and the same evidence_event_ids.`,
             success: false,
           };
         }

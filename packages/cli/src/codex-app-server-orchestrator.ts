@@ -331,7 +331,7 @@ export function buildJudgeFailureOutput(input: {
           return {
             id,
             description: goal.description,
-            status: status?.status ?? 'untested',
+            status: diagnosticJudgeFailureStatus(status?.status),
             evidence: status?.evidence ?? [],
             notes: status?.rationale ?? input.reason,
           };
@@ -339,7 +339,7 @@ export function buildJudgeFailureOutput(input: {
       : Array.from(latestGoalStatus, ([id, status]) => ({
           id,
           description: id,
-          status: status.status,
+          status: diagnosticJudgeFailureStatus(status.status),
           evidence: status.evidence,
           notes: status.rationale,
         }));
@@ -389,11 +389,17 @@ export function buildJudgeFailureOutput(input: {
   };
 }
 
+function diagnosticJudgeFailureStatus(
+  status: 'verified' | 'partial' | 'blocked' | 'skipped' | 'untested' | undefined,
+): 'partial' | 'blocked' | 'skipped' | 'untested' {
+  if (status === 'verified') return 'partial';
+  return status ?? 'untested';
+}
+
 export async function runIrisViaCodexAppServer(
   config: CodexAppServerRunConfig,
   adapter: TargetAdapter,
 ): Promise<CodexAppServerRunResult> {
-  const reportMode = config.mode;
   const appServerCwd = mkdtempSync(join(tmpdir(), 'iris-codex-appserver-cwd-'));
   const client = new CodexAppServerClient();
   await client.start();
@@ -528,7 +534,7 @@ export async function runIrisViaCodexAppServer(
           run: {
             id: startedAt.toISOString().replace(/[:]/g, '-'),
             target: { kind: 'web', url: config.target.url },
-            mode: reportMode,
+            mode: config.mode,
             started_at: startedAt.toISOString(),
             ended_at: new Date().toISOString(),
             duration_s: (Date.now() - startMs) / 1000,
@@ -822,6 +828,12 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
       });
     }
     judgeOutput = judgeMod.ensureRubricScoreCoverage(judgeOutput, config.rubric_profiles);
+    const expectedGoals = judgeMod.expectedJudgeGoalsWithSequentialIds(interpreted?.goals);
+    judgeOutput = judgeMod.reconcileJudgeGoalStatusesWithTrace({
+      judge: judgeOutput,
+      trace: events,
+      ...(expectedGoals ? { expected_goals: expectedGoals } : {}),
+    }).judge;
 
     const validation = judgeMod.validateFindings(judgeOutput.findings, events);
     judgeOutput = {
@@ -874,10 +886,11 @@ Avoid treating selector misses as product evidence. Use dynamic tools directly. 
     const report = reportMod.buildReportJson({
       judge: judgeOutput,
       trace_events: events,
+      ...(expectedGoals ? { expected_goals: expectedGoals } : {}),
       run: {
         id: startedAt.toISOString().replace(/[:]/g, '-'),
         target: { kind: 'web', url: config.target.url },
-        mode: reportMode,
+        mode: config.mode,
         started_at: startedAt.toISOString(),
         ended_at: new Date().toISOString(),
         duration_s,

@@ -104,7 +104,8 @@ export function buildTaskRuns(input: {
     const startIndex = plan.anchorIndex > previousAnchor ? previousAnchor + 1 : plan.anchorIndex;
     const windowEvents = input.trace
       .slice(startIndex, plan.anchorIndex + 1)
-      .filter((event) => sessionIdOf(event) === plan.sessionId);
+      .filter((event) => sessionIdOf(event) === plan.sessionId)
+      .filter((event) => event.kind !== 'goal_status' || event.id === plan.statusEvent?.id);
     if (plan.anchorIndex >= previousAnchor) {
       lastAnchorBySession.set(plan.sessionId, plan.anchorIndex);
     }

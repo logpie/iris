@@ -219,3 +219,23 @@ Avoid fixing Iris selection with a sprawling taxonomy or named-product rules. Pu
 ## 2026-05-16 — Evidence reels should follow the scenario arc
 
 Do not make claim evidence by uniformly clipping six screenshots or serving long static raw recordings as primary proof. User-facing evidence should show the meaningful before/action/result/proof arc for the specific scenario, while raw browser recordings remain debug artifacts.
+
+## 2026-05-18 — Downstream validation must drive Iris goal fixes
+
+When improving Iris Discovery or proof validation, do not stop at green unit tests or re-rendered reports. Run fresh downstream products and inspect generated goals, product kinds, capability coverage, goal-status reconciliation, and validator summaries. In this pass, fresh DataTables exposed a fake calculator goal even after unit tests passed; the real fix was to tighten product-kind normalization and rerun until DataTables produced only data-grid/developer-documentation goals.
+
+## 2026-05-18 — Goal-status boundaries are not proof-window boundaries
+
+Do not slice required-action proof windows only at the previous `goal_status`. Explorer can emit delayed, batched, or auto-cutover statuses in the middle of another scenario's action sequence. Proof windows should ignore same-step batched statuses and auto-cutover statuses when collecting the action history for cited evidence; otherwise valid table sort/pagination actions get downgraded even when the cited observation proves the result.
+
+## 2026-05-18 — Generic product-kind priors need concrete domain evidence
+
+Do not let generic words such as input, result, value, option, or submit classify a product as a calculator. Calculator priors require concrete calculator-domain evidence from material surfaces or primary artifacts, such as BMI, mortgage, payment, converter, height, or weight. Otherwise documentation/data-grid pages can receive fake "calculate a concrete result" goals that poison the entire downstream audit.
+
+## 2026-05-18 — Reconciliation needs an explicit goal contract
+
+Do not infer report goals solely from latest `goal_status` rows. Spec-interpreter and targeted initial-task runs may not have discovery goals in trace, so reconciler/report code must receive the expected goal IDs explicitly, filter unexpected IDs, reconstruct omitted expected goals, and treat `goal_proposed` as the only valid expansion source.
+
+## 2026-05-18 — Stored report rendering must not bypass proof reconciliation
+
+Do not treat `iris report <run-dir>` as harmless presentation work. Re-rendering MD/HTML from stale JSON can create a green artifact even when trace goal statuses are partial or untested. Render-only refresh must reconcile goals and task runs from trace events, and `--revalidate` must fail loudly without raw Judge and trace artifacts.

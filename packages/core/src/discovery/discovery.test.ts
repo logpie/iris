@@ -3634,26 +3634,726 @@ describe('runDiscovery', () => {
     expect(docsJob).toBeDefined();
     expect(docsJob?.required_actions.join('\n')).not.toMatch(/settings|preferences|help/i);
     expect(docsJob?.proof_obligations.join('\n')).toContain('developer-facing instructions');
+    expect(
+      [docsJob?.expected_artifact, ...(docsJob?.required_outputs ?? [])].join('\n'),
+    ).not.toMatch(/changed table rows|changed data-grid/i);
     const selectedJourneyIds = result.output.coverage_plan?.selected_journey_ids ?? [];
     expect(selectedJourneyIds[0]).toBe('J1');
-    expect(selectedJourneyIds).toHaveLength(2);
+    expect(selectedJourneyIds).toEqual(expect.arrayContaining(['J1', 'J2']));
     const selectedJourneyText = result.output.journeys
       .filter((journey) => selectedJourneyIds.includes(journey.id))
       .map((journey) => `${journey.title} ${journey.suggested_goal}`)
       .join('\n');
-    expect(selectedJourneyText).toMatch(/sort|page|entries|pagination|row order|data-grid/i);
-    expect(selectedJourneyIds).not.toContain('J2');
-    expect(result.output.coverage_plan?.deferred_surface_ids).toContain('S2');
+    expect(selectedJourneyText).toMatch(/table|filter|implementation|code/i);
+    expect(result.output.coverage_plan?.deferred_surface_ids).not.toContain('S2');
     const goalDescriptions = result.output.goals.map((goal) => goal.description).join('\n');
-    expect(goalDescriptions).not.toMatch(/implementation|javascript|cdn|dependency/i);
+    expect(goalDescriptions).toMatch(/implementation|javascript|new DataTable|dependency/i);
     expect(goalDescriptions).not.toMatch(/visible content navigation|section anchors|citations/i);
     expect(goalDescriptions).toMatch(/table|row|count|order|range/i);
     const explorerContext = formatDiscoveryExplorerContext(result.output);
     expect(explorerContext).toContain('Filter the employee table');
-    expect(explorerContext).not.toContain('Inspect the initialization code');
+    expect(explorerContext).toMatch(/sort|page|entries|pagination|row order|salary/i);
+    expect(explorerContext).toContain('Inspect implementation documentation');
+    expect(explorerContext).toContain('Read implementation code');
+    expect(result.output.coverage_plan?.rationale).not.toMatch(
+      /Closed Discovery capability gaps.*implementation|source-code|documentation/i,
+    );
     expect(result.output.capabilities.map((capability) => capability.label)).toContain(
       'Filter data-grid rows',
     );
+  });
+
+  it('keeps same-journey data-grid scenarios attached to their own product-use jobs', async () => {
+    const result = await runDiscovery({
+      url: 'https://datatables.example',
+      observation_summary:
+        'DataTables employee table with table Search, sortable Age column, entries selector, and pagination.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A live employee data grid.',
+          product_use_contract: {
+            product_kinds: ['data_grid'],
+            primary_value_loop: 'Use employee table controls and verify changed grid state.',
+            core_artifacts: ['changed employee table state'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Filter the employee table to London rows',
+                journey_id: 'J1',
+                scenario_brief: 'Use table Search to filter London office rows.',
+                required_actions: [],
+                required_outputs: ['London', 'filtered from 57 total entries'],
+                expected_artifact: 'Filtered employee rows',
+                risk: 'high',
+              },
+              {
+                id: 'PU2',
+                title: 'Sort employees by age',
+                journey_id: 'J1',
+                scenario_brief: 'Sort the employee table by Age ascending.',
+                required_actions: [],
+                required_outputs: ['Age', '19', '20', '21'],
+                expected_artifact: 'Age-sorted employee rows',
+                risk: 'high',
+              },
+              {
+                id: 'PU3',
+                title: 'Change page length and move to the next page',
+                journey_id: 'J1',
+                scenario_brief: 'Set page length to 25 and navigate to page 2.',
+                required_actions: [],
+                required_outputs: ['25 entries per page', 'Showing 26 to 50 of 57 entries'],
+                expected_artifact: 'Second page of employee rows',
+                risk: 'medium',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Employee data grid controls',
+              kind: 'table',
+              url: 'https://datatables.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Use employee grid controls',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Change the employee table state.',
+              suggested_goal: 'Use table controls and verify changed rows.',
+              expected_evidence: ['changed row state'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Grid controls are the product.',
+            coverage_risk: 'low',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Filter the employee table for London rows.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+            {
+              id: 'G2',
+              description: 'Sort the employee table by Age and verify ascending ages.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+            {
+              id: 'G3',
+              description: 'Set 25 entries per page and verify Showing 26 to 50 of 57 entries.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+            {
+              id: 'G4',
+              description: 'Use employee grid controls and verify the table changes.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    const descriptions = result?.output.goals.map((goal) => goal.description) ?? [];
+    expect(descriptions[1]).toContain('Sort the employee table by Age ascending');
+    expect(descriptions[1]).not.toContain('London');
+    expect(descriptions[2]).toContain('Showing 26 to 50 of 57 entries');
+    expect(descriptions[2]).not.toContain('London');
+    expect(descriptions).toHaveLength(3);
+    expect(descriptions.join('\n')).not.toContain('Use employee grid controls');
+  });
+
+  it('uses selected product-use jobs to avoid duplicate data-grid capability repair goals', async () => {
+    const result = await runDiscovery({
+      url: 'https://datatables.example',
+      observation_summary:
+        'DataTables employee table with London rows, sortable Salary column, entries selector, and pagination.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A live employee data grid.',
+          product_use_contract: {
+            product_kinds: ['data_grid'],
+            primary_value_loop: 'Use employee table controls and verify changed grid state.',
+            core_artifacts: ['changed employee table state'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Filter the employee table to London rows',
+                journey_id: 'J1',
+                scenario_brief: 'Use table Search to filter London office rows.',
+                required_actions: [],
+                required_outputs: ['London', 'filtered from 57 total entries'],
+                expected_artifact: 'Filtered employee rows',
+                risk: 'high',
+              },
+              {
+                id: 'PU2',
+                title: 'Sort employees by salary',
+                journey_id: 'J1',
+                scenario_brief: 'Sort the Salary column descending and verify salary-ordered rows.',
+                required_actions: [],
+                required_outputs: ['Salary', '$1,200,000'],
+                expected_artifact: 'Salary-sorted employee rows',
+                risk: 'high',
+              },
+              {
+                id: 'PU3',
+                title: 'Change page length and move to the next page',
+                journey_id: 'J1',
+                scenario_brief: 'Set page length to 25 and navigate to page 2.',
+                required_actions: [],
+                required_outputs: ['25', 'Showing 26 to 50 of 57 entries'],
+                expected_artifact: 'Second page of employee rows',
+                risk: 'medium',
+              },
+            ],
+          },
+          capabilities: [
+            {
+              id: 'C1',
+              label: 'Filter data-grid rows',
+              product_kind: 'data_grid',
+              importance: 'core',
+              status: 'selected',
+              confidence: 0.9,
+              source: 'model',
+              evidence: [],
+              scenario_ids: ['G1'],
+              journey_ids: ['J1'],
+              surface_ids: ['S1'],
+              denominator_reason: 'Filtering is core table use.',
+              coverage_gap: '',
+            },
+            {
+              id: 'C2',
+              label: 'Sort data-grid rows by a numeric column',
+              product_kind: 'data_grid',
+              importance: 'core',
+              status: 'deferred',
+              confidence: 0.9,
+              source: 'model',
+              evidence: [],
+              scenario_ids: [],
+              journey_ids: [],
+              surface_ids: ['S1'],
+              denominator_reason: 'Sorting is core table use.',
+              coverage_gap: 'Covered by selected product-use job.',
+            },
+            {
+              id: 'C3',
+              label: 'Change page length and pagination',
+              product_kind: 'data_grid',
+              importance: 'core',
+              status: 'deferred',
+              confidence: 0.9,
+              source: 'model',
+              evidence: [],
+              scenario_ids: [],
+              journey_ids: [],
+              surface_ids: ['S1'],
+              denominator_reason: 'Pagination is core table use.',
+              coverage_gap: 'Covered by selected product-use job.',
+            },
+          ],
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Employee data grid controls',
+              kind: 'table',
+              url: 'https://datatables.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Filter the employee table to London rows',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Filter the employee table.',
+              suggested_goal:
+                'Use the table Search field for London and verify London rows plus filtered count.',
+              expected_evidence: ['London rows', 'filtered count'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Grid controls are the product.',
+            coverage_risk: 'low',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description:
+                'Use the table Search field for London and verify London rows plus filtered count.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    const descriptions = result?.output.goals.map((goal) => goal.description) ?? [];
+    const joined = descriptions.join('\n');
+    expect(descriptions).toHaveLength(3);
+    expect(descriptions.filter((description) => /London/.test(description))).toHaveLength(1);
+    expect(joined).toMatch(/Salary|\$1,200,000/);
+    expect(joined).toMatch(/25|Showing 26 to 50/);
+    expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1']);
+  });
+
+  it('repairs underselected developer data-grid plans instead of accepting one paginated goal', async () => {
+    const result = await runDiscovery({
+      url: 'https://datatables.example',
+      observation_summary:
+        'DataTables employee grid with Search, sortable Salary and Age columns, page length selector, pagination, and Javascript code tabs.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A developer example page for an interactive data grid.',
+          product_use_contract: {
+            product_kinds: ['data_grid', 'developer_documentation'],
+            primary_value_loop: 'Verify live grid behavior and inspect implementation code.',
+            core_artifacts: ['changed table state', 'implementation snippet'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Filter and sort the live demo table',
+                journey_id: 'J1',
+                scenario_brief:
+                  'Filter the employee table for London and sort the filtered rows by Salary.',
+                required_actions: [],
+                required_outputs: ['London', '$1,200,000'],
+                expected_artifact: 'Filtered or sorted rows',
+                risk: 'high',
+              },
+              {
+                id: 'PU2',
+                title: 'Change page size and paginate the employee table',
+                journey_id: 'J2',
+                scenario_brief: 'Select 25 entries per page, go to page 2, and verify row range.',
+                required_actions: [],
+                required_outputs: ['Showing 26 to 50 of 57 entries'],
+                expected_artifact: 'Paginated rows',
+                risk: 'high',
+              },
+              {
+                id: 'PU3',
+                title: 'Inspect implementation code for the example',
+                journey_id: 'J3',
+                scenario_brief:
+                  "Open the Javascript code tab and verify new DataTable('#example'); is visible.",
+                required_actions: [],
+                required_outputs: ["new DataTable('#example');", 'dataTables.js'],
+                expected_artifact: 'Implementation snippet',
+                risk: 'medium',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Employee DataTable with Search, Salary, page length, and pagination',
+              kind: 'table',
+              url: 'https://datatables.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.95,
+            },
+            {
+              id: 'S2',
+              label: 'Javascript code tab and dependency links',
+              kind: 'content',
+              url: 'https://datatables.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Filter and sort the live demo table',
+              priority: 'must',
+              goal_class: 'sample',
+              surface_ids: ['S1'],
+              user_intent: 'Validate search and sort behavior.',
+              suggested_goal: 'Filter the employee table for London and sort by Salary.',
+              expected_evidence: ['London rows', '$1,200,000'],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Change page size and paginate the employee table',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Validate pagination.',
+              suggested_goal: 'Select 25 entries per page and go to page 2.',
+              expected_evidence: ['Showing 26 to 50 of 57 entries'],
+              risk: 'high',
+            },
+            {
+              id: 'J3',
+              title: 'Inspect implementation code for the example',
+              priority: 'should',
+              goal_class: 'sample',
+              surface_ids: ['S2'],
+              user_intent: 'Learn implementation details.',
+              suggested_goal:
+                "Open the Javascript code tab and verify new DataTable('#example'); is visible.",
+              expected_evidence: ["new DataTable('#example');", 'dataTables.js'],
+              risk: 'medium',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J2'],
+            deferred_surface_ids: [],
+            rationale: 'Model selected only pagination.',
+            coverage_risk: 'medium',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Select 25 entries per page and go to page 2.',
+              priority: 'must',
+              journey_id: 'J2',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    const selected = result?.output.coverage_plan?.selected_journey_ids ?? [];
+    expect(selected).toEqual(expect.arrayContaining(['J1', 'J2', 'J3']));
+    const goals = result?.output.goals.map((goal) => goal.description).join('\n') ?? '';
+    expect(goals).toContain('Filter the employee table for London');
+    expect(goals).toContain("new DataTable('#example');");
+  });
+
+  it('drops generic calculator priors from developer data-grid pages', async () => {
+    const result = await runDiscovery({
+      url: 'https://datatables.example',
+      observation_summary:
+        'DataTables developer example with a live employee table, Search field, sortable Salary column, pagination, and Javascript code tabs.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description:
+            'A DataTables developer documentation page with a live searchable, sortable employee table.',
+          product_use_contract: {
+            product_kinds: ['developer_documentation', 'calculator_tool'],
+            primary_value_loop:
+              'Developers inspect a live DataTables example and its implementation code.',
+            core_artifacts: ['changed employee table state', 'implementation snippet'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Filter the employee table to London records',
+                journey_id: 'J1',
+                scenario_brief: 'Use the demo table Search field to show London rows.',
+                required_actions: [],
+                required_outputs: ['London', 'filtered from 57 total entries'],
+                expected_artifact: 'Filtered employee table rows',
+                risk: 'high',
+              },
+              {
+                id: 'PU2',
+                title: 'Read the zero-configuration implementation code',
+                journey_id: 'J2',
+                scenario_brief:
+                  "Open the Javascript tab and verify new DataTable('#example'); plus dataTables.js.",
+                required_actions: [],
+                required_outputs: ["new DataTable('#example');", 'dataTables.js'],
+                expected_artifact: 'Visible implementation snippet',
+                risk: 'medium',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Employee DataTable Search Salary pagination',
+              kind: 'table',
+              url: 'https://datatables.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.95,
+            },
+            {
+              id: 'S2',
+              label: 'Javascript code tab and dependency links',
+              kind: 'content',
+              url: 'https://datatables.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Filter the employee table to London records',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Filter table rows.',
+              suggested_goal: 'Search for London and verify filtered table rows.',
+              expected_evidence: ['London', 'filtered from 57 total entries'],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Read the zero-configuration implementation code',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S2'],
+              user_intent: 'Inspect implementation details.',
+              suggested_goal:
+                "Open the Javascript tab and verify new DataTable('#example'); plus dataTables.js.",
+              expected_evidence: ["new DataTable('#example');", 'dataTables.js'],
+              risk: 'medium',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Model selected one table goal.',
+            coverage_risk: 'medium',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Search for London and verify filtered table rows.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    expect(result?.output.product_use_contract?.product_kinds).not.toContain('calculator_tool');
+    expect(result?.output.goals.map((goal) => goal.description).join('\n')).not.toMatch(
+      /calculate|computed result|non-default values/i,
+    );
+    expect(result?.output.goals.map((goal) => goal.description).join('\n')).toContain(
+      "new DataTable('#example');",
+    );
+  });
+
+  it('keeps generic data-grid scaffolds domain-neutral unless employee data is present', async () => {
+    const result = await runDiscovery({
+      url: 'https://inventory.example',
+      observation_summary:
+        'Inventory data grid with Search, sortable Age column for item age in days, and an entries-per-page selector.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'An inventory data grid.',
+          product_use_contract: {
+            product_kinds: ['data_grid'],
+            primary_value_loop: 'Inspect and sort inventory rows.',
+            core_artifacts: ['changed inventory row state'],
+            value_loops: [],
+            user_jobs: [],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Inventory grid with Search, Age column, and page length selector',
+              kind: 'table',
+              url: 'https://inventory.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Sort inventory by age',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Sort inventory rows.',
+              suggested_goal: 'Sort the Age column and verify row order changes.',
+              expected_evidence: ['Age column sorted'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Sorting is core.',
+            coverage_risk: 'low',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    const text = [
+      ...(result?.output.product_use_contract?.user_jobs ?? []).flatMap((job) => [
+        job.title,
+        job.scenario_brief,
+        ...job.required_outputs,
+      ]),
+      ...(result?.output.goals ?? []).map((goal) => goal.description),
+    ].join('\n');
+    expect(text).toMatch(/Sort the Age column|Age column sorted/i);
+    expect(text).not.toMatch(/employee|London|Page length option: 25/i);
+  });
+
+  it('drops invalid product-use journey ids and still shows unlinked jobs in Explorer context', async () => {
+    const result = await runDiscovery({
+      url: 'https://example.com',
+      observation_summary: 'Table product with a search control.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A searchable table.',
+          product_use_contract: {
+            product_kinds: ['data_grid'],
+            primary_value_loop: 'Filter table rows.',
+            core_artifacts: ['filtered rows'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Filter table rows',
+                journey_id: 'J-missing',
+                scenario_brief: 'Filter table rows by a concrete query.',
+                required_actions: [],
+                proof_obligations: [],
+                expected_artifact: 'filtered rows',
+                acceptable_evidence: [],
+                test_data: ['Query: Alpha'],
+                required_outputs: ['Alpha'],
+                quality_bar: [],
+                weak_evidence: [],
+                risk: 'high',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Searchable data table',
+              kind: 'table',
+              url: 'https://example.com',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Filter table rows',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Filter rows.',
+              suggested_goal: 'Filter table rows by Alpha and verify row output changes.',
+              expected_evidence: ['Alpha'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Primary row filtering.',
+            coverage_risk: 'low',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    const job = result.output.product_use_contract?.user_jobs.find(
+      (candidate) => candidate.id === 'PU1',
+    );
+    expect(job?.journey_id).toBe('J1');
+    expect(job?.journey_id).not.toBe('J-missing');
+    expect(formatDiscoveryExplorerContext(result.output)).toContain('Filter table rows');
   });
 
   it('keeps calculator reference and related-link coverage out of seed goals', async () => {
@@ -4001,10 +4701,11 @@ describe('runDiscovery', () => {
       (capability) => capability.label === 'Use visible content tools',
     );
     expect(contentTools?.selection_expectation).toBe('should_test_or_explain');
-    expect(contentTools?.status).not.toBe('not_applicable');
-    if (contentTools?.status !== 'selected') {
-      expect(contentTools?.skip_reason).toContain('not selected for this run');
-    }
+    expect(contentTools?.status).toBe('selected');
+    expect(contentTools?.scenario_ids.length).toBeGreaterThan(0);
+    expect(result.output.goals.map((goal) => goal.description).join('\n')).toMatch(
+      /history|edit|talk/i,
+    );
   });
 
   it('keeps search and open-result capabilities distinct when deriving report coverage', () => {
@@ -5435,7 +6136,7 @@ describe('runDiscovery', () => {
     );
   });
 
-  it('does not reuse hidden product-use journey ids for synthesized capability gaps', async () => {
+  it('does not synthesize vague capability-gap goals without a concrete surface', async () => {
     const result = await runDiscovery({
       url: 'https://shop.example',
       observation_summary:
@@ -5535,13 +6236,471 @@ describe('runDiscovery', () => {
     });
 
     if (!result) throw new Error('expected discovery result');
-    const shoppingGoal = result.output.goals.find((goal) =>
-      /authenticated shopping surface/i.test(goal.description),
+    expect(result.output.goals.map((goal) => goal.description).join('\n')).not.toMatch(
+      /Exercise|authenticated shopping surface/i,
     );
-    expect(shoppingGoal?.journey_id).toBeTruthy();
-    expect(shoppingGoal?.journey_id).not.toBe('J2');
+    expect(result.output.coverage_plan?.selected_journey_ids).toContain('J1');
+    const lockedOutJourneyId = result.output.product_use_contract?.user_jobs.find(
+      (job) => job.id === 'PU2',
+    )?.journey_id;
+    expect(lockedOutJourneyId).toBeTruthy();
+    expect(lockedOutJourneyId).not.toBe('J1');
+  });
+
+  it('drops generic data-grid kind from dashboard pages without concrete grid controls', async () => {
+    const result = await runDiscovery({
+      url: 'https://dashboard.example',
+      observation_summary:
+        'A revenue dashboard with charts, summary metrics, and a static regional summary table.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A dashboard for reviewing revenue metrics.',
+          product_use_contract: {
+            product_kinds: ['dashboard_filtering', 'data_grid'],
+            primary_value_loop: 'Change dashboard filters and inspect revenue metrics.',
+            core_artifacts: ['filtered dashboard metrics', 'summary table'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Change dashboard date range',
+                journey_id: 'J1',
+                scenario_brief: 'Apply a new date range and verify revenue metrics update.',
+                required_actions: ['Use date range control'],
+                required_outputs: ['Revenue metric updates'],
+                expected_artifact: 'Updated dashboard',
+                risk: 'high',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Revenue dashboard charts and static regional summary table',
+              kind: 'table',
+              url: 'https://dashboard.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Change dashboard date range',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Inspect metrics for a different period.',
+              suggested_goal: 'Apply a new date range and verify revenue metrics update.',
+              expected_evidence: ['Revenue metric updates'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Dashboard filter is primary.',
+            coverage_risk: 'low',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    expect(result.output.product_use_contract?.product_kinds).toEqual(['dashboard_filtering']);
+    expect(result.output.capabilities.map((capability) => capability.product_kind)).not.toContain(
+      'data_grid',
+    );
+  });
+
+  it('dedupes final goals that collapse onto the same product-use job', async () => {
+    const result = await runDiscovery({
+      url: 'https://calculator.example/bmi',
+      observation_summary: 'BMI calculator with height and weight inputs and a Calculate button.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A BMI calculator.',
+          product_use_contract: {
+            product_kinds: ['calculator_tool'],
+            primary_value_loop: 'Calculate BMI from user inputs.',
+            core_artifacts: ['BMI result'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Calculate BMI',
+                journey_id: 'J1',
+                scenario_brief:
+                  'Enter adult height and weight values, calculate BMI, and verify the BMI result and category.',
+                required_actions: ['Enter height and weight', 'Click Calculate'],
+                required_outputs: ['BMI result', 'BMI category'],
+                expected_artifact: 'BMI result panel',
+                risk: 'high',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'BMI calculator form',
+              kind: 'form',
+              url: 'https://calculator.example/bmi',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.95,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Calculate BMI',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Calculate BMI.',
+              suggested_goal: 'Use the BMI calculator and verify the result.',
+              expected_evidence: ['BMI result', 'BMI category'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Primary calculator workflow.',
+            coverage_risk: 'low',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Use the calculator and verify the result.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+            {
+              id: 'G2',
+              description: 'Calculate a result from user inputs.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    expect(result.output.goals).toHaveLength(1);
+    expect(result.output.goals[0]?.description).toContain('Enter adult height and weight values');
+  });
+
+  it('keeps normalized surface and journey ids unique and rewrites report refs', async () => {
+    const result = await runDiscovery({
+      url: 'https://grid.example',
+      observation_summary: 'A data grid page with table search and page length controls.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A data grid.',
+          product_use_contract: {
+            product_kinds: ['data_grid'],
+            primary_value_loop: 'Search and page data rows.',
+            core_artifacts: ['changed table rows'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Search rows',
+                journey_id: 'J1',
+                scenario_brief: 'Search table rows and verify filtered entries.',
+                required_outputs: ['filtered entries'],
+                expected_artifact: 'Filtered table',
+                risk: 'high',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Data grid table search',
+              kind: 'table',
+              url: 'https://grid.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S1',
+              label: 'Data grid page length',
+              kind: 'toolbar',
+              url: 'https://grid.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.85,
+            },
+            {
+              id: 'S2',
+              label: 'Footer',
+              kind: 'footer',
+              url: 'https://grid.example',
+              source: 'initial',
+              value: 'peripheral',
+              confidence: 0.4,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Search rows',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Search rows.',
+              suggested_goal: 'Search table rows and verify filtered entries.',
+              expected_evidence: ['filtered entries'],
+              risk: 'high',
+            },
+            {
+              id: 'J1',
+              title: 'Change page length',
+              priority: 'should',
+              goal_class: 'secondary_workflow',
+              surface_ids: ['S2'],
+              user_intent: 'Change page length.',
+              suggested_goal: 'Change entries per page and verify row range updates.',
+              expected_evidence: ['row range updates'],
+              risk: 'medium',
+            },
+            {
+              id: 'J2',
+              title: 'Footer links',
+              priority: 'could',
+              goal_class: 'peripheral',
+              surface_ids: ['S2'],
+              user_intent: 'Read footer links.',
+              suggested_goal: 'Open footer links.',
+              expected_evidence: ['Footer link destination'],
+              risk: 'low',
+            },
+          ],
+          capabilities: [
+            {
+              id: 'C1',
+              label: 'Search rows',
+              product_kind: 'data_grid',
+              importance: 'core',
+              status: 'selected',
+              confidence: 0.8,
+              source: 'model',
+              evidence: [],
+              scenario_ids: [],
+              journey_ids: ['J1'],
+              surface_ids: ['S1'],
+              denominator_reason: 'Search is core.',
+              coverage_gap: '',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: ['S2'],
+            rationale: 'Search is selected.',
+            coverage_risk: 'medium',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Search table rows and verify filtered entries.',
+              priority: 'must',
+              journey_id: 'J1',
+              surface_ids: ['S1'],
+              goal_class: 'core',
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    const surfaceIds = result.output.surfaces.map((surface) => surface.id);
+    const journeyIds = result.output.journeys.map((journey) => journey.id);
+    expect(new Set(surfaceIds).size).toBe(surfaceIds.length);
+    expect(new Set(journeyIds).size).toBe(journeyIds.length);
+    const knownSurfaceIds = new Set(surfaceIds);
+    const knownJourneyIds = new Set(journeyIds);
+    expect(result.output.goals.flatMap((goal) => goal.surface_ids)).toEqual(
+      expect.arrayContaining(['S1']),
+    );
     expect(
-      result.output.product_use_contract?.user_jobs.find((job) => job.id === 'PU2')?.journey_id,
-    ).toBe('J2');
+      result.output.coverage_plan?.selected_journey_ids.every((id) => knownJourneyIds.has(id)),
+    ).toBe(true);
+    expect(
+      result.output.coverage_plan?.deferred_surface_ids.every((id) => knownSurfaceIds.has(id)),
+    ).toBe(true);
+    expect(
+      result.output.capabilities.every((capability) =>
+        capability.surface_ids.every((id) => knownSurfaceIds.has(id)),
+      ),
+    ).toBe(true);
+  });
+
+  it('remaps semantic duplicate surface and journey ids to the kept canonical ids', async () => {
+    const result = await runDiscovery({
+      url: 'https://grid.example',
+      observation_summary: 'Employee table with search and page length controls.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'Employee data grid.',
+          product_use_contract: {
+            product_kinds: ['data_grid'],
+            primary_value_loop: 'Filter and page employee rows.',
+            core_artifacts: ['changed table state'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Filter London rows',
+                journey_id: 'J_DUP',
+                scenario_brief: 'Search for London rows.',
+                test_data: ['London'],
+                required_actions: ['type London into Search'],
+                proof_obligations: ['London row visible'],
+                expected_artifact: 'filtered table',
+                required_outputs: ['London'],
+                quality_bar: ['Filtered rows remain visible'],
+                acceptable_evidence: ['post-action observation'],
+                weak_evidence: ['input text only'],
+                risk: 'medium',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S_CANON',
+              label: 'Employee table',
+              kind: 'table',
+              url: 'https://grid.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S_DUP',
+              label: 'Employee table',
+              kind: 'table',
+              url: 'https://grid.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.8,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J_CANON',
+              title: 'Filter rows',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S_CANON'],
+              user_intent: 'Filter rows.',
+              suggested_goal: 'Filter employee rows for London and verify London output.',
+              expected_evidence: ['London output'],
+              risk: 'high',
+            },
+            {
+              id: 'J_DUP',
+              title: 'Filter duplicate rows',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S_DUP'],
+              user_intent: 'Filter rows.',
+              suggested_goal: 'Filter employee rows for London and verify London output.',
+              expected_evidence: ['London output'],
+              risk: 'high',
+            },
+          ],
+          capabilities: [
+            {
+              id: 'C1',
+              label: 'Search rows',
+              product_kind: 'data_grid',
+              importance: 'core',
+              status: 'selected',
+              confidence: 0.8,
+              source: 'model',
+              evidence: [],
+              scenario_ids: [],
+              journey_ids: ['J_DUP'],
+              surface_ids: ['S_DUP'],
+              denominator_reason: 'Search is core.',
+              coverage_gap: '',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J_DUP'],
+            deferred_surface_ids: ['S_DUP'],
+            rationale: 'Filter is selected.',
+            coverage_risk: 'medium',
+          },
+          goals: [
+            {
+              id: 'G1',
+              description: 'Filter employee rows for London and verify London output.',
+              priority: 'must',
+              journey_id: 'J_DUP',
+              surface_ids: ['S_DUP'],
+              goal_class: 'core',
+            },
+          ],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    expect(result.output.surfaces.map((surface) => surface.id)).toEqual(['S_CANON']);
+    expect(result.output.journeys.map((journey) => journey.id)).toEqual(['J_CANON']);
+    expect(result.output.goals[0]).toMatchObject({
+      journey_id: 'J_CANON',
+      surface_ids: ['S_CANON'],
+    });
+    expect(result.output.product_use_contract?.user_jobs[0]?.journey_id).toBe('J_CANON');
+    expect(result.output.capabilities[0]?.journey_ids).toEqual(['J_CANON']);
+    expect(
+      result.output.capabilities.flatMap((capability) => capability.journey_ids),
+    ).not.toContain('J_DUP');
+    expect(
+      result.output.capabilities.flatMap((capability) => capability.surface_ids),
+    ).not.toContain('S_DUP');
+    expect(result.output.coverage_plan?.selected_journey_ids).toEqual(['J_CANON']);
+    expect(result.output.coverage_plan?.deferred_surface_ids).not.toContain('S_DUP');
   });
 });

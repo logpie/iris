@@ -11,6 +11,10 @@ import {
   applyGoalClaimValidationToJudgeOutput,
   validateGoalClaims,
 } from '../judge/goal-claim-validator.js';
+import {
+  expectedJudgeGoalsWithSequentialIds,
+  reconcileJudgeGoalStatusesWithTrace,
+} from '../judge/goal-status-reconciler.js';
 import { Judge, type JudgeOutput } from '../judge/judge.js';
 import { ensureRubricScoreCoverage } from '../judge/score-coverage.js';
 import type { LlmClient } from '../llm/client.js';
@@ -266,6 +270,7 @@ export class Orchestrator {
     const judge = new Judge(this.deps.judgeClient);
     let judgeOutput: JudgeOutput;
     let traceEvents: Awaited<ReturnType<typeof readTraceArray>> = [];
+    const expectedGoals = expectedJudgeGoalsWithSequentialIds(interpreted?.goals);
     try {
       // Phase 6 F2: optional ensemble — two parallel Judge calls, intersect
       // critical findings, average scores. Reduces variance on borderline
@@ -294,11 +299,16 @@ export class Orchestrator {
         });
       }
       judgeOutput = ensureRubricScoreCoverage(judgeOutput, config.rubric_profiles);
+      if (traceEvents.length === 0) traceEvents = await readTraceArray(tracePath);
+      judgeOutput = reconcileJudgeGoalStatusesWithTrace({
+        judge: judgeOutput,
+        trace: traceEvents,
+        ...(expectedGoals ? { expected_goals: expectedGoals } : {}),
+      }).judge;
 
       // Phase 5 G3: validate findings against the trace. Deterministic step;
       // drops findings whose cited event ids don't exist and downgrades severe
       // findings without concrete backing.
-      if (traceEvents.length === 0) traceEvents = await readTraceArray(tracePath);
       const validation = validateFindings(judgeOutput.findings, traceEvents);
       judgeOutput = {
         ...judgeOutput,
@@ -381,6 +391,7 @@ export class Orchestrator {
     const report = buildReportJson({
       judge: judgeOutput,
       trace_events: traceEvents,
+      ...(expectedGoals ? { expected_goals: expectedGoals } : {}),
       run: {
         id: startedAt.toISOString().replace(/[:]/g, '-'),
         target: { kind: config.target.kind, url: config.target.url },

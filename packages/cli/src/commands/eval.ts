@@ -426,6 +426,14 @@ export function evalCommand(): Command {
           }
         ).evidence_validation;
         const goalClaimValidation = result.report.spec_compliance?.goal_claim_validation;
+        const reportEvaluation = (
+          result.report as {
+            evaluation?: {
+              product_score: { authority: 'authoritative' | 'provisional' | 'insufficient' };
+              evidence_confidence: { score: number; level: 'high' | 'medium' | 'low' };
+            };
+          }
+        ).evaluation;
         process.stdout.write(
           buildSummaryLine({
             score: counts.score,
@@ -441,6 +449,19 @@ export function evalCommand(): Command {
             duration_s: result.duration_s,
             cost_usd: result.cost_usd,
             caveats: result.report.meta.confidence_caveats.length,
+            ...(reportEvaluation?.product_score.authority
+              ? {
+                  product_score_authority: reportEvaluation.product_score.authority,
+                }
+              : {}),
+            ...(reportEvaluation?.evidence_confidence
+              ? {
+                  evidence_confidence: {
+                    score: reportEvaluation.evidence_confidence.score,
+                    level: reportEvaluation.evidence_confidence.level,
+                  },
+                }
+              : {}),
             ...(counts.blocked !== undefined ? { blocked: counts.blocked } : {}),
             ...(counts.blocked_reasons ? { blocked_reasons: counts.blocked_reasons } : {}),
             ...(counts.goals_total !== undefined

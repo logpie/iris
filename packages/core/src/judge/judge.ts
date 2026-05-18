@@ -152,6 +152,12 @@ export const JudgeOutputSchema = z.object({
         partial_reasons: z.array(z.string()).default([]),
       })
       .optional(),
+    goal_status_reconciliation: z
+      .object({
+        corrected: z.number().int().nonnegative(),
+        reasons: z.array(z.string()).default([]),
+      })
+      .optional(),
   }),
   coverage_review: z.object({
     surfaces_explored: z.number(),

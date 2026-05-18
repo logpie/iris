@@ -2504,8 +2504,8 @@ function renderTLDR(report: ReportJson, eventIndex: Map<string, TraceEvent>): st
   const counts = goalCounts(report, eventIndex);
   const totalFindings = totalFindingCount(report);
   const scoreCompleteness = scoreCompletenessSummary(report.scores);
-  const toneClass = overviewTone(report, counts);
-  const verdict = verdictLabel(report, counts);
+  const toneClass = overviewTone(report, counts, evaluation.product_score.authority);
+  const verdict = verdictLabel(report, counts, evaluation.product_score.authority);
   const summary = overviewSummary(report, counts, evaluation.product_score.interpretation);
   const evidenceLine = renderEvidenceIntegrity(report);
   const scoreWarning = renderScoreCompletenessWarning(scoreCompleteness);
@@ -2634,9 +2634,14 @@ function effectiveScenarioStatus(
   return statuses.length > 0 ? summarizeStatuses(statuses) : 'untested';
 }
 
-function overviewTone(report: ReportJson, counts: GoalCounts): string {
+function overviewTone(
+  report: ReportJson,
+  counts: GoalCounts,
+  authority: ReportEvaluation['product_score']['authority'] = 'provisional',
+): string {
   const scoreCompleteness = scoreCompletenessSummary(report.scores);
   if (!scoreCompleteness.complete) return 'partial';
+  if (authority === 'insufficient') return 'partial';
   if (
     report.headline.threshold_passed &&
     report.headline.blockers === 0 &&
@@ -2649,9 +2654,14 @@ function overviewTone(report: ReportJson, counts: GoalCounts): string {
   return 'partial';
 }
 
-function verdictLabel(report: ReportJson, counts: GoalCounts): string {
+function verdictLabel(
+  report: ReportJson,
+  counts: GoalCounts,
+  authority: ReportEvaluation['product_score']['authority'] = 'provisional',
+): string {
   const scoreCompleteness = scoreCompletenessSummary(report.scores);
   if (!scoreCompleteness.complete) return 'Incomplete score report';
+  if (authority === 'insufficient') return 'Not enough evidence';
   if (report.headline.blockers > 0) return 'Blocked by critical findings';
   if (!report.headline.threshold_passed) return 'Needs work';
   if (report.headline.majors > 0) return 'Passes with major findings';

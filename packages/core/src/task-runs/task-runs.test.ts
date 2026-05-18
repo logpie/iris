@@ -186,6 +186,39 @@ describe('buildTaskRuns', () => {
     expect(runs.map((run) => run.replay.action_count)).toEqual([1, 1]);
   });
 
+  it('does not include the previous goal_status event in the next task run window', () => {
+    const trace = [
+      ev('A1', 1, 'action', { tool: 'click', args: { selector: '#first' } }),
+      ev('R1', 1, 'action_result', { tool: 'click', ok: true }),
+      ev('OBS1', 1, 'observation', { ref: 'OBS-000001' }),
+      ev('GS1', 1, 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['OBS1'],
+      }),
+      ev('A2', 2, 'action', { tool: 'click', args: { selector: '#second' } }),
+      ev('R2', 2, 'action_result', { tool: 'click', ok: true }),
+      ev('OBS2', 2, 'observation', { ref: 'OBS-000002' }),
+      ev('GS2', 2, 'goal_status', {
+        id: 'G2',
+        status: 'verified',
+        evidence_event_ids: ['OBS2'],
+      }),
+    ];
+
+    const runs = buildTaskRuns({
+      goals: [
+        { id: 'G1', description: 'First', status: 'verified', evidence: ['OBS1'] },
+        { id: 'G2', description: 'Second', status: 'verified', evidence: ['OBS2'] },
+      ],
+      trace,
+    });
+
+    expect(runs[1]?.event_ids).not.toContain('GS1');
+    expect(runs[1]?.event_ids).toContain('GS2');
+    expect(runs[1]?.actions.map((action) => action.event_id)).toEqual(['A2']);
+  });
+
   it('keeps chronological action segments when later goals are reported before earlier retries', () => {
     const trace = [
       ev('A1', 1, 'action', { tool: 'click', args: { selector: 'text=Search' } }),

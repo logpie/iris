@@ -93,8 +93,8 @@ export function deriveReportEvaluation(inp: DeriveReportEvaluationInput): Report
   const rubricCompleteness =
     requestedRubrics.length > 0 ? scoredRubrics.length / requestedRubrics.length : 1;
   const hasGoals = goalCounts.total > 0;
-  const attemptedRatio = hasGoals ? goalCounts.attempted / goalCounts.total : 0.6;
-  const verifiedRatio = hasGoals ? goalCounts.verified / goalCounts.total : 0.6;
+  const attemptedRatio = hasGoals ? goalCounts.attempted / goalCounts.total : 0;
+  const verifiedRatio = hasGoals ? goalCounts.verified / goalCounts.total : 0;
   const metaConfidence = clamp01(inp.meta.confidence_overall);
   const capabilityCoverage = deriveCapabilityCoverage(inp.capabilities ?? [], inp.goals);
   const baseEvidenceScore = clamp01(
@@ -223,9 +223,11 @@ function scoreAuthority(inp: {
   capabilityCoverage?: CapabilityCoverageSummary | undefined;
 }): ScoreAuthority {
   const coverage = inp.capabilityCoverage;
+  if (!inp.hasGoals) return 'insufficient';
   if (
     inp.evidenceScore < 0.45 ||
     (inp.hasGoals && inp.attemptedRatio < 0.5) ||
+    (inp.hasGoals && inp.goalCounts.attempted > 0 && inp.goalCounts.verified === 0) ||
     inp.rubricCompleteness < 0.5 ||
     inp.metaConfidence < 0.35 ||
     (coverage && coverage.must_skipped > 0) ||
@@ -240,7 +242,9 @@ function scoreAuthority(inp: {
     inp.goalCounts.skipped === 0 &&
     inp.rubricCompleteness === 1 &&
     inp.metaConfidence >= 0.7 &&
-    (!coverage || coverage.important_skipped === 0) &&
+    (!coverage ||
+      coverage.important_total === 0 ||
+      coverage.important_covered / coverage.important_total >= 0.8) &&
     (!coverage || coverage.core_total === 0 || coverage.core_ratio >= 0.75)
   ) {
     return 'authoritative';
@@ -248,9 +252,7 @@ function scoreAuthority(inp: {
   return 'provisional';
 }
 
-function capabilityConfidenceMultiplier(
-  coverage: CapabilityCoverageSummary | undefined,
-): number {
+function capabilityConfidenceMultiplier(coverage: CapabilityCoverageSummary | undefined): number {
   if (!coverage) return 1;
   if (coverage.must_skipped > 0) return 0.55;
   if (coverage.should_skipped >= 3) return 0.72;
@@ -346,6 +348,7 @@ function productScoreInterpretation(
   counts: GoalEvaluationCounts,
   findings: Finding[],
 ): string {
+  const confirmedDefects = findings.filter((finding) => !isSuggestionFinding(finding));
   if (authority === 'insufficient') {
     return 'Iris did not gather enough evidence to grade product quality fairly.';
   }
@@ -358,7 +361,14 @@ function productScoreInterpretation(
   if (findings.length === 0) {
     return 'No product defects were confirmed, but the run still has coverage or confidence limits.';
   }
+  if (confirmedDefects.length === 0) {
+    return 'No product defects were confirmed; suggestions were recorded, and coverage or evidence limits make the numeric score provisional.';
+  }
   return 'Product issues were found, but coverage or evidence limits make the numeric score provisional.';
+}
+
+function isSuggestionFinding(finding: Finding): boolean {
+  return finding.severity === 'suggestion' || finding.category === 'suggestion';
 }
 
 function deriveCapabilityCoverage(
@@ -370,7 +380,7 @@ function deriveCapabilityCoverage(
   const statusByGoalId = new Map(goals.map((goal) => [goal.id, goal.status]));
   const classified = relevant.map((capability) => ({
     capability,
-    coverage: capabilityRuntimeStatus(capability, statusByGoalId),
+    coverage: capabilityRuntimeStatus(capability, statusByGoalId, goals),
   }));
   const covered = classified.filter((item) => item.coverage === 'covered').length;
   const partial = classified.filter((item) => item.coverage === 'partial').length;
@@ -379,9 +389,7 @@ function deriveCapabilityCoverage(
   const core = classified.filter((item) => item.capability.importance === 'core');
   const coreCovered = core.filter((item) => item.coverage === 'covered').length;
   const corePartial = core.filter((item) => item.coverage === 'partial').length;
-  const must = classified.filter(
-    (item) => capabilityExpectation(item.capability) === 'must_test',
-  );
+  const must = classified.filter((item) => capabilityExpectation(item.capability) === 'must_test');
   const should = classified.filter(
     (item) => capabilityExpectation(item.capability) === 'should_test_or_explain',
   );
@@ -443,16 +451,120 @@ function deriveCapabilityCoverage(
 function capabilityRuntimeStatus(
   capability: DiscoveryCapability,
   statusByGoalId: Map<string, Goal['status']>,
+  goals: Goal[],
 ): 'covered' | 'partial' | 'untested' | 'deferred' {
   const statuses = capability.scenario_ids
     .map((id) => statusByGoalId.get(id))
     .filter((status): status is Goal['status'] => Boolean(status));
-  if (statuses.some((status) => status === 'partial' || status === 'blocked' || status === 'not_satisfied')) {
+  if (
+    statuses.some(
+      (status) => status === 'partial' || status === 'blocked' || status === 'not_satisfied',
+    )
+  ) {
     return 'partial';
   }
   if (statuses.some((status) => status === 'verified' || status === 'satisfied')) return 'covered';
+  const inferred = inferCapabilityRuntimeStatusFromGoals(capability, goals);
+  if (inferred) return inferred;
   if (capability.status === 'selected') return 'untested';
   return 'deferred';
+}
+
+function inferCapabilityRuntimeStatusFromGoals(
+  capability: DiscoveryCapability,
+  goals: Goal[],
+): 'covered' | 'partial' | undefined {
+  const matching = goals.filter((goal) => goalProvesCapability(capability, goal));
+  if (matching.length === 0) return undefined;
+  if (matching.some((goal) => goal.status === 'verified' || goal.status === 'satisfied')) {
+    return 'covered';
+  }
+  if (
+    matching.some(
+      (goal) =>
+        goal.status === 'partial' || goal.status === 'blocked' || goal.status === 'not_satisfied',
+    )
+  ) {
+    return 'partial';
+  }
+  return undefined;
+}
+
+function goalProvesCapability(capability: DiscoveryCapability, goal: Goal): boolean {
+  if (isImplementationCodeCapability(capability))
+    return goalProvesImplementationCodeCapability(goal);
+  if (isCalculatorInputCapability(capability)) return goalProvesCalculatorInputCapability(goal);
+  return false;
+}
+
+function isImplementationCodeCapability(capability: DiscoveryCapability): boolean {
+  if (capability.product_kind !== 'developer_documentation') return false;
+  const text = normalizeCapabilityText(
+    [
+      capability.label,
+      capability.denominator_reason,
+      capability.coverage_gap,
+      ...capability.evidence,
+    ].join(' '),
+  );
+  return (
+    /\b(implementation|source code|code|dependency|dependencies|library|api)\b/.test(text) &&
+    /\b(read|inspect|visible|example|implementation|dependency|dependencies|library|code)\b/.test(
+      text,
+    )
+  );
+}
+
+function goalProvesImplementationCodeCapability(goal: Goal): boolean {
+  const text = normalizeCapabilityText([goal.description, goal.notes ?? ''].join(' '));
+  if (
+    !/\b(inspect|read|show|verify|visible|implementation|javascript|code|dependency|dependencies|library)\b/.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  return /\b(new datatable|datatable|jquery|cdn|data tables|datatables|dependency|dependencies|library|javascript tab|source code|code snippet)\b/.test(
+    text,
+  );
+}
+
+function isCalculatorInputCapability(capability: DiscoveryCapability): boolean {
+  if (capability.product_kind !== 'calculator_tool') return false;
+  const text = normalizeCapabilityText(
+    [
+      capability.label,
+      capability.denominator_reason,
+      capability.coverage_gap,
+      ...capability.evidence,
+    ].join(' '),
+  );
+  if (/\b(print|save|export|download|related|reference|article|table|chart)\b/.test(text)) {
+    return false;
+  }
+  return (
+    /\b(input|field|form|unit|option|metric|imperial|us unit|other unit)\b/.test(text) &&
+    /\b(calculate|calculator|bmi|result|conversion|height|weight|value)\b/.test(text)
+  );
+}
+
+function goalProvesCalculatorInputCapability(goal: Goal): boolean {
+  const text = normalizeCapabilityText([goal.description, goal.notes ?? ''].join(' '));
+  const usesInputs =
+    /\b(height|weight|age|feet|inch|in|lb|pound|cm|kg|kilogram|metric|unit|male|female)\b/.test(
+      text,
+    );
+  const calculatesResult = /\b(calculate|bmi|result|normal|overweight|kg m2|healthy)\b/.test(text);
+  return usesInputs && calculatesResult;
+}
+
+function normalizeCapabilityText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/['"]/g, '')
+    .replace(/[^a-z0-9.#/:-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function capabilityCoverageLevel(

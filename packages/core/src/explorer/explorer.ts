@@ -482,12 +482,34 @@ export class Explorer {
     evidence_event_ids?: string[];
   }): Promise<MetaToolResult> {
     const evidenceEventIds = args.evidence_event_ids ?? [];
+    if (this.goalTracker && !this.goalTracker.hasPendingGoal(args.id)) {
+      const cur = this.goalTracker.current();
+      const active =
+        cur.phase === 'goal'
+          ? cur.id
+          : cur.phase === 'free'
+            ? 'free exploration'
+            : 'no pending goals';
+      return {
+        ok: false,
+        error: `unknown or already-completed goal_status id "${args.id}". Active target: ${active}.`,
+      };
+    }
     if (args.status === 'verified' && evidenceEventIds.length === 0) {
       return {
         ok: false,
         error:
           'verified goal_status requires evidence_event_ids with a post-action observation/screenshot/vision_describe event id',
       };
+    }
+    if (this.goalTracker) {
+      const ok = this.goalTracker.completeById(args.id, args.status, args.rationale);
+      if (!ok) {
+        return {
+          ok: false,
+          error: `goal_status id "${args.id}" was no longer pending; no trace status was accepted.`,
+        };
+      }
     }
     await this.emit('goal_status', 'explorer', {
       id: args.id,
@@ -496,14 +518,6 @@ export class Explorer {
       evidence_event_ids: evidenceEventIds,
       auto_cutover: false,
     });
-    if (this.goalTracker) {
-      const ok = this.goalTracker.completeById(args.id, args.status, args.rationale);
-      if (!ok) {
-        // Falls back to advancing the current pointer; explorer may have called
-        // goal_status for a goal that doesn't exist or was already completed.
-        this.goalTracker.completeCurrent(args.status, args.rationale);
-      }
-    }
     return { ok: true };
   }
 

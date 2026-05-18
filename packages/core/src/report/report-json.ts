@@ -7,6 +7,10 @@ import type {
   ProductUseContract,
 } from '../discovery/discovery.js';
 import { deriveDiscoveryCapabilitiesForReport } from '../discovery/discovery.js';
+import {
+  type ExpectedJudgeGoal,
+  reconcileJudgeGoalStatusesWithTrace,
+} from '../judge/goal-status-reconciler.js';
 import type { JudgeOutput } from '../judge/judge.js';
 import { type TaskRun, buildTaskRuns } from '../task-runs/task-runs.js';
 import { findingHash } from '../trace/identity.js';
@@ -87,6 +91,7 @@ export interface BuildReportJsonInputs {
   // Trace events (with content_hash), used to compute stable finding_hash for
   // cross-run diff. If omitted, finding_hash will fall back to per-id strings.
   trace_events?: TraceEvent[];
+  expected_goals?: ExpectedJudgeGoal[];
 }
 
 export interface ReportJson {
@@ -193,7 +198,14 @@ function countGoalsForHeadline(goals: JudgeOutput['spec_compliance']['goals']): 
 }
 
 export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
-  const judge = resolveJudgeEvidenceRefs(inp.judge, inp.trace_events);
+  const reconciledJudge = inp.trace_events
+    ? reconcileJudgeGoalStatusesWithTrace({
+        judge: inp.judge,
+        trace: inp.trace_events,
+        ...(inp.expected_goals ? { expected_goals: inp.expected_goals } : {}),
+      }).judge
+    : inp.judge;
+  const judge = resolveJudgeEvidenceRefs(reconciledJudge, inp.trace_events);
   const counts = countSeverities(judge.findings);
   const scores = normalizeReportScores(judge.scores, {
     traceEvents: inp.trace_events,
@@ -236,7 +248,7 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     goals: judge.spec_compliance.applicable ? judge.spec_compliance.goals : [],
   });
   const taskRuns =
-    inp.trace_events && judge.spec_compliance.applicable
+    inp.trace_events && judge.spec_compliance.applicable && inp.run.termination !== 'judge_failed'
       ? buildTaskRuns({ goals: judge.spec_compliance.goals, trace: inp.trace_events })
       : [];
 
@@ -261,7 +273,7 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     capabilities: discovery?.capabilities,
   });
   const threshold_passed =
-    baseThresholdPassed && evaluation.product_score.authority !== 'insufficient';
+    baseThresholdPassed && evaluation.product_score.authority === 'authoritative';
 
   const headline: ReportJson['headline'] = {
     score,
@@ -321,7 +333,7 @@ function computeThresholdPassed(inp: {
   coverage: ReturnType<typeof countGoalsForHeadline>;
   scoreAuthority: ReportEvaluation['product_score']['authority'];
 }): boolean {
-  return computeBaseThresholdPassed(inp) && inp.scoreAuthority !== 'insufficient';
+  return computeBaseThresholdPassed(inp) && inp.scoreAuthority === 'authoritative';
 }
 
 function computeBaseThresholdPassed(inp: {
@@ -345,9 +357,20 @@ export function refreshReportJsonDerivedFields(
     threshold?: number;
     run?: ReportRunMeta;
     trace_events?: TraceEvent[];
+    expected_goals?: ExpectedJudgeGoal[];
   } = {},
 ): ReportJson {
   const threshold = opts.threshold ?? report.threshold;
+  const run = opts.run ?? report.run;
+  const reportJudge = reportJsonToJudgeOutput(report);
+  const reconciledJudge = opts.trace_events
+    ? reconcileJudgeGoalStatusesWithTrace({
+        judge: reportJudge,
+        trace: opts.trace_events,
+        ...(opts.expected_goals ? { expected_goals: opts.expected_goals } : {}),
+      }).judge
+    : reportJudge;
+  const specCompliance = reconciledJudge.spec_compliance;
   const meta = normalizeReportMeta(report.meta, opts.trace_events);
   const scores = normalizeReportScores(report.scores, {
     ...(opts.trace_events ? { traceEvents: opts.trace_events } : {}),
@@ -355,11 +378,11 @@ export function refreshReportJsonDerivedFields(
   });
   const score = scores.overall.score;
   const counts = countSeverities(report.findings);
-  const coverage = countGoalsForHeadline(report.spec_compliance.goals);
+  const coverage = countGoalsForHeadline(specCompliance.goals);
   const evaluation = deriveReportEvaluation({
     score,
     scores,
-    goals: report.spec_compliance.goals,
+    goals: specCompliance.goals,
     findings: report.findings,
     meta,
     capabilities: report.discovery?.capabilities,
@@ -376,7 +399,7 @@ export function refreshReportJsonDerivedFields(
   return {
     ...report,
     ...(threshold !== undefined ? { threshold } : {}),
-    ...(opts.run ? { run: opts.run } : {}),
+    ...(opts.run ? { run } : {}),
     headline: {
       ...report.headline,
       score,
@@ -386,7 +409,7 @@ export function refreshReportJsonDerivedFields(
       minors: counts.minor,
       nits: counts.nit,
       suggestions: counts.suggestion,
-      ...(report.spec_compliance.applicable
+      ...(specCompliance.applicable
         ? {
             goals_attempted: coverage.attempted,
             goals_verified: coverage.verified,
@@ -394,13 +417,36 @@ export function refreshReportJsonDerivedFields(
           }
         : {}),
     },
+    spec_compliance: specCompliance,
     scores,
     meta,
     evaluation,
+    ...(opts.trace_events
+      ? {
+          task_runs:
+            specCompliance.applicable && run.termination !== 'judge_failed'
+              ? buildTaskRuns({ goals: specCompliance.goals, trace: opts.trace_events })
+              : [],
+        }
+      : {}),
     next_actions: {
       ...report.next_actions,
       for_re_evaluation: meta.would_re_explore_with,
     },
+  };
+}
+
+function reportJsonToJudgeOutput(report: ReportJson): JudgeOutput {
+  return {
+    v: 1,
+    findings: report.findings,
+    discarded_findings: report.discarded_findings ?? [],
+    scores: report.scores,
+    spec_compliance: report.spec_compliance,
+    coverage_review: report.coverage_review,
+    meta: report.meta,
+    access_blocks: report.access_blocks ?? [],
+    ...(report.evidence_validation ? { evidence_validation: report.evidence_validation } : {}),
   };
 }
 

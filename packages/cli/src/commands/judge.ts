@@ -61,6 +61,7 @@ export function judgeCommand(): Command {
       // Without this, the agent-perspective and notifications-probe filters
       // never run on re-judge invocations.
       const traceEvents = await traceMod.readTraceArray(tracePath);
+      out = judgeMod.reconcileJudgeGoalStatusesWithTrace({ judge: out, trace: traceEvents }).judge;
       const validation = judgeMod.validateFindings(out.findings, traceEvents);
       out = {
         ...out,
@@ -108,6 +109,7 @@ export function judgeCommand(): Command {
 
       if (opts.printSummary) {
         const c = reportJson.headline;
+        const reportEvaluation = reportJson.evaluation;
         process.stdout.write(
           buildSummaryLine({
             score: c.score,
@@ -123,6 +125,19 @@ export function judgeCommand(): Command {
             duration_s: 0,
             cost_usd: judgeClient.totals().cost_usd,
             caveats: reportJson.meta.confidence_caveats.length,
+            ...(reportEvaluation?.product_score.authority
+              ? {
+                  product_score_authority: reportEvaluation.product_score.authority,
+                }
+              : {}),
+            ...(reportEvaluation?.evidence_confidence
+              ? {
+                  evidence_confidence: {
+                    score: reportEvaluation.evidence_confidence.score,
+                    level: reportEvaluation.evidence_confidence.level,
+                  },
+                }
+              : {}),
           }),
         );
       } else {

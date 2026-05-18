@@ -337,7 +337,6 @@ export async function runIrisViaSdk(
   process.on('unhandledRejection', sdkNoiseHandler);
 
   const adapter = createAdapter();
-  const reportMode = config.mode;
   const startedAt = new Date();
   const startMs = Date.now();
   mkdirSync(config.out_dir, { recursive: true });
@@ -450,7 +449,7 @@ export async function runIrisViaSdk(
         run: {
           id: startedAt.toISOString().replace(/[:]/g, '-'),
           target: { kind: 'web', url: config.target.url },
-          mode: reportMode,
+          mode: config.mode,
           started_at: startedAt.toISOString(),
           ended_at: new Date().toISOString(),
           duration_s: (Date.now() - startMs) / 1000,
@@ -1001,6 +1000,7 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
     rubric_profiles: config.rubric_profiles,
     tentative_findings_count: tentativeCount,
   });
+  const expectedGoals = judgeMod.expectedJudgeGoalsWithSequentialIds(interpreted?.goals);
 
   let judgeOutput: judgeMod.JudgeOutput;
   try {
@@ -1026,6 +1026,10 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       const p2 = parseJudgeOutputFromResponse(r2, 'Judge ensemble pass 2');
       const merged = judgeMod.mergeJudgePasses(p1, p2, events);
       judgeOutput = merged.output;
+      writeFileSync(
+        join(config.out_dir, 'judge.raw.txt'),
+        `_written_at: ${new Date().toISOString()}\n\n${JSON.stringify(judgeOutput, null, 2)}`,
+      );
       process.stderr.write(
         `iris: Judge ensemble — ${merged.metadata.agreed_critical} agreed critical, ${merged.metadata.disagreed_critical} disagreed; $${(r1.cost_usd + r2.cost_usd).toFixed(2)}\n`,
       );
@@ -1038,9 +1042,18 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
       });
       totalCost += judgeResp.cost_usd;
       process.stderr.write(`iris: Judge done — $${judgeResp.cost_usd.toFixed(2)}\n`);
+      writeFileSync(
+        join(config.out_dir, 'judge.raw.txt'),
+        `_written_at: ${new Date().toISOString()}\n\n${judgeResp.text}`,
+      );
       judgeOutput = parseJudgeOutputFromResponse(judgeResp, 'Judge');
     }
     judgeOutput = judgeMod.ensureRubricScoreCoverage(judgeOutput, config.rubric_profiles);
+    judgeOutput = judgeMod.reconcileJudgeGoalStatusesWithTrace({
+      judge: judgeOutput,
+      trace: events,
+      ...(expectedGoals ? { expected_goals: expectedGoals } : {}),
+    }).judge;
 
     // Phase 5 G3: validate findings against the trace.
     const validation = judgeMod.validateFindings(judgeOutput.findings, events);
@@ -1091,7 +1104,6 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
     );
     const reportEarly = emptyReport(
       config,
-      reportMode,
       startedAt,
       totalCost,
       explorerResult.steps_taken,
@@ -1157,10 +1169,11 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
   const report = reportMod.buildReportJson({
     judge: judgeOutput,
     trace_events: events,
+    ...(expectedGoals ? { expected_goals: expectedGoals } : {}),
     run: {
       id: startedAt.toISOString().replace(/[:]/g, '-'),
       target: { kind: 'web', url: config.target.url },
-      mode: reportMode,
+      mode: config.mode,
       started_at: startedAt.toISOString(),
       ended_at: endedAt.toISOString(),
       duration_s,
@@ -1223,7 +1236,6 @@ Tools are prefixed with \`mcp__iris__\` (e.g. \`mcp__iris__click\`, \`mcp__iris_
 
 function emptyReport(
   config: AgentSdkRunConfig,
-  reportMode: Mode,
   startedAt: Date,
   cost_usd: number,
   steps: number,
@@ -1248,7 +1260,7 @@ function emptyReport(
     run: {
       id: startedAt.toISOString().replace(/[:]/g, '-'),
       target: { kind: 'web', url: config.target.url },
-      mode: reportMode,
+      mode: config.mode,
       started_at: startedAt.toISOString(),
       ended_at: new Date().toISOString(),
       duration_s: (Date.now() - startedAt.getTime()) / 1000,

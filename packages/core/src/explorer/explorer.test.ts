@@ -212,4 +212,70 @@ describe('Explorer', () => {
       expect.arrayContaining(['verify checkout', 'verify signin']),
     );
   });
+
+  it('rejects unknown goal_status ids without emitting trace status noise', async () => {
+    let callCount = 0;
+    const transport = vi.fn(async (): Promise<LlmRawResponse> => {
+      callCount++;
+      if (callCount === 1) {
+        return fakeRsp([
+          {
+            type: 'tool_use',
+            id: 'tu1',
+            name: 'goal_status',
+            input: {
+              id: 'G99',
+              status: 'verified',
+              rationale: 'wrong goal id',
+              evidence_event_ids: ['OBS-1'],
+            },
+          },
+        ]);
+      }
+      if (callCount === 2) {
+        return fakeRsp([
+          {
+            type: 'tool_use',
+            id: 'tu2',
+            name: 'goal_status',
+            input: {
+              id: 'G1',
+              status: 'verified',
+              rationale: 'correct goal id',
+              evidence_event_ids: ['OBS-1'],
+            },
+          },
+        ]);
+      }
+      return fakeRsp([{ type: 'tool_use', id: 'tu3', name: 'done', input: {} }]);
+    });
+    const llmClient = new LlmClient({ transport });
+    const explorer = new Explorer({
+      adapter: new FakeAdapter(),
+      llmClient,
+      traceWriter: writer,
+      config: {
+        mode: 'grounded',
+        target_kind: 'web',
+        model: 'claude-sonnet-4-6',
+        max_steps: 10,
+        timeout_s: 60,
+        spec_goals: [{ id: 'G1', description: 'Verify the primary action' }],
+        steps_per_goal: 3,
+        free_exploration_steps: 0,
+      },
+    });
+
+    const r = await explorer.run();
+    expect(r.goal_ledger).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'G1', status: 'verified' })]),
+    );
+
+    await writer.close();
+    const events = await iristrace.readTraceArray(path);
+    const goalStatuses = events
+      .filter((event) => event.kind === 'goal_status')
+      .map((event) => event.payload as { id?: string; status?: string });
+    expect(goalStatuses).toEqual([expect.objectContaining({ id: 'G1', status: 'verified' })]);
+  });
 });

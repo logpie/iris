@@ -7,6 +7,52 @@ const INSTRUCTION_PREFIX =
 const GENERIC_VISIBLE_DATA =
   /\b(example|sample|test|demo|todo|item|task|note|text|content|reference|current board|current artifact|current document)\b/i;
 
+export interface ProductUseJobMatchLike {
+  id?: string | undefined;
+  title?: string | undefined;
+  journey_id?: string | undefined;
+  scenario_brief?: string | undefined;
+  test_data?: readonly string[] | undefined;
+  required_actions?: readonly string[] | undefined;
+  proof_obligations?: readonly string[] | undefined;
+  expected_artifact?: string | undefined;
+  required_outputs?: readonly string[] | undefined;
+  quality_bar?: readonly string[] | undefined;
+}
+
+export interface ProductUseGoalMatchLike {
+  id?: string | undefined;
+  description?: string | undefined;
+  journey_id?: string | undefined;
+}
+
+export function selectProductUseJobForGoal<T extends ProductUseJobMatchLike>(
+  jobs: readonly T[] | undefined,
+  goal: ProductUseGoalMatchLike,
+  options: { fallbackIndex?: number; allowAmbiguousFallback?: boolean } = {},
+): T | undefined {
+  const allJobs = jobs ?? [];
+  if (allJobs.length === 0) return undefined;
+  const scopedJobs = goal.journey_id
+    ? allJobs.filter((job) => job.journey_id === goal.journey_id)
+    : [];
+  const candidates = scopedJobs.length > 0 ? scopedJobs : allJobs;
+  if (candidates.length === 1) return candidates[0];
+  const fallback = options.fallbackIndex === undefined ? undefined : allJobs[options.fallbackIndex];
+  const fallbackIsCandidate = fallback ? candidates.includes(fallback) : false;
+  const goalText = `${goal.id ?? ''} ${goal.description ?? ''}`;
+  const scored = candidates
+    .map((job) => ({ job, score: productUseJobGoalMatchScore(job, goalText) }))
+    .sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  const second = scored[1];
+  if (best && best.score > 0 && (!second || second.score < best.score)) {
+    return best.job;
+  }
+  if (!options.allowAmbiguousFallback) return undefined;
+  return fallbackIsCandidate ? fallback : candidates[0];
+}
+
 /**
  * Extract user-visible literal data from scenario test data.
  *
@@ -105,6 +151,22 @@ export function scenarioInstructionHints(items: readonly string[] | undefined): 
   return uniqueStrings(out);
 }
 
+export function scenarioEvidenceSatisfiesToken(
+  observedText: string,
+  required: string,
+  structuralText = '',
+): boolean {
+  const needle = normalizeEvidenceText(required);
+  if (!needle) return true;
+  const observed = normalizeEvidenceText(observedText);
+  if (containsVisiblePhrase(observed, needle)) return true;
+  const structuralObserved = structuralText || observedText;
+  if (activeTabRequirementSatisfied(structuralObserved, required)) return true;
+  if (numericRequirementSatisfied(observedText, required)) return true;
+  if (bmiCategoryRequirementSatisfied(observedText, required)) return true;
+  return false;
+}
+
 function categoryDataValues(item: string): string[] {
   if (/^(?:arrow|connector|line)\s+(?:connections?|between|from)\b/i.test(item)) return [];
   const connecting = item.match(
@@ -177,6 +239,8 @@ function submittedVisibleDataValues(item: string): string[] {
 
 function derivedProofVisibleValues(item: string): string[] {
   const normalized = normalize(item);
+  const currencyValues = Array.from(item.matchAll(/\$[\d,]+(?:\.\d+)?/g)).map((match) => match[0]);
+  if (currencyValues.length > 0) return currencyValues;
   if (
     /\bauthenticated\b.*\b(product|products|inventory|catalog)\b.*\b(visible|content|area|page)\b/.test(
       normalized,
@@ -188,9 +252,21 @@ function derivedProofVisibleValues(item: string): string[] {
     /^(.+?)\s+(?:is\s+|are\s+)?(?:visible|shown|present|appears?|loaded|displayed)\b/i,
   );
   if (visiblePrefix?.[1]) {
-    return splitVisibleDataList(visiblePrefix[1], { filterInstruction: false });
+    const prefix = visiblePrefix[1].trim();
+    if (isAbstractVisibleProofPrefix(prefix)) return [];
+    return splitVisibleDataList(prefix, { filterInstruction: false }).map((value) =>
+      value.replace(/\s+rows?$/i, '').trim(),
+    );
   }
   return [];
+}
+
+function isAbstractVisibleProofPrefix(prefix: string): boolean {
+  const normalized = normalize(prefix);
+  return (
+    /\b(changed|updated|reordered|sorted|ordered|different|default|compared)\b/.test(normalized) &&
+    /\b(first|rows?|row order|state|result|outcome|employee)\b/.test(normalized)
+  );
 }
 
 function codeLikeProofVisibleOutput(raw: string): string | null {
@@ -231,13 +307,22 @@ function isProofInputMetadataLine(item: string): boolean {
 
 function splitVisibleDataList(value: string, opts: { filterInstruction?: boolean } = {}): string[] {
   const filterInstruction = opts.filterInstruction ?? true;
-  return value
+  const protectedValue = value.replace(/(\d),(?=\d{3}\b)/g, '$1§');
+  return protectedValue
     .split(/\s*(?:,|;|->|→|\/|\band\b)\s*/i)
-    .map((part) => stripOuterPunctuation(part.trim()))
+    .map((part) => simplifyVisibleDataPart(stripOuterPunctuation(part.replace(/§/g, ',').trim())))
     .filter((part) => part.length >= 2)
     .filter((part) => !/\bor\b/i.test(part))
     .filter((part) => !filterInstruction || !INSTRUCTION_PREFIX.test(part))
     .filter((part) => !isGenericVisibleData(part));
+}
+
+function simplifyVisibleDataPart(part: string): string {
+  const currency = part.match(/\$[\d,]+(?:\.\d+)?/);
+  if (currency?.[0]) return currency[0];
+  const office = part.match(/^Office\s+([A-Za-z][A-Za-z -]*?)(?:\s+in)?$/i);
+  if (office?.[1]) return office[1].trim();
+  return part;
 }
 
 function quotedPhrases(item: string): string[] {
@@ -303,6 +388,9 @@ function isGenericVisibleData(item: string): boolean {
     /\b(post[- ]action evidence|product outcome|required by this capability|concrete user[- ]visible outcome)\b/.test(
       normalized,
     ) ||
+    /\b(active sort indicator|sort indicator|proves the active order|no longer proves|near the top when descending)\b/.test(
+      normalized,
+    ) ||
     /\b(page|form|destination|app content|content)\b.*\b(visible|available|reached|loaded|blocks access|no longer blocks)\b/.test(
       normalized,
     ) ||
@@ -312,6 +400,12 @@ function isGenericVisibleData(item: string): boolean {
     /\b(cards?|controls?|buttons?|fields?|rows?|prices?)\b.*\b(visible|accessible|remain|present)\b/.test(
       normalized,
     ) ||
+    /\b(rows?|row order|employee rows?|columns?|ages?)\b.*\b(reordered|sorted|ordered|changed|updated|consistent|monotonic)\b/.test(
+      normalized,
+    ) ||
+    /\b(reordered|sorted|ordered|changed|updated|consistent|monotonic)\b.*\b(rows?|row order|employee rows?|columns?|ages?)\b/.test(
+      normalized,
+    ) ||
     /\bor\b/.test(normalized)
   );
 }
@@ -319,14 +413,149 @@ function isGenericVisibleData(item: string): boolean {
 function isScenarioProofVisibleTextToken(item: string): boolean {
   if (isCodeLikeVisibleOutput(item)) return true;
   const normalized = normalize(item);
+  const shortNumericOutput = /^\d{2,}$/.test(normalized);
   return (
-    normalized.length >= 3 &&
+    (normalized.length >= 3 || shortNumericOutput) &&
     !isGenericVisibleData(normalized) &&
     !/^\d+\s+entries\s+per\s+page$/.test(normalized) &&
     !/\b(visible|visibly|non[- ]default|similar|shape|arrow|connector|media|image|embed|card|placeholder|object|dialog|download event|saved file|file evidence|generated[- ]file|artifact|state|styled|emphasized|color|fill|boundary|surface|prompt)\b/.test(
       normalized,
     )
   );
+}
+
+function containsVisiblePhrase(observed: string, required: string): boolean {
+  let index = observed.indexOf(required);
+  while (index >= 0) {
+    const before = index > 0 ? observed.charAt(index - 1) : '';
+    const afterIndex = index + required.length;
+    const after = afterIndex < observed.length ? observed.charAt(afterIndex) : '';
+    if (!isTokenChar(before) && !isTokenChar(after)) return true;
+    index = observed.indexOf(required, index + 1);
+  }
+  return false;
+}
+
+function numericRequirementSatisfied(observedText: string, required: string): boolean {
+  const requiredNorm = normalizeEvidenceText(required);
+  if (!/\b(near|around|about|approx|approximately|~)\b/.test(requiredNorm)) return false;
+  if (!/\bbmi\b/.test(requiredNorm)) return false;
+  const expected = extractDecimalNumbers(required).filter((value) => value >= 3);
+  if (expected.length === 0) return false;
+  const observedRaw = normalizeRawEvidenceText(observedText);
+  const expectedCategories = bmiCategories(required);
+  for (const value of expected) {
+    const numericOk = observedNumberNearLabel(observedRaw, value, /\bbmi\b/);
+    if (!numericOk) return false;
+  }
+  if (expectedCategories.length === 0) return true;
+  return expectedCategories.every((category) => bmiCategoryAppearsInResult(observedRaw, category));
+}
+
+function activeTabRequirementSatisfied(observedText: string, required: string): boolean {
+  const requiredNorm = normalizeEvidenceText(required);
+  const match = requiredNorm.match(/\b(us|metric|other)\s+units?\s+tab\s+active\b/);
+  if (!match?.[1]) return false;
+  const unit = match[1];
+  const observed = normalizeRawEvidenceText(observedText);
+  if (unit === 'metric') {
+    return (
+      /\bctype=metric\b/.test(observed) ||
+      /\bmetric units\b.{0,80}\b(menuon|active|selected|current|aria selected true)\b/.test(
+        observed,
+      )
+    );
+  }
+  if (unit === 'other') {
+    return (
+      /\bctype=other\b/.test(observed) ||
+      /\bother units\b.{0,80}\b(menuon|active|selected|current|aria selected true)\b/.test(observed)
+    );
+  }
+  return (
+    /\bctype=(us|standard)\b/.test(observed) ||
+    /\bus units\b.{0,80}\b(menuon|active|selected|current|aria selected true)\b/.test(observed)
+  );
+}
+
+function bmiCategoryRequirementSatisfied(observedText: string, required: string): boolean {
+  const requiredCategories = bmiCategories(required);
+  if (requiredCategories.length === 0) return false;
+  const requiredNorm = normalizeEvidenceText(required);
+  if (!/\bbmi\b|\bcategory\b|\bclassification\b/.test(requiredNorm)) return false;
+  const observed = normalizeRawEvidenceText(observedText);
+  return requiredCategories.every((category) => bmiCategoryAppearsInResult(observed, category));
+}
+
+function bmiCategories(text: string): string[] {
+  const normalized = normalizeEvidenceText(text);
+  const categories: string[] = [];
+  if (/\bunderweight\b/.test(normalized)) categories.push('underweight');
+  if (/\boverweight\b/.test(normalized)) categories.push('overweight');
+  if (/\bobese|obesity\b/.test(normalized)) categories.push('obese');
+  if (/\bnormal\b/.test(normalized)) categories.push('normal');
+  return uniqueStrings(categories);
+}
+
+function bmiCategoryAppearsInResult(observed: string, category: string): boolean {
+  const resultWindows = bmiResultWindows(observed);
+  if (resultWindows.length === 0) return false;
+  return resultWindows.some((window) => {
+    if (category === 'obese') return /\bobese|obesity\b/.test(window);
+    return new RegExp(`\\b${category}\\b`).test(window);
+  });
+}
+
+function bmiResultWindows(observed: string): string[] {
+  const windows: string[] = [];
+  const resultPattern = /\bbmi\s*(?:=|:)?\s*\d+(?:\.\d+)?/g;
+  let match = resultPattern.exec(observed);
+  while (match !== null) {
+    windows.push(observed.slice(match.index, Math.min(observed.length, match.index + 180)));
+    match = resultPattern.exec(observed);
+  }
+  return windows;
+}
+
+function observedNumberNearLabel(observed: string, expected: number, label?: RegExp): boolean {
+  for (const match of observed.matchAll(/(?<![a-z])\d+(?:\.\d+)?(?![a-z])/g)) {
+    const raw = match[0];
+    const index = match.index ?? 0;
+    const actual = Number(raw);
+    if (!Number.isFinite(actual)) continue;
+    const tolerance = expected >= 20 ? 0.25 : 0.05;
+    if (Math.abs(actual - expected) > tolerance) continue;
+    if (!label) return true;
+    const context = observed.slice(Math.max(0, index - 80), Math.min(observed.length, index + 80));
+    if (label.test(context)) return true;
+  }
+  return false;
+}
+
+function extractDecimalNumbers(text: string): number[] {
+  return Array.from(normalizeRawEvidenceText(text).matchAll(/(?<![a-z])\d+(?:\.\d+)?(?![a-z])/g))
+    .map((match) => Number(match[0]))
+    .filter((value) => Number.isFinite(value));
+}
+
+function normalizeEvidenceText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeRawEvidenceText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[“”‘’]/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isTokenChar(value: string): boolean {
+  return /^[a-z0-9]$/i.test(value);
 }
 
 function stripOuterPunctuation(value: string): string {
@@ -351,4 +580,100 @@ function uniqueStrings(values: string[]): string[] {
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function productUseJobGoalMatchScore(job: ProductUseJobMatchLike, goalText: string): number {
+  const normalizedGoal = normalizeJobMatchText(goalText);
+  if (!normalizedGoal) return 0;
+  let score = 0;
+  const id = normalizeJobMatchText(job.id ?? '');
+  if (id && tokenSetForJobMatch(normalizedGoal).has(id)) score += 40;
+  const title = normalizeJobMatchText(job.title ?? '');
+  const scenario = normalizeJobMatchText(job.scenario_brief ?? '');
+  const artifact = normalizeJobMatchText(job.expected_artifact ?? '');
+  if (title && normalizedGoal.includes(title)) score += 25;
+  if (scenario && normalizedGoal.includes(scenario)) score += 25;
+  if (artifact && normalizedGoal.includes(artifact)) score += 8;
+
+  const goalTokens = tokenSetForJobMatch(normalizedGoal);
+  for (const token of productUseJobWeightedMatchTokens(job)) {
+    if (!goalTokens.has(token.token)) continue;
+    score += token.weight;
+  }
+  return score;
+}
+
+function productUseJobWeightedMatchTokens(
+  job: ProductUseJobMatchLike,
+): Array<{ token: string; weight: number }> {
+  const weighted = new Map<string, number>();
+  const add = (text: string | undefined, weight: number) => {
+    for (const token of tokenSetForJobMatch(text ?? '')) {
+      weighted.set(token, Math.max(weighted.get(token) ?? 0, weight));
+    }
+  };
+  add(job.id, 12);
+  add(job.title, 6);
+  add(job.scenario_brief, 5);
+  add(job.expected_artifact, 4);
+  for (const text of job.required_actions ?? []) add(text, 4);
+  for (const text of job.required_outputs ?? []) add(text, 4);
+  for (const text of job.test_data ?? []) add(text, 3);
+  for (const text of job.proof_obligations ?? []) add(text, 3);
+  for (const text of job.quality_bar ?? []) add(text, 2);
+  return Array.from(weighted, ([token, weight]) => ({ token, weight }));
+}
+
+function tokenSetForJobMatch(text: string): Set<string> {
+  const stop = new Set([
+    'and',
+    'the',
+    'for',
+    'from',
+    'with',
+    'that',
+    'this',
+    'page',
+    'open',
+    'verify',
+    'loads',
+    'load',
+    'works',
+    'use',
+    'using',
+    'check',
+    'confirm',
+    'visible',
+    'result',
+    'results',
+    'required',
+    'scenario',
+    'table',
+    'grid',
+    'employee',
+    'employees',
+    'control',
+    'controls',
+    'state',
+    'data',
+    'rows',
+    'row',
+    'field',
+    'content',
+    'value',
+    'values',
+  ]);
+  return new Set(
+    normalizeJobMatchText(text)
+      .split(/[^a-z0-9]+/i)
+      .filter((token) => token.length >= 2 && !stop.has(token)),
+  );
+}
+
+function normalizeJobMatchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

@@ -213,8 +213,10 @@ describe('iris eval — end-to-end against fixture site', () => {
     });
 
     // Verify result
-    expect(result.exit_code).toBe(0);
+    expect(result.exit_code).toBe(1);
     expect(result.report.headline.score).toBe(7.5);
+    expect(result.report.headline.threshold_passed).toBe(false);
+    expect(result.report.evaluation?.product_score.authority).toBe('insufficient');
     // Phase 5: the Judge cites an observation ref that exists, but the claim is
     // about slowness without any timing evidence. The evidence validator
     // correctly discards it. discarded_findings carries the audit trail; the
@@ -242,9 +244,9 @@ describe('iris eval — end-to-end against fixture site', () => {
     // Phase 5: F-001 was discarded by the validator; for_builder is empty.
     expect(report.next_actions.for_re_evaluation).toContain('--persona keyboard_only');
 
-    // report.md has the score-authority header
+    // report.md has the evidence-authority header
     const md = readFileSync(join(outDir, 'report.md'), 'utf8');
-    expect(md).toMatch(/# Iris run — Provisional product score: 7\.5 \/ 10/);
+    expect(md).toMatch(/# Iris run — Not enough evidence to score fairly: 7\.5 \/ 10/);
 
     // trace.jsonl has run_start + run_end + observation + action
     const trace = readFileSync(join(outDir, 'trace.jsonl'), 'utf8')

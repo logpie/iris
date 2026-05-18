@@ -47,6 +47,8 @@ describe('buildSummaryLine', () => {
       duration_s: 10,
       cost_usd: 0,
       caveats: 0,
+      product_score_authority: 'insufficient',
+      evidence_confidence: { score: 0.38, level: 'low' },
       goals_attempted: 7,
       goals_verified: 7,
       goals_total: 7,
@@ -70,7 +72,13 @@ describe('buildSummaryLine', () => {
         unsupported_drafts_discarded: number;
       };
       evidence?: unknown;
+      product_score_authority: string;
+      evidence_confidence: { score: number; level: string };
+      threshold_passed: boolean;
     };
+    expect(parsed.product_score_authority).toBe('insufficient');
+    expect(parsed.threshold_passed).toBe(false);
+    expect(parsed.evidence_confidence).toEqual({ score: 0.38, level: 'low' });
     expect(parsed.scenario_evidence).toEqual({
       verified: 6,
       verified_kept: 6,

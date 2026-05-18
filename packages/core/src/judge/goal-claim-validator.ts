@@ -21,7 +21,11 @@
 // The adapter contract picks the artifacts; the validator picks the verdict.
 
 import type { OutcomeContract, OutcomeContractTraceEvent } from '@iris/adapter-types';
-import { scenarioProofVisibleTextTokens } from '../scenario/scenario-data.js';
+import {
+  scenarioEvidenceSatisfiesToken,
+  scenarioProofVisibleTextTokens,
+  selectProductUseJobForGoal,
+} from '../scenario/scenario-data.js';
 import { resolveTraceRefTypo } from '../trace/ref-resolver.js';
 import type { TraceEvent } from '../trace/schema.js';
 import type { JudgeOutput } from './judge.js';
@@ -130,10 +134,18 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
       statusInfo,
       fallbackWindow: window,
     });
+    const scenarioProofWindow = scenarioProofWindowForCitedEvidence({
+      trace,
+      traceIndexById,
+      citedRefs: citedSet,
+      statusInfo,
+      fallbackWindow: productUseWindow,
+    });
     const productUseCheck = evaluateProductUseContract({
       goal: g,
       trace,
       goalWindow: productUseWindow,
+      scenarioProofWindow,
       statusRationale,
     });
     if (!productUseCheck.ok) {
@@ -165,9 +177,7 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
     ];
     const uniqueArtifacts = uniqueArtifactsByRef(artifacts);
     const cited = uniqueArtifacts.some((a) => citedSet.has(a.ref));
-    const explicitlyIncomplete = wasPartial
-      ? hasExplicitIncompleteProofLanguage(`${notes}\n${statusRationale}`)
-      : false;
+    const explicitlyIncomplete = hasExplicitIncompleteProofLanguage(`${notes}\n${statusRationale}`);
     const hasSideEffectOnly =
       !cited &&
       ((g.notes && SIDE_EFFECT_PATTERNS.some((p) => p.test(g.notes ?? ''))) ||
@@ -177,10 +187,19 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
         uniqueArtifacts.length === 0);
 
     if (cited) {
+      if (explicitlyIncomplete) {
+        if (wasPartial) return keepPartial('partial explicitly reported incomplete proof');
+        downgraded++;
+        const reason = `${g.id}: explicit incomplete-proof language vetoed verified claim`;
+        reasons.push(reason);
+        const caveat = '[goal-claim validator: incomplete proof explicitly reported]';
+        return {
+          ...g,
+          status: 'partial' as const,
+          notes: appendValidationNote(g.notes, caveat),
+        };
+      }
       if (wasPartial) {
-        if (explicitlyIncomplete) {
-          return keepPartial('partial explicitly reported incomplete proof');
-        }
         return keepPartial('partial claim preserved; validator does not upgrade partial claims');
       }
       verifiedKept++;
@@ -288,8 +307,6 @@ interface ProductUseContractLike {
   user_jobs?: ProductUseJobLike[];
 }
 
-const PRODUCT_USE_CITATION_LOOKBACK_EVENTS = 80;
-
 function productUseWindowForCitedEvidence(input: {
   trace: TraceEvent[];
   traceIndexById: Map<string, number>;
@@ -300,15 +317,25 @@ function productUseWindowForCitedEvidence(input: {
   if (!input.statusInfo || input.citedRefs.size === 0) return input.fallbackWindow;
   const statusInfo = input.statusInfo;
   const citedIndices = Array.from(input.citedRefs)
+    .filter((ref) =>
+      citedEvidenceBelongsToGoal({
+        trace: input.trace,
+        traceIndexById: input.traceIndexById,
+        ref,
+        statusInfo,
+        goalId: statusInfo.goal_id,
+      }),
+    )
     .map((ref) => input.traceIndexById.get(ref))
     .filter((idx): idx is number => idx !== undefined && idx <= statusInfo.idx);
   if (citedIndices.length === 0) return input.fallbackWindow;
-  const maxCitedIdx = Math.max(...citedIndices);
-  const start = Math.max(0, maxCitedIdx - PRODUCT_USE_CITATION_LOOKBACK_EVENTS);
-  const citationWindow = input.trace
-    .slice(start, maxCitedIdx + 1)
-    .filter((event) => sessionIdOf(event) === statusInfo.session_id)
-    .map(toContractEvent);
+  const citationWindow = citedIndices.flatMap((citedIdx) => {
+    const start = startAfterPreviousGoalStatus(input.trace, citedIdx, statusInfo.session_id);
+    return input.trace
+      .slice(start, citedIdx + 1)
+      .filter((event) => sessionIdOf(event) === statusInfo.session_id)
+      .map(toContractEvent);
+  });
   if (citationWindow.length === 0) return input.fallbackWindow;
 
   const out: OutcomeContractTraceEvent[] = [];
@@ -321,17 +348,113 @@ function productUseWindowForCitedEvidence(input: {
   return out;
 }
 
+function scenarioProofWindowForCitedEvidence(input: {
+  trace: TraceEvent[];
+  traceIndexById: Map<string, number>;
+  citedRefs: Set<string>;
+  statusInfo: GoalStatusInfo | undefined;
+  fallbackWindow: OutcomeContractTraceEvent[];
+}): OutcomeContractTraceEvent[] {
+  if (!input.statusInfo || input.citedRefs.size === 0) return input.fallbackWindow;
+  const statusInfo = input.statusInfo;
+  const citedWindow = Array.from(input.citedRefs)
+    .filter((ref) =>
+      citedEvidenceBelongsToGoal({
+        trace: input.trace,
+        traceIndexById: input.traceIndexById,
+        ref,
+        statusInfo,
+        goalId: statusInfo.goal_id,
+      }),
+    )
+    .map((ref) => input.traceIndexById.get(ref))
+    .filter((idx): idx is number => idx !== undefined && idx <= statusInfo.idx)
+    .map((idx) => input.trace[idx])
+    .filter((event): event is TraceEvent =>
+      Boolean(event && sessionIdOf(event) === statusInfo.session_id),
+    )
+    .map(toContractEvent);
+  return citedWindow.length > 0 ? citedWindow : input.fallbackWindow;
+}
+
+function citedEvidenceBelongsToGoal(input: {
+  trace: TraceEvent[];
+  traceIndexById: Map<string, number>;
+  ref: string;
+  statusInfo: GoalStatusInfo;
+  goalId: string;
+}): boolean {
+  const idx = input.traceIndexById.get(input.ref);
+  if (idx === undefined || idx > input.statusInfo.idx) return false;
+  const event = input.trace[idx];
+  if (!event || sessionIdOf(event) !== input.statusInfo.session_id) return false;
+  for (let i = 0; i <= input.statusInfo.idx; i++) {
+    const candidate = input.trace[i];
+    if (!candidate || candidate.kind !== 'goal_status') continue;
+    if (sessionIdOf(candidate) !== input.statusInfo.session_id) continue;
+    const payload = (candidate.payload ?? {}) as Record<string, unknown>;
+    const candidateGoalId = String(payload.id ?? '');
+    if (candidateGoalId === input.goalId) continue;
+    const evidenceEventIds = Array.isArray(payload.evidence_event_ids)
+      ? payload.evidence_event_ids
+      : [];
+    if (evidenceEventIds.some((ref) => ref === input.ref)) return false;
+    const candidateOrder = input.statusInfo.goal_order_by_id.get(candidateGoalId);
+    const candidateEvidenceBeforeRef =
+      evidenceEventIds
+        .map((ref) => (typeof ref === 'string' ? input.traceIndexById.get(ref) : undefined))
+        .filter((candidateIdx): candidateIdx is number => candidateIdx !== undefined)
+        .every((candidateIdx) => candidateIdx < idx) && evidenceEventIds.length > 0;
+    if (
+      idx < i &&
+      candidateOrder !== undefined &&
+      candidateOrder < input.statusInfo.goal_order &&
+      !candidateEvidenceBeforeRef
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function startAfterPreviousGoalStatus(
+  trace: TraceEvent[],
+  citedIdx: number,
+  sessionId: string,
+): number {
+  const citedStep = trace[citedIdx]?.step;
+  for (let idx = citedIdx - 1; idx >= 0; idx--) {
+    const event = trace[idx];
+    if (!event || sessionIdOf(event) !== sessionId) continue;
+    if (event.kind === 'goal_status') {
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      if (payload.auto_cutover === true) continue;
+      if (typeof citedStep === 'number' && event.step >= citedStep) continue;
+      return idx + 1;
+    }
+  }
+  return 0;
+}
+
 function evaluateProductUseContract(input: {
   goal: JudgeOutput['spec_compliance']['goals'][number];
   trace: TraceEvent[];
   goalWindow: OutcomeContractTraceEvent[];
+  scenarioProofWindow?: OutcomeContractTraceEvent[];
   statusRationale: string;
 }): { ok: true } | { ok: false; reason: string } {
   const contract = latestProductUseContract(input.trace);
   if (!contract) return { ok: true };
   const discoveryGoal = latestDiscoveryGoal(input.trace, input.goal.id);
-  const job = productUseJobForGoal(contract, input.goal, discoveryGoal?.journey_id);
-  if (!job) return { ok: true };
+  const jobMatch = productUseJobForGoal(contract, input.goal, discoveryGoal);
+  if (jobMatch.kind === 'ambiguous') {
+    return {
+      ok: false,
+      reason: `product-use contract ambiguous for ${jobMatch.jobs.length} same-journey jobs`,
+    };
+  }
+  if (jobMatch.kind === 'none') return { ok: true };
+  const job = jobMatch.job;
   const loop = productUseValueLoopForJob(contract, job);
   const jobActions = job.required_actions ?? [];
   const requiredActions = requiredActionsForProductUseJob({
@@ -372,7 +495,7 @@ function evaluateProductUseContract(input: {
   if (!materiality.ok) return materiality;
   const scenarioProof = evaluateScenarioSpecificProof({
     job,
-    goalWindow: input.goalWindow,
+    goalWindow: input.scenarioProofWindow ?? input.goalWindow,
   });
   if (!scenarioProof.ok) return scenarioProof;
   return { ok: true };
@@ -384,11 +507,38 @@ function requiredActionsForProductUseJob(input: {
   actions: string[];
 }): string[] {
   const jobIntentText = specificProductUseJobIntent(input.job, input.loop);
-  if (isArtifactMediaImportJob(jobIntentText)) {
-    return input.actions.filter((action) => !isGenericArtifactRevisionRequirement(action));
+  const actions = dedupeEquivalentRequiredActions(input.actions);
+  if (isDataGridProductUseJob(jobIntentText)) {
+    return actions.filter((action) => !isGenericDataGridRequirement(action));
   }
-  if (!isArtifactStateRevisionJob(jobIntentText)) return input.actions;
-  return input.actions.filter((action) => !isGenericArtifactCompositionRequirement(action));
+  if (isArtifactMediaImportJob(jobIntentText)) {
+    return actions.filter((action) => !isGenericArtifactRevisionRequirement(action));
+  }
+  if (!isArtifactStateRevisionJob(jobIntentText)) return actions;
+  return actions.filter((action) => !isGenericArtifactCompositionRequirement(action));
+}
+
+function dedupeEquivalentRequiredActions(actions: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const action of actions) {
+    const key = requiredActionEquivalenceKey(action);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(action);
+  }
+  return out;
+}
+
+function requiredActionEquivalenceKey(action: string): string {
+  const text = normalizeText(action);
+  if (
+    /\b(click|press|submit|calculate)\b/.test(text) &&
+    /\b(calculate|submit|result)\b/.test(text)
+  ) {
+    return 'calculator-submit';
+  }
+  return text;
 }
 
 function specificProductUseJobIntent(
@@ -406,6 +556,21 @@ function specificProductUseJobIntent(
       ...(job.quality_bar ?? []),
       ...(job.acceptable_evidence ?? []),
     ].join(' '),
+  );
+}
+
+function isDataGridProductUseJob(text: string): boolean {
+  return /\b(data ?table|data ?grid|table|rows?|columns?|entries|pagination|page length|sort|filter|search)\b/.test(
+    text,
+  );
+}
+
+function isGenericDataGridRequirement(action: string): boolean {
+  const text = normalizeText(action);
+  return (
+    /\bapply a table search sort page length pagination grouping or row detail control\b/.test(
+      text,
+    ) || /\binspect the resulting table rows count order or detail state\b/.test(text)
   );
 }
 
@@ -461,26 +626,30 @@ function latestDiscoveryGoal(
   return undefined;
 }
 
+type ProductUseJobMatch =
+  | { kind: 'matched'; job: ProductUseJobLike }
+  | { kind: 'ambiguous'; jobs: ProductUseJobLike[] }
+  | { kind: 'none' };
+
 function productUseJobForGoal(
   contract: ProductUseContractLike,
   goal: JudgeOutput['spec_compliance']['goals'][number],
-  journeyId: string | undefined,
-): ProductUseJobLike | undefined {
+  discoveryGoal: { id?: string; journey_id?: string; description?: string } | undefined,
+): ProductUseJobMatch {
+  const description = [goal.description, discoveryGoal?.description].filter(Boolean).join('\n');
   const jobs = contract.user_jobs ?? [];
-  if (journeyId) {
-    const byJourney = jobs.find((job) => job.journey_id === journeyId);
-    if (byJourney) return byJourney;
-  }
-  const normalizedGoal = normalizeText(`${goal.id} ${goal.description}`);
-  return jobs.find((job) => {
-    const candidate = normalizeText(
-      `${job.id ?? ''} ${job.title ?? ''} ${job.expected_artifact ?? ''}`,
-    );
-    return (
-      candidate.length > 0 &&
-      (normalizedGoal.includes(candidate) || candidate.includes(normalizedGoal.slice(0, 80)))
-    );
+  const matched = selectProductUseJobForGoal(jobs, {
+    id: goal.id,
+    description,
+    journey_id: discoveryGoal?.journey_id,
   });
+  if (matched) return { kind: 'matched', job: matched };
+  const sameJourneyJobs = discoveryGoal?.journey_id
+    ? jobs.filter((job) => job.journey_id === discoveryGoal.journey_id)
+    : [];
+  if (sameJourneyJobs.length > 1) return { kind: 'ambiguous', jobs: sameJourneyJobs };
+  if (!discoveryGoal?.journey_id && jobs.length > 1) return { kind: 'ambiguous', jobs };
+  return { kind: 'none' };
 }
 
 function productUseValueLoopForJob(
@@ -612,18 +781,29 @@ function evaluateScenarioSpecificProof(input: {
   const requiredData = scenarioProofVisibleData(input.job);
   if (requiredData.length === 0) return { ok: true };
 
-  const observed = observedUserVisibleScenarioText(input.goalWindow);
-  if (!observed) {
+  const observed = observedScenarioEvidenceSegments(input.goalWindow);
+  if (observed.length === 0) {
     return {
       ok: false,
       reason: 'scenario-specific proof missing: no user-visible evidence text was captured',
     };
   }
-  const missing = requiredData.filter((item) => !observed.includes(normalizeText(item)));
-  if (missing.length > 0) {
+  const missing = requiredData.filter(
+    (item) =>
+      !observed.some((segment) =>
+        scenarioEvidenceSatisfiesToken(segment.visible, item, segment.structural),
+      ),
+  );
+  const hasCompleteSegment = observed.some((segment) =>
+    requiredData.every((item) =>
+      scenarioEvidenceSatisfiesToken(segment.visible, item, segment.structural),
+    ),
+  );
+  const effectiveMissing = hasCompleteSegment ? [] : missing.length > 0 ? missing : requiredData;
+  if (effectiveMissing.length > 0) {
     return {
       ok: false,
-      reason: `scenario-specific proof missing required content: ${missing.join(', ')}`,
+      reason: `scenario-specific proof missing required content: ${effectiveMissing.join(', ')}`,
     };
   }
   return { ok: true };
@@ -631,80 +811,127 @@ function evaluateScenarioSpecificProof(input: {
 
 function scenarioProofVisibleData(job: ProductUseJobLike): string[] {
   const requiredOutputData = scenarioProofVisibleTextTokens(job.required_outputs ?? []);
-  if (requiredOutputData.length > 0) return requiredOutputData;
-  return scenarioProofVisibleTextTokens(job.test_data ?? []);
+  const sortSupplement = sortProofSupplementalVisibleData(job);
+  if (requiredOutputData.length > 0)
+    return uniqueStrings([...requiredOutputData, ...sortSupplement]);
+  return uniqueStrings([...scenarioProofVisibleTextTokens(job.test_data ?? []), ...sortSupplement]);
 }
 
-function observedUserVisibleScenarioText(goalWindow: OutcomeContractTraceEvent[]): string {
-  const chunks: string[] = [];
-  for (const event of goalWindow) {
-    const payload = (event.payload ?? {}) as Record<string, unknown>;
-    if (event.kind === 'observation') {
-      chunks.push(String(payload.summary ?? ''));
-      const rich = payload.rich_content;
-      if (Array.isArray(rich)) {
-        for (const entry of rich) {
-          if (entry && typeof entry === 'object') {
-            chunks.push(String((entry as { text?: unknown }).text ?? ''));
-          }
-        }
-      }
-      const perception = payload.perception_state;
-      if (perception && typeof perception === 'object') {
-        const elements = (perception as { elements?: unknown }).elements;
-        if (Array.isArray(elements)) {
-          for (const element of elements.slice(0, 80)) {
-            if (!element || typeof element !== 'object') continue;
-            const e = element as { name?: unknown; text?: unknown };
-            chunks.push(String(e.name ?? ''));
-            chunks.push(String(e.text ?? ''));
-          }
+function sortProofSupplementalVisibleData(job: ProductUseJobLike): string[] {
+  const requirementText = normalizeText(
+    [
+      job.title ?? '',
+      job.scenario_brief ?? '',
+      ...(job.required_outputs ?? []),
+      ...(job.proof_obligations ?? []),
+      ...(job.quality_bar ?? []),
+    ].join(' '),
+  );
+  if (
+    !/\b(sort|sorted|order|ordered|monotonic|age|salary|numeric|currency)\b/.test(requirementText)
+  ) {
+    return [];
+  }
+  const testText = (job.test_data ?? []).join(' ');
+  return Array.from(testText.matchAll(/\$[\d,]+(?:\.\d+)?|\b\d{2,3}\b/g)).map((match) => match[0]);
+}
+
+function observedScenarioEvidenceSegments(
+  goalWindow: OutcomeContractTraceEvent[],
+): Array<{ visible: string; structural: string }> {
+  return goalWindow
+    .map(observedScenarioEvidenceText)
+    .filter((segment) => segment.visible.trim().length > 0 || segment.structural.trim().length > 0);
+}
+
+function observedScenarioEvidenceText(event: OutcomeContractTraceEvent): {
+  visible: string;
+  structural: string;
+} {
+  const visible: string[] = [];
+  const structural: string[] = [];
+  const payload = (event.payload ?? {}) as Record<string, unknown>;
+  if (event.kind === 'observation') {
+    visible.push(String(payload.summary ?? ''));
+    const rich = payload.rich_content;
+    if (Array.isArray(rich)) {
+      for (const entry of rich) {
+        if (entry && typeof entry === 'object') {
+          visible.push(String((entry as { text?: unknown }).text ?? ''));
         }
       }
     }
-    if (event.kind === 'action_result' && typeof payload.description === 'string') {
-      chunks.push(payload.description);
-    }
-    if (event.kind === 'probe_result') {
-      chunks.push(String(payload.probe ?? ''));
-      chunks.push(String(payload.summary ?? ''));
-      const data = payload.data;
-      if (data && typeof data === 'object') {
-        const d = data as {
-          visibleText?: unknown;
-          text_sample?: unknown;
-          outline_sample?: unknown;
-          selectors?: unknown;
-          activeElement?: unknown;
-        };
-        chunks.push(String(d.visibleText ?? ''));
-        chunks.push(String(d.text_sample ?? ''));
-        chunks.push(String(d.outline_sample ?? ''));
-        if (Array.isArray(d.selectors)) {
-          for (const selector of d.selectors.slice(0, 80)) {
-            if (!selector || typeof selector !== 'object') continue;
-            const s = selector as {
-              selector?: unknown;
-              name?: unknown;
-              text?: unknown;
-              value?: unknown;
-            };
-            chunks.push(String(s.selector ?? ''));
-            chunks.push(String(s.name ?? ''));
-            chunks.push(String(s.text ?? ''));
-            chunks.push(String(s.value ?? ''));
-          }
-        }
-        if (d.activeElement && typeof d.activeElement === 'object') {
-          const active = d.activeElement as { name?: unknown; text?: unknown; value?: unknown };
-          chunks.push(String(active.name ?? ''));
-          chunks.push(String(active.text ?? ''));
-          chunks.push(String(active.value ?? ''));
+    const perception = payload.perception_state;
+    if (perception && typeof perception === 'object') {
+      const state = perception as { elements?: unknown; url?: unknown; title?: unknown };
+      structural.push(String(state.url ?? ''));
+      structural.push(String(state.title ?? ''));
+      const elements = state.elements;
+      if (Array.isArray(elements)) {
+        for (const element of elements.slice(0, 80)) {
+          if (!element || typeof element !== 'object') continue;
+          const e = element as {
+            name?: unknown;
+            text?: unknown;
+            selector?: unknown;
+            value?: unknown;
+            role?: unknown;
+          };
+          structural.push(String(e.selector ?? ''));
+          visible.push(String(e.name ?? ''));
+          visible.push(String(e.text ?? ''));
+          structural.push(String(e.value ?? ''));
+          structural.push(String(e.role ?? ''));
         }
       }
     }
   }
-  return normalizeText(chunks.join(' '));
+  if (
+    event.kind === 'action_result' &&
+    typeof payload.description === 'string' &&
+    isPassiveEvidenceResult(payload)
+  ) {
+    visible.push(payload.description);
+  }
+  if (event.kind === 'probe_result') {
+    structural.push(String(payload.probe ?? ''));
+    visible.push(String(payload.summary ?? ''));
+    const data = payload.data;
+    if (data && typeof data === 'object') {
+      const d = data as {
+        visibleText?: unknown;
+        text_sample?: unknown;
+        outline_sample?: unknown;
+        selectors?: unknown;
+        activeElement?: unknown;
+      };
+      visible.push(String(d.visibleText ?? ''));
+      visible.push(String(d.text_sample ?? ''));
+      visible.push(String(d.outline_sample ?? ''));
+      if (Array.isArray(d.selectors)) {
+        for (const selector of d.selectors.slice(0, 80)) {
+          if (!selector || typeof selector !== 'object') continue;
+          const s = selector as {
+            selector?: unknown;
+            name?: unknown;
+            text?: unknown;
+            value?: unknown;
+          };
+          structural.push(String(s.selector ?? ''));
+          visible.push(String(s.name ?? ''));
+          visible.push(String(s.text ?? ''));
+          structural.push(String(s.value ?? ''));
+        }
+      }
+      if (d.activeElement && typeof d.activeElement === 'object') {
+        const active = d.activeElement as { name?: unknown; text?: unknown; value?: unknown };
+        visible.push(String(active.name ?? ''));
+        visible.push(String(active.text ?? ''));
+        structural.push(String(active.value ?? ''));
+      }
+    }
+  }
+  return { visible: visible.join(' '), structural: structural.join(' ') };
 }
 
 function isArtifactStateRevisionJob(text: string): boolean {
@@ -822,29 +1049,75 @@ function requiredActionsMissing(
   const normalizedRequired = requiredActions
     .map((action) => action.toLowerCase())
     .filter((action) => !isOptionalRequiredAction(action));
+  const uniqueRequired = uniqueStrings(normalizedRequired);
   const missing: string[] = [];
-  for (const required of normalizedRequired) {
+  const usedEventIndexes = new Set<number>();
+  for (const required of uniqueRequired) {
     const toolSet = requiredActionTools(required);
     if (toolSet.length === 0) continue;
-    if (!goalWindow.some((event) => successfulActionTool(event, toolSet))) missing.push(required);
+    if (!requiresDistinctActionEvent(required)) {
+      if (!goalWindow.some((event, index) => successfulActionTool(goalWindow, index, toolSet))) {
+        missing.push(required);
+      }
+      continue;
+    }
+    const matchingIndex = goalWindow.findIndex(
+      (_event, index) =>
+        !usedEventIndexes.has(index) && successfulActionTool(goalWindow, index, toolSet),
+    );
+    if (matchingIndex < 0) {
+      missing.push(required);
+      continue;
+    }
+    usedEventIndexes.add(matchingIndex);
   }
   return missing;
 }
 
+function requiresDistinctActionEvent(requiredAction: string): boolean {
+  return (
+    /\b(click|press|submit|save|confirm|export|download|publish|send)\b/.test(requiredAction) ||
+    /\b(open|activate|invoke|toggle)\b.*\b(menu|button|link|option|control)\b/.test(
+      requiredAction,
+    ) ||
+    /\b(menu|button|link|option|control)\b.*\b(open|activate|invoke|toggle)\b/.test(requiredAction)
+  );
+}
+
 function isOptionalRequiredAction(requiredAction: string): boolean {
-  return /\b(optional|optionally|if available|when available|where available|if exposed|when exposed)\b/.test(
-    requiredAction,
+  return (
+    /(^if\b)|\b(optional|optionally|if available|when available|where available|if exposed|when exposed|if needed|when needed|as needed|if necessary|when necessary)\b/.test(
+      requiredAction,
+    ) ||
+    /\bif\b.*\b(contains|present|available|needed|necessary|shown|visible|appears|exposed)\b/.test(
+      requiredAction,
+    )
   );
 }
 
 function requiredActionTools(requiredAction: string): string[] {
+  if (/\bconfirm\b/.test(requiredAction) && isPassiveConfirmAction(requiredAction)) {
+    return [];
+  }
+  if (/\b(observe|inspect|read|verify|check|view|see|show)\b/.test(requiredAction)) {
+    return [];
+  }
   if (/\b(vision[_ -]?drag|drag|draw|sketch|resize|move\s+object)\b/.test(requiredAction)) {
     return ['drag', 'vision_drag'];
   }
   if (/\b(style|color|fill|dash|stroke|size|opacity|font|align)\b/.test(requiredAction)) {
-    return ['click', 'vision_click', 'select_option', 'drag', 'vision_drag', 'press', 'key_chord'];
+    return [
+      'click',
+      'vision_click',
+      'select',
+      'select_option',
+      'drag',
+      'vision_drag',
+      'press',
+      'key_chord',
+    ];
   }
-  if (/\b(type|enter|write|text|input|query|fill)\b/.test(requiredAction)) {
+  if (/\b(type|enter|write|text|input|query|fill|search)\b/.test(requiredAction)) {
     return ['type', 'paste', 'vision_paste', 'press', 'key_chord'];
   }
   if (
@@ -920,21 +1193,52 @@ function requiredActionTools(requiredAction: string): string[] {
       'vision_click',
       'double_click',
       'vision_double_click',
+      'select',
       'select_option',
       'press',
       'key_chord',
     ];
   }
   if (/\b(filter|sort|slider|range)\b/.test(requiredAction)) {
-    return ['click', 'vision_click', 'select_option', 'drag', 'vision_drag', 'press', 'key_chord'];
+    return [
+      'click',
+      'vision_click',
+      'select',
+      'select_option',
+      'drag',
+      'vision_drag',
+      'press',
+      'key_chord',
+    ];
   }
   return [];
 }
 
-function successfulActionTool(event: OutcomeContractTraceEvent, tools: string[]): boolean {
-  if (event.kind !== 'action_result') return false;
+function isPassiveConfirmAction(requiredAction: string): boolean {
+  return /\b(that|whether|visible|appears?|shown|present|loaded|state|result|outcome|content|text)\b/.test(
+    requiredAction,
+  );
+}
+
+function successfulActionTool(
+  goalWindow: OutcomeContractTraceEvent[],
+  index: number,
+  tools: string[],
+): boolean {
+  const event = goalWindow[index];
+  if (!event) return false;
   const payload = (event.payload ?? {}) as Record<string, unknown>;
-  return payload.ok === true && tools.includes(String(payload.tool ?? ''));
+  const tool = String(payload.tool ?? '');
+  if (event.kind === 'action_result') {
+    if (payload.ok === true && tools.includes(tool)) return true;
+    return false;
+  }
+  if (event.kind !== 'action' || !tools.includes(tool)) return false;
+  return goalWindow.slice(index + 1, index + 6).some((candidate) => {
+    if (candidate.kind !== 'action_result') return false;
+    const candidatePayload = (candidate.payload ?? {}) as Record<string, unknown>;
+    return candidatePayload.ok === true && String(candidatePayload.tool ?? '') === tool;
+  });
 }
 
 function matchingWeakEvidence(weakEvidence: string[], text: string): string | undefined {
@@ -1012,6 +1316,9 @@ function normalizeText(text: string): string {
 
 interface GoalStatusInfo {
   idx: number;
+  goal_id: string;
+  goal_order: number;
+  goal_order_by_id: Map<string, number>;
   session_id: string;
   rationale: string;
 }
@@ -1022,6 +1329,7 @@ function latestGoalStatusInfo(
 ): Map<string, GoalStatusInfo> {
   const out = new Map<string, GoalStatusInfo>();
   const goalIdSet = new Set(goals.map((g) => g.id));
+  const goalOrderById = new Map(goals.map((g, index) => [g.id, index]));
   for (let i = 0; i < trace.length; i++) {
     const e = trace[i];
     if (!e || e.kind !== 'goal_status') continue;
@@ -1030,9 +1338,23 @@ function latestGoalStatusInfo(
     if (!gid || !goalIdSet.has(gid)) continue;
     const rationale =
       typeof p.rationale === 'string' && p.rationale.trim().length > 0 ? p.rationale : '';
-    out.set(gid, { idx: i, session_id: sessionIdOf(e), rationale });
+    const session_id = sessionIdOf(e);
+    out.set(gid, {
+      idx: i,
+      goal_id: gid,
+      goal_order: goalOrderById.get(gid) ?? Number.MAX_SAFE_INTEGER,
+      goal_order_by_id: goalOrderById,
+      session_id,
+      rationale,
+    });
   }
   return out;
+}
+
+function isPassiveEvidenceResult(payload: Record<string, unknown>): boolean {
+  return (
+    (payload.tool === 'screenshot' || payload.tool === 'vision_describe') && payload.ok !== false
+  );
 }
 
 function collectCitedRefs(input: {
@@ -1086,6 +1408,17 @@ function collectCitedOutcomeEvidence(input: {
     if (evidenceIdx === undefined || evidenceIdx > statusInfo.idx) continue;
     const evidenceEvent = input.trace[evidenceIdx];
     if (!evidenceEvent || sessionIdOf(evidenceEvent) !== statusInfo.session_id) continue;
+    if (
+      !citedEvidenceBelongsToGoal({
+        trace: input.trace,
+        traceIndexById: input.traceIndexById,
+        ref,
+        statusInfo,
+        goalId: input.goal.id,
+      })
+    ) {
+      continue;
+    }
     // App Server explorers can finish goals out of order and emit goal_status
     // calls in a later batch. The sequential window then excludes the cited
     // post-action observation even though the citation is valid and predates
@@ -1191,7 +1524,10 @@ export function applyGoalClaimValidationToJudgeOutput(
     result.summary.downgraded > 0 || partialUpgraded > 0 || partialKept > 0
       ? summarizeValidatedGoalStatuses(result.goals, result.summary)
       : judge.spec_compliance.summary;
-  const confidenceCaveats = [...judge.meta.confidence_caveats];
+  const baseConfidenceCaveats = judge.meta.confidence_caveats.filter(
+    (caveat) => !isGoalClaimValidationCaveat(caveat),
+  );
+  const confidenceCaveats = [...baseConfidenceCaveats];
   if (result.summary.downgraded > 0) {
     confidenceCaveats.push(
       `${result.summary.downgraded} verified goal claim(s) were downgraded by deterministic evidence validation.`,
@@ -1221,9 +1557,32 @@ export function applyGoalClaimValidationToJudgeOutput(
       confidence_caveats:
         result.summary.downgraded > 0 || partialUpgraded > 0 || partialKept > 0
           ? uniqueStrings(confidenceCaveats)
-          : judge.meta.confidence_caveats,
+          : baseConfidenceCaveats,
     },
   };
+}
+
+function isGoalClaimValidationCaveat(caveat: string): boolean {
+  const text = caveat.toLowerCase();
+  if (
+    /^\[goal-claim validator:/.test(text) ||
+    /\d+\s+verified goal claim\(s\) were downgraded by deterministic evidence validation/.test(
+      text,
+    ) ||
+    /\d+\s+partial goal claim\(s\) were upgraded after deterministic evidence validation/.test(
+      text,
+    ) ||
+    /\d+\s+partial goal claim\(s\) stayed partial after deterministic evidence validation/.test(
+      text,
+    ) ||
+    text.startsWith('goal evidence validation ')
+  ) {
+    return true;
+  }
+  return (
+    /\bg\d+\b/.test(text) &&
+    /\b(was|were)\s+(downgraded|upgraded)\s+by\s+(goal|scenario)\s+validation\b/.test(text)
+  );
 }
 
 function calibrateScoresForGoalStatuses(

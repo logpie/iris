@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  scenarioEvidenceSatisfiesToken,
   scenarioInstructionHints,
   scenarioProofVisibleTextTokens,
   scenarioVisibleDataTokens,
+  selectProductUseJobForGoal,
 } from './scenario-data.js';
 
 describe('scenarioVisibleDataTokens', () => {
@@ -217,9 +219,20 @@ describe('scenarioProofVisibleTextTokens', () => {
         'Product: Sauce Labs Backpack',
         'Sauce Labs Backpack visible in cart',
         'Search: London',
+        'London rows visible',
         '25 entries per page',
         'Showing 1 to 25 of 57 entries',
         'Sort column: Age',
+        'Employee rows reordered by Age',
+        'Employee rows with ages ordered consistently',
+        'Age column sorted',
+        'changed employee row order visible',
+        'Office London in visible rows',
+        'Salary header active sort indicator',
+        'A high salary such as $1,200,000 near the top when descending',
+        '$1,200,000 or another extreme salary depending on direction',
+        'Initial first row Airi Satou no longer proves the active order',
+        'A changed first visible employee row compared with default Airi Satou',
       ]),
     ).toEqual([
       'Products',
@@ -227,6 +240,122 @@ describe('scenarioProofVisibleTextTokens', () => {
       'London',
       'Showing 1 to 25 of 57 entries',
       'Age',
+      '$1,200,000',
     ]);
+  });
+
+  it('does not turn comparative data-grid proof prose into a literal requirement', () => {
+    expect(
+      scenarioProofVisibleTextTokens([
+        'Salary',
+        '$1,200,000 or another extreme salary depending on direction',
+        'A changed first visible employee row compared with default Airi Satou',
+        'Age column sorted',
+        'changed row order visible',
+      ]),
+    ).toEqual(['Salary', '$1,200,000']);
+  });
+});
+
+describe('scenarioEvidenceSatisfiesToken', () => {
+  it('matches approximate BMI outputs against visible result text', () => {
+    const observed =
+      'Result BMI = 29.4 kg/m2 (Overweight) BMI = 29.4 Healthy BMI range: 18.5 kg/m2 - 25 kg/m2';
+
+    expect(scenarioEvidenceSatisfiesToken(observed, 'BMI near 29.4 kg/m2')).toBe(true);
+    expect(scenarioEvidenceSatisfiesToken(observed, 'BMI near 28.1 kg/m2')).toBe(false);
+    expect(scenarioEvidenceSatisfiesToken(observed, 'Overweight category')).toBe(true);
+  });
+
+  it('uses structural unit-mode evidence instead of plain tab text', () => {
+    const visible = 'US Units Metric Units Other Units Result BMI = 29.4 kg/m2';
+    const structural = 'https://www.calculator.net/bmi-calculator.html?ctype=metric&x=Calculate';
+
+    expect(scenarioEvidenceSatisfiesToken(visible, 'Metric Units tab active', structural)).toBe(
+      true,
+    );
+    expect(scenarioEvidenceSatisfiesToken(visible, 'Other Units tab active', structural)).toBe(
+      false,
+    );
+  });
+
+  it('does not accept static BMI category table copy as a result category', () => {
+    const staticTable =
+      'BMI table for adults Classification BMI range Normal 18.5 - 25 Overweight 25 - 30';
+
+    expect(scenarioEvidenceSatisfiesToken(staticTable, 'Overweight category')).toBe(false);
+  });
+
+  it('does not let structural metadata satisfy generic visible-proof text', () => {
+    expect(
+      scenarioEvidenceSatisfiesToken(
+        '',
+        'Checkout complete',
+        'https://example.test/checkout-complete',
+      ),
+    ).toBe(false);
+    expect(
+      scenarioEvidenceSatisfiesToken('', 'Save', 'button.save[data-testid="save-button"]'),
+    ).toBe(false);
+  });
+
+  it('limits approximate numeric matching to BMI-labeled requirements', () => {
+    expect(scenarioEvidenceSatisfiesToken('Total: $29.50 Tax: $2.10', 'Total near 29.4')).toBe(
+      false,
+    );
+  });
+});
+
+describe('selectProductUseJobForGoal', () => {
+  const jobs = [
+    {
+      id: 'PU1',
+      title: 'Filter the employee table to London rows',
+      journey_id: 'J1',
+      scenario_brief: 'Use table Search to filter the employee grid for London office rows.',
+      required_outputs: ['London', 'filtered from 57 total entries'],
+    },
+    {
+      id: 'PU2',
+      title: 'Sort employees by age',
+      journey_id: 'J1',
+      scenario_brief: 'Sort the employee table by Age in ascending order.',
+      required_outputs: ['Age', '19', '20', '21'],
+    },
+    {
+      id: 'PU3',
+      title: 'Change page length and move to the next page',
+      journey_id: 'J1',
+      scenario_brief: 'Change page length to 25 entries and navigate to page 2.',
+      required_outputs: ['25 entries per page', 'Showing 26 to 50 of 57 entries'],
+    },
+  ];
+
+  it('does not treat journey_id as a unique product-use job id', () => {
+    expect(
+      selectProductUseJobForGoal(jobs, {
+        id: 'G2',
+        description: 'Clear filters, sort the employee table by Age, and verify ascending ages.',
+        journey_id: 'J1',
+      })?.id,
+    ).toBe('PU2');
+
+    expect(
+      selectProductUseJobForGoal(jobs, {
+        id: 'G3',
+        description: 'Set 25 entries per page, open page 2, and verify the 26 to 50 range.',
+        journey_id: 'J1',
+      })?.id,
+    ).toBe('PU3');
+  });
+
+  it('returns undefined instead of guessing when duplicate journey jobs are ambiguous', () => {
+    expect(
+      selectProductUseJobForGoal(jobs, {
+        id: 'G4',
+        description: 'Use the employee table.',
+        journey_id: 'J1',
+      }),
+    ).toBeUndefined();
   });
 });

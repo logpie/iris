@@ -42,6 +42,22 @@ describe('buildReportHtml', () => {
     expect(html).toContain('4 partial scenarios indicate Iris did not fully prove outcomes');
   });
 
+  it('uses evidence-insufficient wording instead of product-failure wording', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 4;
+    judge.meta.confidence_overall = 0.2;
+    judge.meta.confidence_caveats = ['No goal evidence was captured.'];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'load article', status: 'untested', evidence: [] },
+    ];
+
+    const html = buildReportHtml(buildReportJson({ judge, run: fakeRun(), threshold: 7 }));
+
+    expect(html).toContain('Not enough evidence');
+    expect(html).not.toContain('Needs work');
+  });
+
   it('does not show a second competing confidence percentage in caveats', () => {
     const judge = fakeJudge();
     judge.meta.confidence_overall = 0.62;

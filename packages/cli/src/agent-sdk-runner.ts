@@ -76,6 +76,12 @@ function invalidEvidenceEventIdsMessage(input: {
   return `ERROR: goal_status evidence_event_ids must cite existing accepted outcome evidence events (post-action observation, screenshot/vision_describe action_result, or post-action/post-explorer probe_result). ${parts.join('; ')}.`;
 }
 
+function partialRationaleClaimsGateCouldNotVerify(rationale: string): boolean {
+  return /\b(completion gate|gate|checklist|could not see|couldn t see|cannot see|can't see|truncat|not accepted|not visibly confirmed|not visible|missing exact|exact .* not)\b/i.test(
+    rationale,
+  );
+}
+
 async function runSdkIteratorWithTimeout(
   q: SdkQueryHandle,
   label: string,
@@ -989,6 +995,18 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           },
           async (args) => {
             const evidenceEventIds = args.evidence_event_ids ?? [];
+            if (!goalLedger.has(args.id)) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `ERROR: unknown goal_status id "${args.id}". Use one of the active Iris goal ids: ${[
+                      ...goalLedger.keys(),
+                    ].join(', ')}.`,
+                  },
+                ],
+              };
+            }
             if (args.status === 'verified' && evidenceEventIds.length === 0) {
               return {
                 content: [
@@ -1000,7 +1018,9 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
               };
             }
             if (evidenceEventIds.length > 0) {
-              const evidenceCheck = scenarioGate.checkEvidenceEventIds(evidenceEventIds);
+              const evidenceCheck = scenarioGate.checkEvidenceEventIds(evidenceEventIds, {
+                goalId: args.id,
+              });
               if (!evidenceCheck.ok) {
                 return {
                   content: [
@@ -1020,6 +1040,24 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
                     {
                       type: 'text' as const,
                       text: `ERROR: scenario completion gate rejected verified for ${args.id}. Cited evidence is missing required visible output(s): ${check.missing.join('; ')}. Required checklist: ${check.required.join('; ')}. Repair the product state and call observe/vision_describe, then cite that evidence; otherwise mark the goal partial with evidence.`,
+                    },
+                  ],
+                };
+              }
+            }
+            if (
+              args.status === 'partial' &&
+              scenarioGate.enabled &&
+              evidenceEventIds.length > 0 &&
+              partialRationaleClaimsGateCouldNotVerify(args.rationale)
+            ) {
+              const check = scenarioGate.check(args.id, evidenceEventIds);
+              if (check.ok) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `ERROR: scenario completion gate accepts the cited evidence for ${args.id}; do not mark this partial because the required visible outputs are present. Call goal_status again with status="verified" and the same evidence_event_ids.`,
                     },
                   ],
                 };
@@ -1053,11 +1091,19 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
               };
             }
             const entry = goalLedger.get(args.id);
-            if (entry) {
-              entry.status = args.status;
-              entry.rationale = args.rationale;
-              entry.evidence_event_ids = evidenceEventIds;
+            if (!entry) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `ERROR: goal_status id "${args.id}" disappeared before it could be recorded.`,
+                  },
+                ],
+              };
             }
+            entry.status = args.status;
+            entry.rationale = args.rationale;
+            entry.evidence_event_ids = evidenceEventIds;
             // Phase 12: reset the per-goal cutover counter so the next
             // pending goal gets a fresh budget.
             turnsOnCurrentGoal = 0;

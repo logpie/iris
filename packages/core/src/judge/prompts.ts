@@ -48,6 +48,7 @@ For each verified goal, evidence MUST include at least one of these — citing o
 - The trace event id of a screenshot action_result taken AFTER the interaction.
 
 In the trace digest, OBSERVATION lines start with the kind word "observation" and include a text snippet. action_result lines for vision_describe include a quoted vision="..." snippet. Cite those ids, not the action ids or goal_status ids.
+OBSERVATION lines may include an outcome="..." excerpt that preserves result text, table rows, or implementation/code snippets from later in the page after the short prefix is clipped. Check that excerpt before declaring required content missing.
 
 When a goal_status trace line includes evidence=[...], treat those ids as the Explorer's intended outcome evidence for that goal. For verified goals, copy those ids into the goal's evidence array when they are post-action observation/screenshot/vision_describe ids. Do not replace them with similar-looking observations from another parallel session.
 
@@ -226,9 +227,9 @@ function summarizeEvent(e: TraceEvent): string {
       // claims about typed text. The legacy summary truncation at 120 chars
       // missed all rich content — caused the Dillinger false-failure.
       const ref = String(p.ref ?? '');
-      const summary = String(p.summary ?? '')
-        .slice(0, 200)
-        .replace(/\n/g, ' ');
+      const fullSummary = String(p.summary ?? '');
+      const summary = clip(fullSummary, 320);
+      const outcome = observationOutcomeExcerpt(fullSummary);
       const rich = Array.isArray(p.rich_content) ? p.rich_content : [];
       let richSnippet = '';
       if (rich.length > 0) {
@@ -241,7 +242,8 @@ function summarizeEvent(e: TraceEvent): string {
           .join(' ');
         richSnippet = ` rich=${parts.slice(0, 1200)}`;
       }
-      return `ref=${ref} ${summary}${richSnippet}`;
+      const outcomeSnippet = outcome ? ` outcome="${clip(outcome, 900)}"` : '';
+      return `ref=${ref} ${summary}${outcomeSnippet}${richSnippet}`;
     }
     case 'action': {
       const tool = String(p.tool ?? 'unknown');
@@ -264,7 +266,8 @@ function summarizeEvent(e: TraceEvent): string {
       const evidence = Array.isArray(p.evidence_event_ids)
         ? ` evidence=[${p.evidence_event_ids.map(String).join(',')}]`
         : '';
-      return `${String(p.id ?? '')} → ${String(p.status ?? '')} ${p.auto_cutover ? '(auto-cutover)' : ''}${evidence} "${String(p.rationale ?? '').slice(0, 100)}"`;
+      const goalId = String(p.id ?? p.goal_id ?? '');
+      return `${goalId} → ${String(p.status ?? '')} ${p.auto_cutover ? '(auto-cutover)' : ''}${evidence} "${clip(String(p.rationale ?? ''), 500)}"`;
     }
     case 'interaction_kit': {
       const prims = Array.isArray(p.primitives) ? p.primitives : [];
@@ -310,15 +313,29 @@ function summarizeProductUseContractForDigest(contract: unknown, payload?: unkno
   const parts: string[] = [];
   const kinds = stringArray(contract.product_kinds).slice(0, 5);
   if (kinds.length > 0) parts.push(`kinds=${kinds.join(',')}`);
-  const primary = stringValue(contract.primary_value_loop);
+  const selectedJourneyIds = selectedJourneyIdsForDigest(payload);
+  const selectedJobsForDigest = prioritizeProductUseJobsForDigest(
+    Array.isArray(contract.user_jobs) ? contract.user_jobs : [],
+    selectedJourneyIds,
+  );
+  const primary =
+    selectedJourneyIds.size > 0 && selectedJobsForDigest.length > 0
+      ? selectedJobsForDigest
+          .map((job) =>
+            isRecord(job)
+              ? stringValue(job.scenario_brief) || stringValue(job.title) || stringValue(job.id)
+              : '',
+          )
+          .filter(Boolean)
+          .slice(0, 3)
+          .join('; ')
+      : stringValue(contract.primary_value_loop);
   if (primary) parts.push(`primary="${clip(primary, 140)}"`);
-  const artifacts = stringArray(contract.core_artifacts).slice(0, 5);
+  const artifacts = coreArtifactsForDigest(contract, selectedJourneyIds).slice(0, 5);
   if (artifacts.length > 0)
     parts.push(`artifacts=[${artifacts.map((item) => clip(item, 60)).join('; ')}]`);
 
-  const userJobs = Array.isArray(contract.user_jobs) ? contract.user_jobs : [];
-  const selectedJourneyIds = selectedJourneyIdsForDigest(payload);
-  const jobs = prioritizeProductUseJobsForDigest(userJobs, selectedJourneyIds)
+  const jobs = selectedJobsForDigest
     .slice(0, 8)
     .map((job) => summarizeProductUseJobForDigest(job))
     .filter(Boolean)
@@ -326,7 +343,11 @@ function summarizeProductUseContractForDigest(contract: unknown, payload?: unkno
   if (jobs) parts.push(`user_jobs=[${jobs}]`);
 
   const loops = Array.isArray(contract.value_loops) ? contract.value_loops : [];
-  const loopSummary = loops
+  const loopSummary = prioritizeValueLoopsForDigest(
+    loops,
+    selectedJobsForDigest,
+    selectedJourneyIds,
+  )
     .slice(0, 4)
     .map((loop) => {
       if (!isRecord(loop)) return '';
@@ -341,6 +362,27 @@ function summarizeProductUseContractForDigest(contract: unknown, payload?: unkno
   if (loopSummary) parts.push(`value_loops=[${loopSummary}]`);
 
   return parts.length > 0 ? `product_use_contract{${parts.join(' ')}}` : '';
+}
+
+function coreArtifactsForDigest(
+  contract: Record<string, unknown>,
+  selectedJourneyIds: Set<string>,
+): string[] {
+  if (selectedJourneyIds.size > 0) {
+    const selectedJobs = (Array.isArray(contract.user_jobs) ? contract.user_jobs : [])
+      .filter((job) => {
+        if (!isRecord(job)) return false;
+        const journey = stringValue(job.journey_id);
+        return Boolean(journey && selectedJourneyIds.has(journey));
+      })
+      .flatMap((job) => {
+        if (!isRecord(job)) return [];
+        return [stringValue(job.expected_artifact), ...stringArray(job.required_outputs)];
+      });
+    const selectedArtifacts = uniqueStrings(selectedJobs);
+    if (selectedArtifacts.length > 0) return selectedArtifacts;
+  }
+  return stringArray(contract.core_artifacts);
 }
 
 function selectedJourneyIdsForDigest(payload: unknown): Set<string> {
@@ -363,13 +405,26 @@ function prioritizeProductUseJobsForDigest(
 ): unknown[] {
   if (selectedJourneyIds.size === 0) return jobs;
   const selected: unknown[] = [];
-  const other: unknown[] = [];
   for (const job of jobs) {
     const journey = isRecord(job) ? stringValue(job.journey_id) : '';
     if (journey && selectedJourneyIds.has(journey)) selected.push(job);
-    else other.push(job);
   }
-  return selected.length > 0 ? selected : other;
+  return selected;
+}
+
+function prioritizeValueLoopsForDigest(
+  loops: unknown[],
+  selectedJobs: unknown[],
+  selectedJourneyIds: Set<string>,
+): unknown[] {
+  if (selectedJourneyIds.size === 0) return loops;
+  const selectedLoopIds = new Set(
+    selectedJobs
+      .map((job) => (isRecord(job) ? stringValue(job.value_loop_id) : ''))
+      .filter(Boolean),
+  );
+  if (selectedLoopIds.size === 0) return [];
+  return loops.filter((loop) => isRecord(loop) && selectedLoopIds.has(stringValue(loop.id)));
 }
 
 function summarizeProductUseJobForDigest(job: unknown): string {
@@ -410,6 +465,87 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const key = value.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
 function clip(value: string, max: number): string {
   return value.slice(0, max).replace(/\s+/g, ' ');
+}
+
+function observationOutcomeExcerpt(summary: string): string {
+  const lines = summary
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return '';
+
+  const selected = new Set<number>();
+  lines.forEach((line, index) => {
+    if (!isOutcomeLine(line)) return;
+    const dataGridSummary = isDataGridSummaryLine(line);
+    const start = Math.max(0, index - (dataGridSummary ? 25 : 1));
+    const end = Math.min(lines.length - 1, index + (dataGridSummary ? 3 : 12));
+    for (let i = start; i <= end; i++) selected.add(i);
+  });
+
+  if (selected.size === 0) return '';
+  const out: string[] = [];
+  for (const index of Array.from(selected).sort((a, b) => a - b)) {
+    const line = lines[index];
+    if (!line || isLowSignalObservationLine(line)) continue;
+    if (out[out.length - 1] === line) continue;
+    out.push(line);
+  }
+  return out.join(' | ');
+}
+
+function isOutcomeLine(line: string): boolean {
+  return (
+    /^results?$/i.test(line) ||
+    /^results?\b/i.test(line) ||
+    /\bBMI\s*=/i.test(line) ||
+    /\bHealthy BMI range\b/i.test(line) ||
+    isDataGridSummaryLine(line) ||
+    isImplementationEvidenceLine(line) ||
+    /\b(?:success|saved|created|added|updated|deleted|uploaded|downloaded|exported)\b/i.test(
+      line,
+    ) ||
+    /\b(?:cart|checkout|order|subtotal|total)\b/i.test(line) ||
+    /\b(?:error|invalid|required|failed)\b/i.test(line)
+  );
+}
+
+function isDataGridSummaryLine(line: string): boolean {
+  return /\bShowing\s+\d+\s+to\s+\d+\s+of\s+\d+\s+entries\b/i.test(line);
+}
+
+function isImplementationEvidenceLine(line: string): boolean {
+  return (
+    /\b(?:javascript|html|css)\b.*\b(?:shown below|used to initialise|raw html|code|snippet|initiali[sz]er|implementation|library files)\b/i.test(
+      line,
+    ) ||
+    /\bnew\s+[A-Z][A-Za-z0-9_]*\s*\(/.test(line) ||
+    /\$\(['"][^'"]+['"]\)\.DataTable\s*\(/.test(line) ||
+    /<\s*(?:table|thead|tbody|tr|th|td)\b/i.test(line) ||
+    /https?:\/\/\S+\.(?:js|css)\b/i.test(line)
+  );
+}
+
+function isLowSignalObservationLine(line: string): boolean {
+  return (
+    /^##\s+/i.test(line) ||
+    /^\d+$/.test(line) ||
+    /^sign in$/i.test(line) ||
+    /^home\b/i.test(line) ||
+    /^print$/i.test(line)
+  );
 }

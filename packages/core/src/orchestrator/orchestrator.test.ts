@@ -163,8 +163,10 @@ describe('Orchestrator', () => {
       no_html: false,
     });
 
-    expect(r.exit_code).toBe(0);
+    expect(r.exit_code).toBe(1);
     expect(r.report.headline.score).toBe(7.5);
+    expect(r.report.headline.threshold_passed).toBe(false);
+    expect(r.report.evaluation?.product_score.authority).toBe('insufficient');
     expect(existsSync(join(dir, 'report.json'))).toBe(true);
     expect(existsSync(join(dir, 'report.md'))).toBe(true);
     expect(existsSync(join(dir, 'report.html'))).toBe(true);

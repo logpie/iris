@@ -5,7 +5,11 @@
 
 import { z } from 'zod';
 import type { LlmClient } from '../llm/client.js';
-import { scenarioInstructionHints, scenarioVisibleDataTokens } from '../scenario/scenario-data.js';
+import {
+  scenarioInstructionHints,
+  scenarioVisibleDataTokens,
+  selectProductUseJobForGoal,
+} from '../scenario/scenario-data.js';
 import { DISCOVERY_SYSTEM, DISCOVERY_USER_TEMPLATE } from './prompts.js';
 
 export const DiscoveryGoalClassSchema = z.enum([
@@ -255,34 +259,46 @@ function normalizeDiscoveryOutput(
   sourceText: string,
   surveySurfaces: DiscoverySurface[] = [],
 ): DiscoveryOutput {
-  const surfaces = normalizeDiscoverySurfaces(
+  const surfaceNormalization = normalizeDiscoverySurfaces(
     mergeModelAndSurveySurfaces(out.surfaces, surveySurfaces),
   );
-  const rawJourneys = attachPageContextSurfaces(
-    normalizeDiscoveryJourneys(
-      out.journeys.length > 0 ? out.journeys : synthesizeJourneysFromGoals(out.goals, surfaces),
-      surfaces,
-    ),
-    surfaces,
+  const surfaces = surfaceNormalization.items;
+  const journeySource =
+    out.journeys.length > 0
+      ? remapJourneySurfaceRefs(out.journeys, surfaceNormalization.idMap)
+      : synthesizeJourneysFromGoals(
+          remapGoalRefs(out.goals, surfaceNormalization.idMap, new Map()),
+          surfaces,
+        );
+  const journeyNormalization = normalizeDiscoveryJourneys(journeySource, surfaces);
+  const remappedOut = remapDiscoveryOutputRefs(
+    out,
+    surfaceNormalization.idMap,
+    journeyNormalization.idMap,
   );
+  const rawJourneys = attachPageContextSurfaces(journeyNormalization.items, surfaces);
   let productUseContract = normalizeProductUseContract(
-    out.product_use_contract,
+    remappedOut.product_use_contract,
     rawJourneys,
     surfaces,
   );
   let journeys = normalizeJourneyMateriality(rawJourneys, surfaces, productUseContract);
   journeys = ensureArtifactEditorCapabilityJourneys(journeys, surfaces, productUseContract);
   journeys = ensureJourneysForUnlinkedProductUseJobs(journeys, surfaces, productUseContract);
-  productUseContract = normalizeProductUseContract(out.product_use_contract, journeys, surfaces);
+  productUseContract = normalizeProductUseContract(
+    remappedOut.product_use_contract,
+    journeys,
+    surfaces,
+  );
   journeys = normalizeJourneyMateriality(journeys, surfaces, productUseContract);
   let coveragePlan = normalizeDiscoveryCoveragePlan(
-    out.coverage_plan,
+    remappedOut.coverage_plan,
     journeys,
     surfaces,
     productUseContract,
   );
   const initialCapabilities = normalizeDiscoveryCapabilities(
-    out.capabilities,
+    remappedOut.capabilities,
     productUseContract,
     journeys,
     surfaces,
@@ -298,7 +314,11 @@ function normalizeDiscoveryOutput(
   });
   if (capabilityRepair.added_journey_ids.length > 0) {
     journeys = capabilityRepair.journeys;
-    productUseContract = normalizeProductUseContract(out.product_use_contract, journeys, surfaces);
+    productUseContract = normalizeProductUseContract(
+      remappedOut.product_use_contract,
+      journeys,
+      surfaces,
+    );
     journeys = normalizeJourneyMateriality(journeys, surfaces, productUseContract);
     coveragePlan = normalizeDiscoveryCoveragePlan(
       {
@@ -314,22 +334,31 @@ function normalizeDiscoveryOutput(
             ...capabilityRepair.added_journey_ids,
           ]),
         ],
-        rationale: appendCoverageRationale(
-          coveragePlan?.rationale ?? '',
-          capabilityRepair.added_capability_labels,
-        ),
+        rationale: coveragePlan?.rationale ?? '',
       },
       journeys,
       surfaces,
       productUseContract,
     );
+    const selectedAfterRepair = new Set(coveragePlan?.selected_journey_ids ?? []);
+    const keptRepairLabels = capabilityRepair.added_journey_ids.some((id) =>
+      selectedAfterRepair.has(id),
+    )
+      ? capabilityRepair.added_capability_labels
+      : [];
+    if (coveragePlan && keptRepairLabels.length > 0) {
+      coveragePlan = {
+        ...coveragePlan,
+        rationale: appendCoverageRationale(coveragePlan.rationale, keptRepairLabels),
+      };
+    }
   }
   const goals: DiscoveryGoal[] = [];
   const seenDescriptions = new Set<string>();
   const selectedJourneyIds = new Set(coveragePlan?.selected_journey_ids ?? []);
   const structured = journeys.length > 0;
 
-  for (const goal of out.goals) {
+  for (const goal of remappedOut.goals) {
     const key = discoveryGoalKey(goal);
     if (seenDescriptions.has(key)) continue;
     seenDescriptions.add(key);
@@ -341,6 +370,7 @@ function normalizeDiscoveryOutput(
       alignGoalDescriptionWithJourney(attached, journey, productUseContract),
       productUseContract,
     );
+    if (hasAmbiguousMultiJobJourney(productUseContract, aligned)) continue;
     const goalClass =
       aligned.goal_class ?? journey?.goal_class ?? classifyStandaloneGoal(aligned, surfaces);
     if (structured) {
@@ -354,16 +384,37 @@ function normalizeDiscoveryOutput(
     for (const journey of journeys) {
       if (!selectedJourneyIds.has(journey.id)) continue;
       if (!isSeedGoalClass(journey.goal_class ?? 'peripheral')) continue;
+      const journeyJobs = productUseJobsForJourney(productUseContract, journey.id);
+      if (journeyJobs.length > 1) {
+        for (const [index, job] of journeyJobs.entries()) {
+          const alreadyCovered = goals.some((goal) => {
+            if (goal.journey_id !== journey.id) return false;
+            return selectProductUseJobForGoal(productUseContract?.user_jobs, goal)?.id === job.id;
+          });
+          if (alreadyCovered) continue;
+          const baseGoal: DiscoveryGoal = {
+            id: `synth-${job.id || `${journey.id}-${index + 1}`}`,
+            description: goalDescriptionForProductUseJob(job),
+            priority: job.risk === 'high' || journey.priority === 'must' ? 'must' : 'should',
+            journey_id: journey.id,
+            surface_ids: journey.surface_ids,
+            goal_class: journey.goal_class,
+          };
+          goals.push(baseGoal);
+        }
+        continue;
+      }
       if (goals.some((goal) => goal.journey_id === journey.id)) continue;
-      const job = productUseJobForJourney(productUseContract, journey.id);
-      goals.push({
+      const job = journeyJobs[0];
+      const baseGoal: DiscoveryGoal = {
         id: `synth-${journey.id}`,
         description: goalDescriptionForJourney(journey, job),
         priority: journey.priority === 'must' ? 'must' : 'should',
         journey_id: journey.id,
         surface_ids: journey.surface_ids,
         goal_class: journey.goal_class,
-      });
+      };
+      goals.push(baseGoal);
     }
   }
 
@@ -383,7 +434,7 @@ function normalizeDiscoveryOutput(
   const dedupedGoals = dedupeDiscoveryGoalsByScenarioFamily(goals, productUseContract);
   const finalGoals = dedupedGoals.map((goal, index) => ({ ...goal, id: `G${index + 1}` }));
   const capabilities = normalizeDiscoveryCapabilities(
-    out.capabilities,
+    remappedOut.capabilities,
     productUseContract,
     journeys,
     surfaces,
@@ -423,7 +474,9 @@ function closeDiscoveryCapabilityGaps(input: {
   const addedJourneyIds: string[] = [];
   const addedCapabilityLabels: string[] = [];
   for (const capability of capabilityGapsWorthPlanning(input.capabilities, productKinds)) {
-    if (capabilityAlreadySelected(capability, out, selectedJourneyIds)) continue;
+    if (capabilityAlreadySelected(capability, out, selectedJourneyIds, input.productUseContract)) {
+      continue;
+    }
     const existingGapJourneyIds = capability.journey_ids.filter((journeyId) => {
       const journey = out.find((candidate) => candidate.id === journeyId);
       return journey && !selectedJourneyIds.has(journeyId)
@@ -439,7 +492,7 @@ function closeDiscoveryCapabilityGaps(input: {
       continue;
     }
     const surfaceIds = selectSurfacesForCapabilityGap(capability, input.surfaces);
-    if (surfaceIds.length === 0 && capability.importance !== 'core') continue;
+    if (surfaceIds.length === 0) continue;
     const gapJourney = journeyForCapabilityGap({
       capability,
       surfaces: input.surfaces,
@@ -487,7 +540,8 @@ function capabilityGapsWorthPlanning(
       if (isSupportWorkflowForConcreteProduct(capabilityText, productKinds)) return false;
       if (
         capability.product_kind === 'developer_documentation' &&
-        hasConcreteWorkflowProductKind(productKinds)
+        hasConcreteWorkflowProductKind(productKinds) &&
+        !isImplementationCodeWorkflowForDeveloperExample(capabilityText, productKinds)
       ) {
         return false;
       }
@@ -518,6 +572,7 @@ function capabilityAlreadySelected(
   capability: DiscoveryCapability,
   journeys: DiscoveryJourney[],
   selectedJourneyIds: Set<string>,
+  productUseContract: ProductUseContract | undefined,
 ): boolean {
   if (
     isCalculatorResultCapability(capability) ||
@@ -539,12 +594,22 @@ function capabilityAlreadySelected(
     }
   }
   if (isDataGridFilterCapability(capability) || isDataGridSortPageCapability(capability)) {
+    const selectedText = selectedJourneyAndJobText(
+      journeys,
+      selectedJourneyIds,
+      productUseContract,
+    );
+    if (isDataGridFilterCapability(capability)) return dataGridFilterCoveredByText(selectedText);
+    return dataGridSortPageCoveredByText(selectedText);
+  }
+  if (isContentToolsCapability(capability)) {
     const selectedText = journeys
       .filter((journey) => selectedJourneyIds.has(journey.id))
       .map(journeyScenarioText)
       .join(' ');
-    if (isDataGridFilterCapability(capability)) return dataGridFilterCoveredByText(selectedText);
-    return dataGridSortPageCoveredByText(selectedText);
+    return /\b(language|translate|edit|history|talk)\b/.test(
+      normalizeTextForMatching(selectedText),
+    );
   }
   if (coverageGapIndicatesUncovered(capability.coverage_gap)) return false;
   if (capability.journey_ids.some((journeyId) => selectedJourneyIds.has(journeyId))) return true;
@@ -552,6 +617,31 @@ function capabilityAlreadySelected(
     if (!selectedJourneyIds.has(journey.id)) return false;
     return capabilityMatchesText(capabilityToSeed(capability), journeyScenarioText(journey));
   });
+}
+
+function selectedJourneyAndJobText(
+  journeys: DiscoveryJourney[],
+  selectedJourneyIds: Set<string>,
+  productUseContract: ProductUseContract | undefined,
+): string {
+  const journeyText = journeys
+    .filter((journey) => selectedJourneyIds.has(journey.id))
+    .map(journeyScenarioText);
+  const jobText = (productUseContract?.user_jobs ?? [])
+    .filter((job) => job.journey_id && selectedJourneyIds.has(job.journey_id))
+    .map((job) =>
+      [
+        job.title,
+        job.scenario_brief,
+        job.expected_artifact,
+        ...job.required_actions,
+        ...job.proof_obligations,
+        ...job.test_data,
+        ...job.required_outputs,
+        ...job.quality_bar,
+      ].join(' '),
+    );
+  return [...journeyText, ...jobText].join(' ');
 }
 
 function isCalculatorResultCapability(capability: DiscoveryCapability): boolean {
@@ -629,6 +719,11 @@ function isDataGridSortPageCapability(capability: DiscoveryCapability): boolean 
   return /\b(sort|order|column|page length|entries per page|pagination|next|previous|row range)\b/.test(
     text,
   );
+}
+
+function isContentToolsCapability(capability: DiscoveryCapability): boolean {
+  if (capability.product_kind !== 'search_content') return false;
+  return normalizeTextForMatching(capability.label) === 'use visible content tools';
 }
 
 function dataGridFilterCoveredByText(text: string): boolean {
@@ -742,6 +837,9 @@ function journeyForCapabilityGap(input: {
     useScaffold && scaffold.scenarioBrief
       ? scaffold.scenarioBrief
       : capabilitySpecificSuggestedGoal(input.capability, surfaceText);
+  if (!useScaffold && isGenericCapabilityExerciseGoal(suggestedGoal, input.capability)) {
+    return undefined;
+  }
   const evidence = uniqueNonEmptyStrings([
     ...(useScaffold ? scaffold.requiredOutputs : []),
     ...(useScaffold ? scaffold.proofObligations : []),
@@ -766,6 +864,17 @@ function journeyForCapabilityGap(input: {
       evidence.length > 0 ? evidence : ['post-action evidence showing the product outcome'],
     risk: input.capability.importance === 'core' ? 'high' : 'medium',
   };
+}
+
+function isGenericCapabilityExerciseGoal(goal: string, capability: DiscoveryCapability): boolean {
+  if (!/^Exercise\b/i.test(goal.trim())) return false;
+  const text = normalizeTextForMatching(
+    [capability.label, capability.denominator_reason, capability.coverage_gap].join(' '),
+  );
+  return (
+    /\b(authenticated shopping surface|shopping surface after login|reach and use)\b/.test(text) ||
+    /\b(browse products|product inventory|inspect details)\b/.test(text)
+  );
 }
 
 function capabilityJourneyTitle(capability: DiscoveryCapability): string {
@@ -807,6 +916,14 @@ function capabilitySpecificSuggestedGoal(
       return 'Change the table page length or pagination state and verify the displayed row range or visible rows update.';
     }
     return 'Use a data-grid control and verify the table rows, count, order, range, or detail state changes.';
+  }
+  if (capability.product_kind === 'commerce_checkout') {
+    if (/\b(locked|blocked|denial|error|login|log in|sign in|auth)\b/.test(text)) {
+      return 'Attempt the named login or account state and verify the visible authenticated destination or blocked-account error.';
+    }
+    if (/\b(product|catalog|inventory|item|cart|checkout|order)\b/.test(surfaceText)) {
+      return 'Reach the product inventory, item detail, cart, or checkout surface and verify product or order content is visible.';
+    }
   }
   if (/\b(section|contents|toc|anchor|reference|citation|related|pagination)\b/.test(text)) {
     return 'Use the visible content navigation such as contents, section anchors, citations, related links, or pagination and verify the destination content or heading changes.';
@@ -889,7 +1006,7 @@ function normalizeProductUseContract(
       const linkedJourneyId =
         declaredJourneyId && journeyIds.has(declaredJourneyId)
           ? declaredJourneyId
-          : matchingProductUseJobJourneyId(job, journeys) || declaredJourneyId;
+          : matchingProductUseJobJourneyId(job, journeys);
       const normalizedJob: ProductUseJob = {
         ...rest,
         id: job.id || `PU${index + 1}`,
@@ -929,16 +1046,7 @@ function matchingProductUseJobJourneyId(
   job: ProductUseJob,
   journeys: DiscoveryJourney[],
 ): string | undefined {
-  const jobText = normalizeTextForMatching(
-    [
-      job.title,
-      job.scenario_brief,
-      job.expected_artifact,
-      ...job.required_actions,
-      ...job.proof_obligations,
-      ...job.acceptable_evidence,
-    ].join(' '),
-  );
+  const jobText = normalizeTextForMatching(productUseJobSearchText(job));
   if (!jobText) return undefined;
   const jobTitle = normalizeTextForMatching(job.title);
   for (const journey of journeys) {
@@ -953,9 +1061,24 @@ function matchingProductUseJobJourneyId(
     const tokens = importantGoalTokens(jobText).filter((token) => token !== 'canvas');
     if (tokens.length === 0) continue;
     const shared = tokens.filter((token) => journeyText.includes(token));
-    if (shared.length >= Math.min(2, tokens.length)) return journey.id;
+    const requiredShared = Math.max(3, Math.min(4, Math.ceil(tokens.length * 0.6)));
+    if (shared.length >= requiredShared) return journey.id;
   }
   return undefined;
+}
+
+function productUseJobSearchText(job: ProductUseJob): string {
+  return [
+    job.title,
+    job.scenario_brief,
+    job.expected_artifact,
+    ...job.required_actions,
+    ...job.proof_obligations,
+    ...job.acceptable_evidence,
+    ...job.required_outputs,
+    ...job.quality_bar,
+    ...job.weak_evidence,
+  ].join(' ');
 }
 
 function normalizeProductUseValueLoops(
@@ -1053,7 +1176,7 @@ function deriveProductUseJobFromJourney(
     ...scaffold.proofObligations,
   ].join(' ');
   const useScaffold =
-    (isArtifactEditorProduct(productKinds) || !hasSpecificJourneyScenario(journey)) &&
+    (isArtifactEditorProduct(productKinds) || !hasSpecificJourneyScenario(journey, productKinds)) &&
     scaffoldCoversAnchor(
       [journey.title, journey.user_intent, journey.suggested_goal].join(' '),
       scaffoldText,
@@ -1087,7 +1210,10 @@ function deriveProductUseJobFromJourney(
   };
 }
 
-function hasSpecificJourneyScenario(journey: DiscoveryJourney): boolean {
+function hasSpecificJourneyScenario(
+  journey: DiscoveryJourney,
+  productKinds: ProductKind[],
+): boolean {
   const text = normalizeTextForMatching(
     [
       journey.title,
@@ -1097,6 +1223,13 @@ function hasSpecificJourneyScenario(journey: DiscoveryJourney): boolean {
     ].join(' '),
   );
   if (!text) return false;
+  if (
+    (productKinds.includes('search_content') || productKinds.includes('content_site')) &&
+    /\b(history|revision|provenance|edit|talk|language|translate|localized)\b/.test(text) &&
+    /\b(article|content|page|destination|entries|current)\b/.test(text)
+  ) {
+    return true;
+  }
   const generic = new Set([
     'create',
     'created',
@@ -1363,14 +1496,24 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
     !/\b(create.*artifact|create.*board|meaningful|composed)\b/.test(text) &&
     (!artifactCreationLike ||
       /\b(existing|select|selected|restyle|emphasize|priority)\b/.test(text));
-  const settingsTermLike =
-    /\b(preferences?|configure|configuration|language|shortcuts?|manual|help|page menu|minimap|theme)\b/.test(
+  const implementationConfigurationLike =
+    /\b(zero configuration|configuration example|implementation|code|snippet|source|docs?|documentation|manual|guide)\b/.test(
       text,
-    ) ||
-    /\b(adjust|open|configure|visit|reach|inspect|set)\b.{0,60}\bsettings?\b/.test(text) ||
-    /\bsettings?\s+(surface|panel|destination|state|change|option|menu|utility|utilities)\b/.test(
+    ) && !/\bsettings?\b/.test(text);
+  const styleToolSettingsLike =
+    /\b(tool\/settings|tool settings|chosen tool settings|chosen tool\/settings|object styling reflects the chosen tool)\b/.test(
       text,
     );
+  const settingsTermLike =
+    !implementationConfigurationLike &&
+    !styleToolSettingsLike &&
+    (/\b(preferences?|settings?|configure (?:settings?|preferences?|options?)|language|shortcuts?|page menu|minimap|theme)\b/.test(
+      text,
+    ) ||
+      /\b(adjust|open|configure|visit|reach|inspect|set)\b.{0,60}\bsettings?\b/.test(text) ||
+      /\bsettings?\s+(surface|panel|destination|state|change|option|menu|utility|utilities)\b/.test(
+        text,
+      ));
   const settingsLike =
     !exportLike &&
     !shareLike &&
@@ -1389,6 +1532,7 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
   const dataGridLike = productKinds.includes('data_grid') || isDataGridProductText(text);
   const dashboardLike = productKinds.includes('dashboard_filtering');
   const dashboardViewControlLike = isDashboardViewControlText(text);
+  const dataGridViewControlLike = isDataGridViewControlText(text);
   const commerceLike = productKinds.includes('commerce_checkout');
 
   if (artifactEditor && exportLike) {
@@ -1791,7 +1935,8 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
       },
     );
   }
-  if (dataGridLike && dashboardViewControlLike) {
+  if (dataGridLike && dataGridViewControlLike) {
+    const scenario = dataGridConcreteScenario(text);
     return withScenario(
       {
         requiredActions: [
@@ -1811,10 +1956,10 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
         ],
       },
       {
-        scenarioTitle: 'Change the data grid with a real control',
-        scenarioBrief:
-          'Apply a table search, sort, page length, pagination, grouping, or row-detail control and verify row, count, order, or detail output changes.',
-        requiredOutputs: ['changed table rows, count, order, range, or detail state'],
+        scenarioTitle: scenario.scenarioTitle,
+        scenarioBrief: scenario.scenarioBrief,
+        testData: scenario.testData,
+        requiredOutputs: scenario.requiredOutputs,
         qualityBar: [
           'the grid data must change; a focused input or open dropdown alone is weak evidence',
         ],
@@ -1871,6 +2016,70 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
   });
 }
 
+function dataGridConcreteScenario(text: string): ScenarioFields {
+  if (/\bage\b/.test(text) && /\b(sort|sortable|order|column)\b/.test(text)) {
+    return {
+      scenarioTitle: 'Sort the table by age',
+      scenarioBrief:
+        'Sort the Age column and verify the visible row order changes according to age values.',
+      testData: ['Sort column: Age'],
+      requiredOutputs: ['Age column sorted', 'changed row order visible'],
+      qualityBar: [],
+    };
+  }
+  if (
+    /\b(salary|currency|numeric|number)\b/.test(text) &&
+    /\b(sort|sortable|order|column)\b/.test(text)
+  ) {
+    return {
+      scenarioTitle: 'Sort the table by a numeric column',
+      scenarioBrief:
+        'Sort a numeric or currency column and verify the visible row order changes according to those values.',
+      testData: [],
+      requiredOutputs: ['changed row order visible'],
+      qualityBar: [],
+    };
+  }
+  if (/\b(page length|entries per page|entries[- ]per[- ]page)\b/.test(text)) {
+    const pageLength = pageLengthOptionFromText(text);
+    return {
+      scenarioTitle: 'Change the table page length',
+      scenarioBrief:
+        'Change the entries-per-page control and verify the displayed row range or number of visible rows updates.',
+      testData: pageLength ? [`Page length option: ${pageLength}`] : [],
+      requiredOutputs: ['changed page length or row range visible'],
+      qualityBar: [],
+    };
+  }
+  if (/\blondon\b/.test(text)) {
+    return {
+      scenarioTitle: 'Filter the table by a visible value',
+      scenarioBrief:
+        'Search the table for "London" and verify London rows plus the filtered entry count or range are visible.',
+      testData: ['Search query: London'],
+      requiredOutputs: ['London', 'filtered entry count or range visible'],
+      qualityBar: [],
+    };
+  }
+  return {
+    scenarioTitle: 'Change the data grid with a real control',
+    scenarioBrief:
+      'Apply a table search, sort, page length, pagination, grouping, or row-detail control and verify row, count, order, or detail output changes.',
+    testData: [],
+    requiredOutputs: ['changed table rows, count, order, range, or detail state'],
+    qualityBar: [],
+  };
+}
+
+function pageLengthOptionFromText(text: string): string | undefined {
+  const nearLabel = text.match(
+    /\b(?:page length|entries per page|entries[- ]per[- ]page)\D{0,30}(\d{1,3})\b/,
+  );
+  if (nearLabel?.[1]) return nearLabel[1];
+  const entryCount = text.match(/\b(10|25|50|100)\s+(?:entries|rows)\b/);
+  return entryCount?.[1];
+}
+
 function isGenericProductUseTitle(title: string): boolean {
   const text = normalizeTextForMatching(title);
   if (!text) return true;
@@ -1897,6 +2106,32 @@ function isDashboardViewControlText(text: string): boolean {
   return /\b(filter|search|sort|page length|entries per page|pagination|drill|drilldown|data view|dashboard view|date range|segment|facet|pivot|grouping|column control|view control)\b/i.test(
     text,
   );
+}
+
+function isDataGridViewControlText(text: string): boolean {
+  const normalized = normalizeTextForMatching(text);
+  if (!isDashboardViewControlText(normalized)) return false;
+  const dataGridSpecific =
+    /\b(table|grid|datatable|data table|rows?|entries|columns?|page length|pagination|row range|employee table)\b/.test(
+      normalized,
+    );
+  if (!dataGridSpecific) return false;
+  const documentationLike =
+    /\b(header search|site search|docs?|documentation|manual|reference|implementation|code|snippet|source|example)\b/.test(
+      normalized,
+    );
+  const liveGridLike =
+    /\b(live|interactive|in[- ]table|visible)\b.{0,50}\b(table|grid|datatable|data table|rows?|entries|columns?)\b/.test(
+      normalized,
+    ) ||
+    /\b(table|grid|datatable|data table|rows?|entries|columns?)\b.{0,50}\b(live|interactive|in[- ]table|visible)\b/.test(
+      normalized,
+    ) ||
+    /\b(employee table|table search input|entries[- ]per[- ]page selector|sortable .{0,24} column|age column)\b/.test(
+      normalized,
+    );
+  const docsOnly = documentationLike && !liveGridLike;
+  return !docsOnly;
 }
 
 function isCalculatorProductText(text: string): boolean {
@@ -1968,6 +2203,20 @@ function normalizeContractProductKinds(
     inferredKinds.push('developer_documentation');
   }
   nonUnknownKinds = uniqueNonEmptyStrings([...nonUnknownKinds, ...inferredKinds]) as ProductKind[];
+  const concreteCalculatorEvidence = hasConcreteCalculatorEvidence(
+    [contract.primary_value_loop, ...contract.core_artifacts, materialSurfaceText].join(' '),
+  );
+  if (
+    nonUnknownKinds.includes('calculator_tool') &&
+    !concreteCalculatorEvidence &&
+    nonUnknownKinds.some((kind) =>
+      ['data_grid', 'developer_documentation', 'dashboard_filtering', 'search_content'].includes(
+        kind,
+      ),
+    )
+  ) {
+    nonUnknownKinds = nonUnknownKinds.filter((kind) => kind !== 'calculator_tool');
+  }
   if (nonUnknownKinds.includes('calculator_tool')) {
     nonUnknownKinds = nonUnknownKinds.filter(
       (kind) =>
@@ -2019,6 +2268,12 @@ function normalizeContractProductKinds(
         hasOtherPrimary: hasOtherPrimary(kind),
       });
     }
+    if (kind === 'data_grid') {
+      return shouldKeepDataGridKind({
+        supportText,
+        hasOtherPrimary: hasOtherPrimary(kind),
+      });
+    }
     if (isSupportingProductKind(kind) && primaryKinds.length > 0) {
       return false;
     }
@@ -2029,6 +2284,36 @@ function normalizeContractProductKinds(
   const fallback =
     nonUnknownKinds.find((kind) => !isSupportingProductKind(kind)) ?? nonUnknownKinds[0];
   return fallback ? [fallback] : ['unknown'];
+}
+
+function hasConcreteCalculatorEvidence(text: string): boolean {
+  const normalized = normalizeTextForMatching(text);
+  return /\b(calculator|bmi|mortgage|loan|payment|amortization|calorie|bmr|converter|conversion|height|weight|body mass|interest rate)\b/.test(
+    normalized,
+  );
+}
+
+function shouldKeepDataGridKind(input: {
+  supportText: string;
+  hasOtherPrimary: boolean;
+}): boolean {
+  const concrete = hasConcreteDataGridEvidence(input.supportText);
+  if (input.hasOtherPrimary) return concrete;
+  return concrete || productKindTextPattern('data_grid').test(input.supportText);
+}
+
+function hasConcreteDataGridEvidence(text: string): boolean {
+  const normalized = normalizeTextForMatching(text);
+  const explicitGrid =
+    /\b(data grid|datatable|data table|employee table|entries per page|page length|row range)\b/.test(
+      normalized,
+    );
+  const tableLike = /\b(table|grid|rows?|entries|columns?)\b/.test(normalized);
+  const controlLike =
+    /\b(search field|table search|filter input|column sort|sortable|sortable column|sort column|pagination|next page|previous page|entries per page|page length|showing \d+)\b/.test(
+      normalized,
+    );
+  return explicitGrid || (tableLike && controlLike);
 }
 
 function isProductKindEvidenceSurface(surface: DiscoverySurface): boolean {
@@ -2200,42 +2485,137 @@ function mergeModelAndSurveySurfaces(
   return [...modelSurfaces, ...surveySurfaces];
 }
 
-function normalizeDiscoverySurfaces(surfaces: DiscoverySurface[]): DiscoverySurface[] {
-  const seen = new Set<string>();
+interface IdNormalization<T> {
+  items: T[];
+  idMap: Map<string, string>;
+}
+
+function normalizeDiscoverySurfaces(
+  surfaces: DiscoverySurface[],
+): IdNormalization<DiscoverySurface> {
+  const canonicalIdByKey = new Map<string, string>();
   const usedIds = new Set<string>();
   const out: DiscoverySurface[] = [];
+  const idMap = new Map<string, string>();
   for (const surface of surfaces) {
     const key = `${surface.kind}|${surface.url}|${surface.label.toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const id = usedIds.has(surface.id) ? `S${out.length + 1}` : surface.id;
+    const canonicalId = canonicalIdByKey.get(key);
+    if (canonicalId) {
+      if (!idMap.has(surface.id)) idMap.set(surface.id, canonicalId);
+      continue;
+    }
+    const id = usedIds.has(surface.id) ? nextSyntheticId('S', usedIds, out.length + 1) : surface.id;
     usedIds.add(id);
+    canonicalIdByKey.set(key, id);
+    if (!idMap.has(surface.id)) idMap.set(surface.id, id);
     out.push({ ...surface, id });
   }
-  return out;
+  return { items: out, idMap };
 }
 
 function normalizeDiscoveryJourneys(
   journeys: DiscoveryJourney[],
   surfaces: DiscoverySurface[],
-): DiscoveryJourney[] {
+): IdNormalization<DiscoveryJourney> {
   const surfaceIds = new Set(surfaces.map((surface) => surface.id));
-  const seen = new Set<string>();
+  const canonicalIdByKey = new Map<string, string>();
   const usedIds = new Set<string>();
   const out: DiscoveryJourney[] = [];
+  const idMap = new Map<string, string>();
   for (const journey of journeys) {
     const key = journey.suggested_goal.toLowerCase().replace(/\s+/g, ' ').trim();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const id = usedIds.has(journey.id) ? `J${out.length + 1}` : journey.id;
+    const canonicalId = canonicalIdByKey.get(key);
+    if (canonicalId) {
+      if (!idMap.has(journey.id)) idMap.set(journey.id, canonicalId);
+      continue;
+    }
+    const id = usedIds.has(journey.id) ? nextSyntheticId('J', usedIds, out.length + 1) : journey.id;
     usedIds.add(id);
+    canonicalIdByKey.set(key, id);
+    if (!idMap.has(journey.id)) idMap.set(journey.id, id);
     out.push({
       ...journey,
       id,
       surface_ids: journey.surface_ids.filter((id) => surfaceIds.has(id)),
     });
   }
-  return out;
+  return { items: out, idMap };
+}
+
+function nextSyntheticId(prefix: string, usedIds: Set<string>, start: number): string {
+  let index = Math.max(1, start);
+  while (usedIds.has(`${prefix}${index}`)) index++;
+  return `${prefix}${index}`;
+}
+
+function remapDiscoveryOutputRefs(
+  out: DiscoveryOutput,
+  surfaceIdMap: Map<string, string>,
+  journeyIdMap: Map<string, string>,
+): DiscoveryOutput {
+  const coveragePlan = out.coverage_plan
+    ? {
+        ...out.coverage_plan,
+        selected_journey_ids: remapUniqueIds(out.coverage_plan.selected_journey_ids, journeyIdMap),
+        deferred_surface_ids: remapUniqueIds(out.coverage_plan.deferred_surface_ids, surfaceIdMap),
+      }
+    : undefined;
+  const productUseContract = out.product_use_contract
+    ? {
+        ...out.product_use_contract,
+        user_jobs: out.product_use_contract.user_jobs.map((job) => {
+          const journeyId = job.journey_id ? remapId(job.journey_id, journeyIdMap) : undefined;
+          return {
+            ...job,
+            ...(journeyId ? { journey_id: journeyId } : {}),
+          };
+        }),
+      }
+    : undefined;
+  return {
+    ...out,
+    goals: remapGoalRefs(out.goals, surfaceIdMap, journeyIdMap),
+    capabilities: out.capabilities.map((capability) => ({
+      ...capability,
+      journey_ids: remapUniqueIds(capability.journey_ids, journeyIdMap),
+      surface_ids: remapUniqueIds(capability.surface_ids, surfaceIdMap),
+    })),
+    ...(coveragePlan ? { coverage_plan: coveragePlan } : {}),
+    ...(productUseContract ? { product_use_contract: productUseContract } : {}),
+  };
+}
+
+function remapJourneySurfaceRefs(
+  journeys: DiscoveryJourney[],
+  surfaceIdMap: Map<string, string>,
+): DiscoveryJourney[] {
+  return journeys.map((journey) => ({
+    ...journey,
+    surface_ids: remapUniqueIds(journey.surface_ids, surfaceIdMap),
+  }));
+}
+
+function remapGoalRefs(
+  goals: DiscoveryGoal[],
+  surfaceIdMap: Map<string, string>,
+  journeyIdMap: Map<string, string>,
+): DiscoveryGoal[] {
+  return goals.map((goal) => {
+    const journeyId = goal.journey_id ? remapId(goal.journey_id, journeyIdMap) : undefined;
+    return {
+      ...goal,
+      ...(journeyId ? { journey_id: journeyId } : {}),
+      surface_ids: remapUniqueIds(goal.surface_ids, surfaceIdMap),
+    };
+  });
+}
+
+function remapUniqueIds(values: string[], idMap: Map<string, string>): string[] {
+  return uniqueNonEmptyStrings(values.map((value) => remapId(value, idMap)));
+}
+
+function remapId(value: string, idMap: Map<string, string>): string {
+  return idMap.get(value) ?? value;
 }
 
 function attachPageContextSurfaces(
@@ -2286,8 +2666,12 @@ function normalizeDiscoveryCoveragePlan(
   if (!plan && journeys.length === 0 && surfaces.length === 0) return undefined;
   const journeyIds = new Set(journeys.map((journey) => journey.id));
   const surfaceIds = new Set(surfaces.map((surface) => surface.id));
+  const productKinds = normalizedProductKinds(productUseContract);
   const contractJourneyIds = new Set(
     productUseContract?.user_jobs
+      .filter(
+        (job) => !isSupportWorkflowForConcreteProduct(productUseJobSearchText(job), productKinds),
+      )
       .map((job) => job.journey_id)
       .filter((id): id is string => Boolean(id)) ?? [],
   );
@@ -2298,7 +2682,15 @@ function normalizeDiscoveryCoveragePlan(
       : journeys.filter((j) => j.priority !== 'could').map((j) => j.id);
   const requiredSelection = journeys
     .filter((journey) => journey.priority !== 'could')
-    .filter((journey) => journey.goal_class === 'core' || contractJourneyIds.has(journey.id))
+    .filter((journey) => {
+      const text = journeyScenarioText(journey);
+      return (
+        journey.goal_class === 'core' ||
+        contractJourneyIds.has(journey.id) ||
+        isConcreteDataGridWorkflow(text, productKinds) ||
+        isImplementationCodeWorkflowForDeveloperExample(text, productKinds)
+      );
+    })
     .map((journey) => journey.id);
   let selected_journey_ids = [...new Set([...requiredSelection, ...requestedSelection])].filter(
     (id) => {
@@ -2543,11 +2935,11 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     key: 'content.language_or_account',
     label: 'Use visible content tools',
     productKind: 'search_content',
-    importance: 'secondary',
+    importance: 'important',
     denominatorReason:
-      'Language, edit/history, or account tools are secondary content-product capabilities when visible.',
-    surfacePattern: /\b(language|translate|edit|history|talk|login|account|create account)\b/i,
-    textPattern: /\b(language|translate|edit|history|talk|login|account)\b/i,
+      'Language, edit/history, or talk tools are product-native content capabilities when visible.',
+    surfacePattern: /\b(language|translate|edit|history|talk)\b/i,
+    textPattern: /\b(language|translate|edit|history|talk)\b/i,
     requiresSurfaceMatch: true,
   },
   {
@@ -2641,7 +3033,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     importance: 'core',
     denominatorReason:
       'Data grids must prove table search/filter controls change visible rows or counts.',
-    surfacePattern: /\b(search|filter|table|rows?|data grid|datatable|entries)\b/i,
+    surfacePattern:
+      /\b(table search|search field|filter input|search input|filter control|data grid|datatable|data table)\b|\b(search|filter)\b.{0,40}\b(table|grid|rows?|entries)\b|\b(table|grid|rows?|entries)\b.{0,40}\b(search|filter)\b/i,
     textPattern: /\b(search|filter).{0,80}\b(table|rows?|entries|data grid|datatable|count)\b/i,
     requiresSurfaceMatch: true,
     requiresEvidenceAlways: true,
@@ -2654,7 +3047,7 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     denominatorReason:
       'Data grids should prove sorting, page length, pagination, or row order changes.',
     surfacePattern:
-      /\b(sort|column|pagination|page length|entries per page|next|previous|rows?)\b/i,
+      /\b(sortable|sort column|column sort|pagination|page length|entries per page|next page|previous page|row range|data grid|datatable|data table)\b|\b(sort|sortable|page length|pagination|entries per page|next page|previous page)\b.{0,40}\b(table|grid|column|rows?|entries)\b|\b(table|grid|column|rows?|entries)\b.{0,40}\b(sort|sortable|page length|pagination|entries per page|next page|previous page)\b/i,
     textPattern: /\b(sort|page length|entries per page|pagination|row order|column)\b/i,
     requiresSurfaceMatch: true,
     requiresEvidenceAlways: true,
@@ -2668,7 +3061,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
       'Developer documentation should prove users can find concrete code, API, or dependency instructions.',
     surfacePattern:
       /\b(code|snippet|javascript|html|css|api|docs?|documentation|dependency|cdn|source|example)\b/i,
-    textPattern: /\b(code|snippet|javascript|html|css|api|dependency|cdn|source|example)\b/i,
+    textPattern:
+      /\b(code|snippet|javascript|html|css|api|dependency|dependencies|cdn|source|initiali[sz]e)\b/i,
     requiresSurfaceMatch: true,
   },
   {
@@ -4044,6 +4438,12 @@ function alignGoalDescriptionWithJourney(
   productUseContract: ProductUseContract | undefined,
 ): DiscoveryGoal {
   if (
+    selectProductUseJobForGoal(productUseContract?.user_jobs, goal) &&
+    !isArtifactEditorProduct(productUseContract?.product_kinds ?? [])
+  ) {
+    return goal;
+  }
+  if (
     journey?.suggested_goal &&
     journey.suggested_goal !== goal.description &&
     shouldPreferJourneySuggestedGoal(goal.description, journey)
@@ -4069,6 +4469,15 @@ function goalDescriptionForJourney(
 ): string {
   if (!job?.scenario_brief.trim()) return journey.suggested_goal;
   return jobScenarioCoversJourney(job, journey) ? job.scenario_brief : journey.suggested_goal;
+}
+
+function goalDescriptionForProductUseJob(job: ProductUseJob): string {
+  const base =
+    job.scenario_brief.trim() ||
+    job.title.trim() ||
+    job.expected_artifact.trim() ||
+    'Use the product scenario and verify the visible outcome.';
+  return appendScenarioAcceptanceToGoal(base, job);
 }
 
 function jobScenarioCoversJourney(job: ProductUseJob, journey: DiscoveryJourney): boolean {
@@ -4100,9 +4509,7 @@ function applyScenarioBriefToGoal(
   goal: DiscoveryGoal,
   productUseContract: ProductUseContract | undefined,
 ): DiscoveryGoal {
-  const job = goal.journey_id
-    ? productUseJobForJourney(productUseContract, goal.journey_id)
-    : undefined;
+  const job = selectProductUseJobForGoal(productUseContract?.user_jobs, goal);
   if (!job?.scenario_brief.trim()) return goal;
   const description = isGenericGoalForScenarioReplacement(goal.description, job)
     ? job.scenario_brief
@@ -4114,11 +4521,21 @@ function applyScenarioBriefToGoal(
   return { ...goal, description: appendScenarioAcceptanceToGoal(relaxedDescription, job) };
 }
 
-function productUseJobForJourney(
+function productUseJobsForJourney(
   productUseContract: ProductUseContract | undefined,
   journeyId: string,
-): ProductUseJob | undefined {
-  return productUseContract?.user_jobs.find((job) => job.journey_id === journeyId);
+): ProductUseJob[] {
+  return productUseContract?.user_jobs.filter((job) => job.journey_id === journeyId) ?? [];
+}
+
+function hasAmbiguousMultiJobJourney(
+  productUseContract: ProductUseContract | undefined,
+  goal: DiscoveryGoal,
+): boolean {
+  if (!goal.journey_id) return false;
+  const journeyJobs = productUseJobsForJourney(productUseContract, goal.journey_id);
+  if (journeyJobs.length <= 1) return false;
+  return !selectProductUseJobForGoal(journeyJobs, goal);
 }
 
 function isGenericGoalForScenarioReplacement(description: string, job: ProductUseJob): boolean {
@@ -4216,11 +4633,13 @@ function dedupeDiscoveryGoalsByScenarioFamily(
   goals: DiscoveryGoal[],
   productUseContract: ProductUseContract | undefined,
 ): DiscoveryGoal[] {
-  if (!isArtifactEditorProduct(productUseContract?.product_kinds ?? [])) return goals;
   const seen = new Set<string>();
   const out: DiscoveryGoal[] = [];
   for (const goal of goals) {
-    const family = duplicateSensitiveScenarioFamily(goal, productUseContract);
+    const family =
+      duplicateSensitiveScenarioFamily(goal, productUseContract) ??
+      productUseJobScenarioFamily(goal, productUseContract) ??
+      normalizedFinalGoalFamily(goal);
     if (family && seen.has(family)) continue;
     if (family) seen.add(family);
     out.push(goal);
@@ -4228,16 +4647,30 @@ function dedupeDiscoveryGoalsByScenarioFamily(
   return out;
 }
 
+function productUseJobScenarioFamily(
+  goal: DiscoveryGoal,
+  productUseContract: ProductUseContract | undefined,
+): string | undefined {
+  const job = selectProductUseJobForGoal(productUseContract?.user_jobs, goal);
+  if (!job) return undefined;
+  return `job:${job.id}`;
+}
+
+function normalizedFinalGoalFamily(goal: DiscoveryGoal): string | undefined {
+  const text = normalizeTextForMatching(goal.description);
+  return text ? `description:${text}` : undefined;
+}
+
 function duplicateSensitiveScenarioFamily(
   goal: DiscoveryGoal,
   productUseContract: ProductUseContract | undefined,
-): ArtifactCapabilityFamily | undefined {
-  const job = goal.journey_id
-    ? productUseJobForJourney(productUseContract, goal.journey_id)
-    : undefined;
+): string | undefined {
+  const job = selectProductUseJobForGoal(productUseContract?.user_jobs, goal);
   const text = job
     ? [job.title, job.scenario_brief, job.expected_artifact, ...job.required_actions].join(' ')
     : goal.description;
+  const dataGridFamily = dataGridScenarioFamily(text);
+  if (dataGridFamily) return dataGridFamily;
   const families = artifactEditorCapabilityFamilies(normalizeTextForMatching(text));
   if (families.has('export') && isExplicitExportGoal(goal, job)) return 'export';
   if (families.has('share') && isExplicitShareGoal(goal, job)) return 'share';
@@ -4246,6 +4679,30 @@ function duplicateSensitiveScenarioFamily(
   if (family === 'export' && isExplicitExportGoal(goal, job)) return family;
   if (family === 'share' && isExplicitShareGoal(goal, job)) return family;
   if (family === 'media' && isExplicitMediaGoal(goal, job)) return family;
+  return undefined;
+}
+
+function dataGridScenarioFamily(text: string): string | undefined {
+  const normalized = normalizeTextForMatching(text);
+  if (!normalized) return undefined;
+  if (/\b(search|filter|query)\b/.test(normalized)) {
+    if (/\blondon\b/.test(normalized)) return 'data-grid:filter:london';
+    if (/\btokyo\b/.test(normalized)) return 'data-grid:filter:tokyo';
+    if (/\bsan francisco\b/.test(normalized)) return 'data-grid:filter:san-francisco';
+    return 'data-grid:filter';
+  }
+  if (
+    /\b(page length|entries per page|entries per page|pagination|page 2|next page)\b/.test(
+      normalized,
+    )
+  ) {
+    return 'data-grid:page-length';
+  }
+  if (/\b(sort|sorted|order|ordered)\b/.test(normalized)) {
+    if (/\bsalary\b/.test(normalized)) return 'data-grid:sort:salary';
+    if (/\bage\b/.test(normalized)) return 'data-grid:sort:age';
+    return 'data-grid:sort';
+  }
   return undefined;
 }
 
@@ -4379,13 +4836,14 @@ function attachDiscoveryGoalRefs(
   if (goal.surface_ids.length > 0 || journeys.length === 0) return goal;
   const normalizedGoal = goal.description.toLowerCase();
   const selected = new Set(coveragePlan?.selected_journey_ids ?? []);
+  const selectedJourneys = journeys.filter((journey) => selected.has(journey.id));
   const matchingJourney =
     journeys.find(
       (journey) =>
         normalizedGoal.includes(journey.title.toLowerCase()) ||
         journey.suggested_goal.toLowerCase().includes(normalizedGoal.slice(0, 60)) ||
         normalizedGoal.includes(journey.suggested_goal.toLowerCase().slice(0, 60)),
-    ) ?? journeys.find((journey) => selected.has(journey.id));
+    ) ?? (selectedJourneys.length === 1 ? selectedJourneys[0] : undefined);
   if (!matchingJourney) return goal;
   return {
     ...goal,
@@ -4756,8 +5214,20 @@ function classifyJourneyMateriality(
   productUseContract: ProductUseContract | undefined,
 ): DiscoveryGoalClass {
   const productKinds = productUseContract?.product_kinds ?? [];
+  if (
+    productKinds.includes('search_content') &&
+    /\b(language|translate|edit|history|talk)\b/.test(journeyScenarioText(journey))
+  ) {
+    return journey.priority === 'must' || journey.risk === 'high' ? 'core' : 'secondary_workflow';
+  }
   const contractBacked =
     productUseContract?.user_jobs.some((job) => job.journey_id === journey.id) ?? false;
+  if (
+    contractBacked &&
+    isImplementationCodeWorkflowForDeveloperExample(journeyScenarioText(journey), productKinds)
+  ) {
+    return journey.priority === 'must' || journey.risk === 'high' ? 'core' : 'secondary_workflow';
+  }
   const computed = classifyMateriality({
     priority: journey.priority,
     risk: journey.risk,
@@ -4820,6 +5290,9 @@ function classifyMateriality(input: {
     return primaryText.includes('sample') ? 'sample' : 'peripheral';
   if (isSetupText(primaryText) || (hasSetupSurface && isDismissalText(primaryText))) return 'setup';
   if (isDiagnosticText(primaryText)) return 'diagnostic';
+  if (isConcreteDataGridWorkflow(primaryText, input.productKinds)) {
+    return input.priority === 'must' || input.risk === 'high' ? 'core' : 'secondary_workflow';
+  }
   if (isSupportWorkflowForConcreteProduct(primaryText, input.productKinds)) return 'sample';
   if (
     isArtifactEditorProduct(input.productKinds) &&
@@ -4878,6 +5351,7 @@ function isSupportWorkflowForConcreteProduct(text: string, productKinds: Product
   if (!hasConcreteWorkflowProductKind(productKinds)) return false;
   if (isContentOrDocumentationFirstProduct(productKinds)) return false;
   const normalized = normalizeTextForMatching(text);
+  if (isImplementationCodeWorkflowForDeveloperExample(normalized, productKinds)) return false;
   if (
     isArtifactEditorProduct(productKinds) &&
     /\b(export|download|save|share|invite)\b/.test(normalized)
@@ -4904,6 +5378,45 @@ function isSupportWorkflowForConcreteProduct(text: string, productKinds: Product
       normalized,
     ) || /\brelated\b.{0,50}\b(calculator|example|link|page|destination)\b/.test(normalized);
   return developerReference || explanatoryReference || calculatorUtility || relatedNavigation;
+}
+
+function isImplementationCodeWorkflowForDeveloperExample(
+  text: string,
+  productKinds: ProductKind[],
+): boolean {
+  if (!productKinds.includes('developer_documentation')) return false;
+  if (!(productKinds.includes('data_grid') || productKinds.includes('developer_tool'))) {
+    return false;
+  }
+  const normalized = normalizeTextForMatching(text);
+  if (
+    /\b(manual|site search|header search|related|server side|server-side|ajax|navigate|destination|download|login|register|account|comments?)\b/.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+  return (
+    /\b(code|snippet|javascript|html|css|cdn|dependenc(?:y|ies)|implementation|initiali[sz]e|source)\b/.test(
+      normalized,
+    ) &&
+    /\b(read|inspect|open|confirm|connect|learn|copy|visible|tab|section|shown|loaded)\b/.test(
+      normalized,
+    )
+  );
+}
+
+function isConcreteDataGridWorkflow(text: string, productKinds: ProductKind[]): boolean {
+  if (!productKinds.includes('data_grid')) return false;
+  const normalized = normalizeTextForMatching(text);
+  const control =
+    /\b(search|filter|query|sort|sorted|order|column|salary|age|page length|entries per page|pagination|next|previous|page \d+|row range|showing \d+)\b/.test(
+      normalized,
+    );
+  const tableState = /\b(table|grid|datatable|rows?|entries|employees?|count|range)\b/.test(
+    normalized,
+  );
+  return control && tableState;
 }
 
 function hasConcreteWorkflowProductKind(productKinds: ProductKind[]): boolean {
@@ -5157,12 +5670,17 @@ export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
   const lowerPriorityLines: string[] = [];
   if (out.capabilities.length > 0) {
     lowerPriorityLines.push('PRODUCT CAPABILITY COVERAGE:');
+    const productKinds = normalizedProductKinds(out.product_use_contract);
     const selected = out.capabilities.filter((capability) => capability.status === 'selected');
     const gaps = out.capabilities.filter(
       (capability) =>
         capability.status !== 'selected' &&
         capability.status !== 'not_applicable' &&
-        capability.selection_expectation !== 'not_normally_tested',
+        capability.selection_expectation !== 'not_normally_tested' &&
+        !isSupportWorkflowForConcreteProduct(
+          capabilityExplorerContextText(capability),
+          productKinds,
+        ),
     );
     if (selected.length > 0) {
       lowerPriorityLines.push(
@@ -5202,7 +5720,9 @@ export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
   if (out.journeys.length > 0) {
     lowerPriorityLines.push('SELECTED JOURNEY GROUPS:');
     const selected = new Set(out.coverage_plan?.selected_journey_ids ?? []);
-    for (const journey of out.journeys.slice(0, 18)) {
+    const selectedJourneyContext =
+      selected.size > 0 ? out.journeys.filter((journey) => selected.has(journey.id)) : out.journeys;
+    for (const journey of selectedJourneyContext.slice(0, 18)) {
       const marker = selected.has(journey.id) ? 'selected' : 'deferred';
       lowerPriorityLines.push(
         `- ${journey.id} [${marker}/${journey.priority}]: ${journey.title} -> ${journey.suggested_goal}`,
@@ -5233,29 +5753,42 @@ function formatScenarioAcceptanceLines(out: DiscoveryOutput): string[] {
   if (contract.product_kinds.length > 0) {
     lines.push(`- product kinds: ${contract.product_kinds.join(', ')}`);
   }
-  if (contract.primary_value_loop) {
-    lines.push(`- primary journey: ${contract.primary_value_loop}`);
+  const selectedArtifacts = selectedCoreArtifactsForContext(out);
+  const selectedJobs = productUseJobsForExplorerContext(out);
+  const selectedLoops = valueLoopsForExplorerContext(out);
+  const hasSelectedJobContext =
+    (out.coverage_plan?.selected_journey_ids ?? []).length > 0 && selectedJobs.length > 0;
+  const primaryJourney = hasSelectedJobContext
+    ? selectedJobs
+        .map((job) => job.scenario_brief || job.title)
+        .filter(Boolean)
+        .slice(0, 3)
+        .join('; ')
+    : contract.primary_value_loop;
+  if (primaryJourney) {
+    lines.push(`- primary journey: ${primaryJourney}`);
   }
-  if (contract.core_artifacts.length > 0) {
-    lines.push(`- core artifacts/state changes: ${contract.core_artifacts.join('; ')}`);
+  if (selectedArtifacts.length > 0) {
+    lines.push(`- core artifacts/state changes: ${selectedArtifacts.join('; ')}`);
   }
-  for (const loop of contract.value_loops.slice(0, 4)) {
-    lines.push(
-      `- journey group ${loop.id}: ${loop.title}; artifact: ${loop.artifact || 'visible product outcome'}`,
-    );
-    if (loop.required_capabilities.length > 0) {
+  for (const loop of selectedLoops.slice(0, 4)) {
+    const artifact = hasSelectedJobContext
+      ? selectedArtifacts.join('; ') || loop.artifact || 'visible product outcome'
+      : loop.artifact || 'visible product outcome';
+    lines.push(`- journey group ${loop.id}: ${loop.title}; artifact: ${artifact}`);
+    if (!hasSelectedJobContext && loop.required_capabilities.length > 0) {
       lines.push(`  required capabilities: ${loop.required_capabilities.join('; ')}`);
     }
-    if (loop.proof_obligations.length > 0) {
+    if (!hasSelectedJobContext && loop.proof_obligations.length > 0) {
       lines.push(`  proof obligations: ${loop.proof_obligations.join('; ')}`);
     }
-    if (loop.weak_evidence.length > 0) {
+    if (!hasSelectedJobContext && loop.weak_evidence.length > 0) {
       lines.push(
         `  weak evidence that must NOT verify this journey: ${loop.weak_evidence.join('; ')}`,
       );
     }
   }
-  for (const job of productUseJobsForExplorerContext(out)) {
+  for (const job of selectedJobs) {
     lines.push(
       `- ${job.id}${job.journey_id ? ` (${job.journey_id})` : ''}: ${job.title}; scenario: ${job.scenario_brief || job.title}; required actions: ${job.required_actions.join(', ') || 'normal user actions'}; expected artifact/state: ${job.expected_artifact || 'visible outcome'}`,
     );
@@ -5292,8 +5825,57 @@ function productUseJobsForExplorerContext(out: DiscoveryOutput): ProductUseJob[]
   const selectedJobs = jobs.filter(
     (job) => job.journey_id && selectedJourneyIds.has(job.journey_id),
   );
+  if (selectedJourneyIds.size > 0) {
+    if (selectedJobs.length > 0) return selectedJobs.slice(0, 8);
+    const textMatchedJobs = jobs.filter((job) => {
+      const journeyId = matchingProductUseJobJourneyId(job, out.journeys);
+      return Boolean(journeyId && selectedJourneyIds.has(journeyId));
+    });
+    if (textMatchedJobs.length > 0) return textMatchedJobs.slice(0, 8);
+    const unlinkedJobs = jobs.filter((job) => !job.journey_id);
+    return (unlinkedJobs.length > 0 ? unlinkedJobs : jobs).slice(0, 8);
+  }
   if (selectedJobs.length === 0) return jobs.slice(0, 8);
   return selectedJobs.slice(0, 8);
+}
+
+function selectedCoreArtifactsForContext(out: DiscoveryOutput): string[] {
+  const contract = out.product_use_contract;
+  if (!contract) return [];
+  const selectedJobs = productUseJobsForExplorerContext(out);
+  const selectedJourneyIds = new Set(out.coverage_plan?.selected_journey_ids ?? []);
+  const selectedJobArtifacts = selectedJobs.flatMap((job) => [
+    job.expected_artifact,
+    ...job.required_outputs,
+  ]);
+  if (selectedJourneyIds.size > 0 && selectedJobArtifacts.some((item) => item.trim())) {
+    return uniqueNonEmptyStrings(selectedJobArtifacts).slice(0, 8);
+  }
+  if (selectedJourneyIds.size > 0) return [];
+  return contract.core_artifacts.slice(0, 8);
+}
+
+function valueLoopsForExplorerContext(out: DiscoveryOutput): ProductUseValueLoop[] {
+  const contract = out.product_use_contract;
+  if (!contract) return [];
+  const selectedJourneyIds = new Set(out.coverage_plan?.selected_journey_ids ?? []);
+  if (selectedJourneyIds.size === 0) return contract.value_loops;
+  const selectedJobs = productUseJobsForExplorerContext(out);
+  const selectedLoopIds = new Set(
+    selectedJobs.map((job) => job.value_loop_id).filter((id): id is string => Boolean(id)),
+  );
+  if (selectedLoopIds.size === 0) return [];
+  return contract.value_loops.filter((loop) => selectedLoopIds.has(loop.id));
+}
+
+function capabilityExplorerContextText(capability: DiscoveryCapability): string {
+  return [
+    capability.label,
+    capability.denominator_reason,
+    capability.coverage_gap,
+    capability.skip_reason ?? '',
+    ...capability.evidence,
+  ].join(' ');
 }
 
 function appendLinesWithinBudget(

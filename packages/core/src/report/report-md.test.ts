@@ -107,7 +107,7 @@ describe('buildReportMd', () => {
       { id: 'G4', description: 'export artifact', status: 'partial', evidence: ['T4'] },
     ];
     const md = buildReportMd(buildReportJson({ judge, run: fakeRun(), threshold: 7 }));
-    expect(md.split('\n')[0]).toContain('⚠');
+    expect(md.split('\n')[0]).toContain('❌');
     expect(md.split('\n')[0]).not.toContain('✅');
   });
 
@@ -180,6 +180,50 @@ describe('buildReportMd', () => {
     const md = buildReportMd(r);
     expect(md).toMatch(/Top findings/);
     expect(md).toMatch(/F-001.*Login fails/);
+  });
+
+  it('lists non-major findings instead of hiding them', () => {
+    const judge = fakeJudge();
+    judge.findings = [
+      {
+        id: 'F-minor',
+        title: 'Inline validation copy is unclear',
+        category: 'copy',
+        severity: 'minor',
+        evidence: ['T3'],
+        rationale: 'The field error is visible but vague.',
+      },
+      {
+        id: 'F-suggestion',
+        title: 'Consider a compact mode',
+        category: 'suggestion',
+        severity: 'suggestion',
+        evidence: [],
+        rationale: 'Power users may prefer denser rows.',
+      },
+    ];
+    const md = buildReportMd(buildReportJson({ judge, run: fakeRun() }));
+
+    expect(md).toMatch(/Other findings/);
+    expect(md).toContain('F-minor [minor]');
+    expect(md).toContain('F-suggestion [suggestion]');
+  });
+
+  it('does not silently truncate non-major findings', () => {
+    const judge = fakeJudge();
+    judge.findings = Array.from({ length: 12 }, (_, index) => ({
+      id: `F-minor-${index + 1}`,
+      title: `Minor finding ${index + 1}`,
+      category: 'ux' as const,
+      severity: 'minor' as const,
+      evidence: ['T3'],
+      rationale: 'A minor issue was observed.',
+    }));
+
+    const md = buildReportMd(buildReportJson({ judge, run: fakeRun() }));
+
+    expect(md).toContain('F-minor-1 [minor]');
+    expect(md).toContain('F-minor-12 [minor]');
   });
 
   it('renders scores as a markdown table', () => {

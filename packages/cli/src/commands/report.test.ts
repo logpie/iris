@@ -8,6 +8,7 @@ import {
   normalizeRevalidatedRunMetadata,
   refreshStoredReportForRender,
   resolveStoredReportThreshold,
+  revalidateStoredReport,
 } from './report.js';
 
 function fakeRun(termination: string) {
@@ -159,6 +160,90 @@ describe('findingsSnapshotFromReport', () => {
   });
 });
 
+describe('revalidateStoredReport', () => {
+  it('fails loudly when trace events or raw Judge output are unavailable', () =>
+    withTempRunDir((dir) => {
+      const report = cleanReport(8);
+
+      expect(() => revalidateStoredReport(report, undefined, dir)).toThrow(
+        'trace.jsonl is required',
+      );
+      expect(() => revalidateStoredReport(report, [], dir)).toThrow('judge.raw.txt is required');
+    }));
+
+  it('replays raw Judge output against trace statuses and corrects a stale pass', () =>
+    withTempRunDir((dir) => {
+      writeFileSync(
+        join(dir, 'config.json'),
+        `${JSON.stringify({ threshold: 5, initial_tasks: [{ description: 'first task' }] })}\n`,
+      );
+      const report = { ...cleanReport(9), threshold: 5 };
+      const rawJudge = {
+        v: 1,
+        findings: [],
+        discarded_findings: [],
+        scores: { overall: { score: 9, weighted_from: [] }, profiles: {} },
+        spec_compliance: {
+          applicable: true,
+          goals: [
+            {
+              id: 'G1',
+              description: 'first task',
+              status: 'verified',
+              evidence: ['OBS1'],
+              notes: 'Judge saw the task as complete.',
+            },
+          ],
+          summary: '1/1 verified',
+        },
+        coverage_review: { surfaces_explored: 1, surfaces_unexplored: 0, judgement: 'ok' },
+        meta: { confidence_overall: 0.9, confidence_caveats: [], would_re_explore_with: [] },
+        access_blocks: [],
+      };
+      writeFileSync(join(dir, 'judge.raw.txt'), JSON.stringify(rawJudge));
+
+      const refreshed = revalidateStoredReport(
+        report,
+        [
+          {
+            v: 1,
+            id: 'OBS2',
+            ts: 1,
+            step: 1,
+            target_kind: 'web',
+            kind: 'observation',
+            actor: 'adapter',
+            payload: { summary: 'The first task remained incomplete.' },
+          },
+          {
+            v: 1,
+            id: 'GS1',
+            ts: 2,
+            step: 2,
+            target_kind: 'web',
+            kind: 'goal_status',
+            actor: 'explorer',
+            payload: {
+              id: 'G1',
+              status: 'partial',
+              rationale: 'The first task remained incomplete.',
+              evidence_event_ids: ['OBS2'],
+            },
+          },
+        ] as never,
+        dir,
+      );
+
+      expect(refreshed.spec_compliance.goals).toHaveLength(1);
+      expect(refreshed.spec_compliance.goals[0]).toMatchObject({
+        id: 'G1',
+        status: 'partial',
+        evidence: ['OBS2'],
+      });
+      expect(refreshed.headline.threshold_passed).toBe(false);
+    }));
+});
+
 describe('stored report threshold and render refresh', () => {
   it('prefers the persisted report threshold over an older run config fallback', () =>
     withTempRunDir((dir) => {
@@ -191,6 +276,58 @@ describe('stored report threshold and render refresh', () => {
       expect(refreshed.scores.overall.score).toBe(9.1);
       expect(refreshed.headline.score).toBe(9.1);
       expect(refreshed.evaluation?.product_score.value).toBe(9.1);
+      expect(refreshed.headline.threshold_passed).toBe(false);
+    }));
+
+  it('reconciles render-only reports against latest trace goal statuses', () =>
+    withTempRunDir((dir) => {
+      writeFileSync(
+        join(dir, 'config.json'),
+        `${JSON.stringify({
+          threshold: 5,
+          initial_tasks: [{ description: 'first task' }, { description: 'second task' }],
+        })}\n`,
+      );
+      const report = { ...cleanReport(9), threshold: 5 };
+
+      const refreshed = refreshStoredReportForRender(
+        report,
+        [
+          {
+            v: 1,
+            id: 'OBS2',
+            ts: 1,
+            step: 1,
+            target_kind: 'web',
+            kind: 'observation',
+            actor: 'adapter',
+            payload: { summary: 'The first task remained incomplete.' },
+          },
+          {
+            v: 1,
+            id: 'GS1',
+            ts: 2,
+            step: 2,
+            target_kind: 'web',
+            kind: 'goal_status',
+            actor: 'explorer',
+            payload: {
+              id: 'G1',
+              status: 'partial',
+              rationale: 'The first task remained incomplete.',
+              evidence_event_ids: ['OBS2'],
+            },
+          },
+        ] as never,
+        dir,
+      );
+
+      expect(refreshed.spec_compliance.goals[0]).toMatchObject({
+        id: 'G1',
+        status: 'partial',
+        evidence: ['OBS2'],
+      });
+      expect(refreshed.headline.goals_verified).toBe(1);
       expect(refreshed.headline.threshold_passed).toBe(false);
     }));
 });

@@ -163,6 +163,19 @@ export function buildReportMd(report: ReportJson): string {
     lines.push('');
   }
 
+  const otherFindings = report.findings
+    .filter((f) => f.severity !== 'blocker' && f.severity !== 'major')
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+  if (otherFindings.length > 0) {
+    lines.push(
+      `## Other findings (${report.headline.minors} minor, ${report.headline.nits} nit${report.headline.nits === 1 ? '' : 's'}, ${report.headline.suggestions} suggestion${report.headline.suggestions === 1 ? '' : 's'})`,
+    );
+    for (const f of otherFindings) {
+      lines.push(`- **${f.id} [${f.severity}]** ${f.title}`);
+    }
+    lines.push('');
+  }
+
   lines.push('## Scores');
   lines.push('| Profile | Score |');
   lines.push('|---|---|');
@@ -228,6 +241,11 @@ function profileScoreLabel(profile: ReportJson['scores']['profiles'][string]): s
     return 'n/a';
   }
   return formatScore(profile.score);
+}
+
+function severityRank(severity: string): number {
+  const order: Record<string, number> = { minor: 0, nit: 1, suggestion: 2 };
+  return order[severity] ?? 99;
 }
 
 function formatScore(score: number | null): string {

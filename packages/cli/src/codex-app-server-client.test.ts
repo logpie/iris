@@ -142,7 +142,7 @@ describe('CodexAppServerClient', () => {
               jsonrpc: '2.0',
               id: 899,
               method: 'item/tool/call',
-              params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
+                params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'click', arguments: { selector: '#target' } }
             });
           }, 10);
           return;
@@ -215,7 +215,7 @@ describe('CodexAppServerClient', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
+      listTools: () => [{ name: 'click', description: '', input_schema: {} }],
       async callTool() {
         return { ok: true, evidence_refs: [] };
       },
@@ -478,7 +478,7 @@ describe('runCodexAppServerExplorer', () => {
             jsonrpc: '2.0',
             id: 901,
             method: 'item/tool/call',
-            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'click', arguments: { selector: '#target' } }
           });
           return;
         }
@@ -507,6 +507,16 @@ describe('runCodexAppServerExplorer', () => {
             jsonrpc: '2.0',
             id: 903,
             method: 'item/tool/call',
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'click', arguments: { selector: '#target-2' } }
+          });
+          return;
+        }
+        if (msg.id === 903) {
+          evidenceId = evidenceIdFrom(msg);
+          write({
+            jsonrpc: '2.0',
+            id: 904,
+            method: 'item/tool/call',
             params: {
               threadId: 'thread-1',
               turnId: 'turn-1',
@@ -521,16 +531,16 @@ describe('runCodexAppServerExplorer', () => {
           });
           return;
         }
-        if (msg.id === 903) {
+        if (msg.id === 904) {
           write({
             jsonrpc: '2.0',
-            id: 904,
+            id: 905,
             method: 'item/tool/call',
             params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'done', arguments: {} }
           });
           return;
         }
-        if (msg.id === 904) {
+        if (msg.id === 905) {
           write({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-1' } });
         }
       });
@@ -550,7 +560,7 @@ describe('runCodexAppServerExplorer', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
+      listTools: () => [{ name: 'click', description: '', input_schema: {} }],
       async callTool() {
         return { ok: true, evidence_refs: [] };
       },
@@ -652,7 +662,7 @@ describe('runCodexAppServerExplorer', () => {
             jsonrpc: '2.0',
             id: 901,
             method: 'item/tool/call',
-            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'click', arguments: { selector: '#target' } }
           });
           return;
         }
@@ -696,7 +706,7 @@ describe('runCodexAppServerExplorer', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
+      listTools: () => [{ name: 'click', description: '', input_schema: {} }],
       async callTool() {
         return { ok: true, evidence_refs: [] };
       },
@@ -733,6 +743,156 @@ describe('runCodexAppServerExplorer', () => {
     expect(
       traceEvents.some(
         (event) => event.kind === 'goal_status' && event.payload.status === 'blocked',
+      ),
+    ).toBe(false);
+    expect(traceEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'goal_status',
+          payload: expect.objectContaining({ id: 'G1', status: 'verified' }),
+        }),
+      ]),
+    );
+
+    await client.close();
+  });
+
+  it('rejects partial status when cited evidence satisfies the scenario gate', async () => {
+    const server = fakeServerPath(`
+      import readline from 'node:readline';
+      const rl = readline.createInterface({ input: process.stdin });
+      const write = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n');
+      let evidenceId = '';
+      const evidenceIdFrom = (msg) =>
+        String(msg.result?.contentItems?.[0]?.text ?? '').match(/(?:outcome_action_result_event_id|post_action_observation_event_id)=([A-Z0-9]+)/)?.[1] ?? '';
+      rl.on('line', (line) => {
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          write({ jsonrpc: '2.0', id: msg.id, result: { ok: true } });
+          return;
+        }
+        if (msg.method === 'thread/start') {
+          write({ jsonrpc: '2.0', id: msg.id, result: { thread: { id: 'thread-1' } } });
+          return;
+        }
+        if (msg.method === 'turn/start') {
+          write({ jsonrpc: '2.0', id: msg.id, result: { turn: { id: 'turn-1' } } });
+          setTimeout(() => {
+            write({
+              jsonrpc: '2.0',
+              id: 900,
+              method: 'item/tool/call',
+              params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'click', arguments: { selector: '#length' } }
+            });
+          }, 10);
+          return;
+        }
+        if (msg.id === 900) {
+          evidenceId = evidenceIdFrom(msg);
+          write({
+            jsonrpc: '2.0',
+            id: 901,
+            method: 'item/tool/call',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              tool: 'goal_status',
+              arguments: {
+                id: 'G1',
+                status: 'partial',
+                rationale: 'Could not see the required row range.',
+                evidence_event_ids: [evidenceId]
+              }
+            }
+          });
+          return;
+        }
+        if (msg.id === 901) {
+          write({
+            jsonrpc: '2.0',
+            id: 902,
+            method: 'item/tool/call',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              tool: 'goal_status',
+              arguments: {
+                id: 'G1',
+                status: 'verified',
+                rationale: 'Required row range is visible.',
+                evidence_event_ids: [evidenceId]
+              }
+            }
+          });
+          return;
+        }
+        if (msg.id === 902) {
+          write({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-1' } });
+        }
+      });
+    `);
+    const client = makeClient({
+      command: process.execPath,
+      args: [server],
+      requestTimeoutMs: 1_000,
+    });
+    await client.start();
+    await client.initialize();
+
+    const traceEvents: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    const fakeAdapter: TargetAdapter = {
+      kind: 'web',
+      async start() {},
+      async stop() {
+        return { evidence_dir: '', artifact_files: {} };
+      },
+      listTools: () => [{ name: 'click', description: '', input_schema: {} }],
+      async callTool() {
+        return { ok: true, evidence_refs: [] };
+      },
+      async observe() {
+        return {
+          observation_ref: 'OBS',
+          summary: 'Showing 26 to 50 of 57 entries after changing the page length.',
+        };
+      },
+      listProbes: () => [],
+      async runProbe(name: string) {
+        return { ok: false, probe: name, error: 'no probes' };
+      },
+      async sliceEvidence() {
+        return [];
+      },
+    };
+
+    const result = await runCodexAppServerExplorer({
+      client,
+      adapter: fakeAdapter,
+      traceWriter: {
+        append: async (event: { kind: string; payload: Record<string, unknown> }) => {
+          traceEvents.push(event);
+        },
+      } as never,
+      systemPrompt: 'Use tools.',
+      initialUserPrompt: 'Verify G1.',
+      maxSteps: 5,
+      timeoutS: 5,
+      goals: [{ id: 'G1', description: 'Show rows 26 to 50' }],
+      scenarioGates: [
+        {
+          goalId: 'G1',
+          requiredOutputs: ['Showing 26 to 50 of 57 entries'],
+          requiredVisibleText: ['Showing 26 to 50 of 57 entries'],
+        },
+      ],
+      maxExpansionGoals: 0,
+      cwd: tmpdir(),
+    });
+
+    expect(result.termination).toBe('done');
+    expect(
+      traceEvents.some(
+        (event) => event.kind === 'goal_status' && event.payload.status === 'partial',
       ),
     ).toBe(false);
     expect(traceEvents).toEqual(
@@ -791,7 +951,7 @@ describe('runCodexAppServerExplorer', () => {
             jsonrpc: '2.0',
             id: 901,
             method: 'item/tool/call',
-            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'click', arguments: { selector: '#target' } }
           });
           return;
         }
@@ -835,7 +995,7 @@ describe('runCodexAppServerExplorer', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
+      listTools: () => [{ name: 'click', description: '', input_schema: {} }],
       async callTool() {
         return { ok: true, evidence_refs: [] };
       },
@@ -911,7 +1071,7 @@ describe('runCodexAppServerExplorer', () => {
               jsonrpc: '2.0',
               id: 900,
               method: 'item/tool/call',
-              params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
+              params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'click', arguments: { selector: '#target' } }
             });
           }, 10);
           return;
@@ -941,6 +1101,16 @@ describe('runCodexAppServerExplorer', () => {
             jsonrpc: '2.0',
             id: 902,
             method: 'item/tool/call',
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'click', arguments: { selector: '#target' } }
+          });
+          return;
+        }
+        if (msg.id === 902) {
+          evidenceId = evidenceIdFrom(msg);
+          write({
+            jsonrpc: '2.0',
+            id: 903,
+            method: 'item/tool/call',
             params: {
               threadId: 'thread-1',
               turnId: 'turn-1',
@@ -955,7 +1125,7 @@ describe('runCodexAppServerExplorer', () => {
           });
           return;
         }
-        if (msg.id === 902) {
+        if (msg.id === 903) {
           write({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-1' } });
         }
       });
@@ -975,7 +1145,7 @@ describe('runCodexAppServerExplorer', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
+      listTools: () => [{ name: 'click', description: '', input_schema: {} }],
       async callTool() {
         return { ok: true, evidence_refs: [] };
       },

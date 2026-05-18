@@ -12,6 +12,11 @@ export interface SummaryInput {
   duration_s: number;
   cost_usd: number;
   caveats: number;
+  product_score_authority?: 'authoritative' | 'provisional' | 'insufficient';
+  evidence_confidence?: {
+    score: number;
+    level: 'high' | 'medium' | 'low';
+  };
   // Phase 5 additions
   blocked?: boolean;
   blocked_reasons?: string[];
@@ -42,15 +47,30 @@ export function buildSummaryLine(input: SummaryInput): string {
   const findingEvidenceDowngraded = input.finding_evidence_downgraded ?? input.evidence_downgraded;
   const findingDraftsDiscarded =
     input.unsupported_finding_drafts_discarded ?? input.evidence_discarded;
+  const thresholdPassed =
+    input.product_score_authority && input.product_score_authority !== 'authoritative'
+      ? false
+      : input.threshold_passed;
   const out = {
     v: 3,
     score: round2(input.score),
-    threshold_passed: input.threshold_passed,
+    threshold_passed: thresholdPassed,
     findings: input.findings,
     run_dir: input.run_dir,
     duration_s: input.duration_s,
     cost_usd: round2(input.cost_usd),
     caveats: input.caveats,
+    ...(input.product_score_authority
+      ? { product_score_authority: input.product_score_authority }
+      : {}),
+    ...(input.evidence_confidence
+      ? {
+          evidence_confidence: {
+            score: round2(input.evidence_confidence.score),
+            level: input.evidence_confidence.level,
+          },
+        }
+      : {}),
     ...(input.blocked !== undefined ? { blocked: input.blocked } : {}),
     ...(input.blocked_reasons ? { blocked_reasons: input.blocked_reasons } : {}),
     ...(input.goals_total !== undefined

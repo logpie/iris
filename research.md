@@ -1368,3 +1368,56 @@ Focused verification so far:
 - `pnpm -r run build`
 - `pnpm -r run test -- --pool=forks`
 - Full workspace result: each package reported 73 test files passed, 571 tests passed, 1 skipped.
+
+## 2026-05-18 Goal-generator and proof-window follow-up
+
+Timestamp: 2026-05-18 02:22 PDT
+
+Validated hypotheses:
+
+- Data-grid/developer-doc goals can look correct in unit fixtures but fail fresh downstream generation when a broad product-kind prior leaks in. Fresh DataTables run `iris-runs/datatables-proof-e2e-20260518-014706` selected a fake calculator goal (`Enter realistic non-default values, calculate...`) because `calculator_tool` survived alongside strong DataTables evidence.
+- Required-action proof windows were still brittle around delayed `goal_status` events. DataTables traces showed valid salary-sort and page-length actions preceding same-step or auto-cutover statuses from other goals; the validator truncated the action window and downgraded good proof.
+- Calculator required actions contained duplicate semantic obligations (`Click Calculate` plus `submit or calculate the result`). A single real Calculate click should satisfy both, not require two submit events.
+- Report-level capability coverage could undercount verified implementation-code scenarios when Discovery left a developer-documentation capability with empty `scenario_ids`.
+
+Code paths changed:
+
+- `packages/core/src/discovery/discovery.ts`: calculator priors now require concrete calculator-domain evidence before they can override data-grid/developer-doc products.
+- `packages/core/src/judge/goal-claim-validator.ts`: cited-evidence action windows skip same-step batched statuses and auto-cutover statuses; conditional required actions are optional; equivalent calculator submit/calculate actions are deduped.
+- `packages/core/src/judge/goal-status-reconciler.ts`: later reconciliation does not overwrite deterministic goal-claim validator vetoes.
+- `packages/core/src/report/evaluation.ts`: verified implementation-code goals can satisfy stale developer-documentation capability mappings.
+- `packages/cli/src/agent-sdk-orchestrator.ts` and `packages/cli/src/commands/report.ts`: Agent SDK runs now persist `judge.raw.txt`; `iris report --revalidate` fails loudly without trace/raw Judge artifacts.
+
+Downstream validation:
+
+- DataTables final fresh run: `iris-runs/datatables-proof-e2e-20260518-015957`
+  - Discovery product kinds: `developer_documentation`, `data_grid`.
+  - Goals: table search, salary sort, pagination, implementation-code/HTML tab inspection.
+  - Result: exit 0, threshold passed, 4/4 goals verified, 5/5 core capabilities covered, high evidence confidence, zero goal-claim downgrades.
+- BMI Calculator regression run: `iris-runs/bmicalc-proof-e2e-20260518-021334`
+  - Discovery product kind: `calculator_tool`.
+  - Goals: US-unit BMI calculation and Metric-unit BMI calculation.
+  - Revalidated result after validator fix: threshold passed, 2/2 goals verified, 2/2 core capabilities covered, high evidence confidence, zero goal-claim downgrades.
+
+Remaining caveat:
+
+- These runs still mark some important-but-not-core capabilities as skipped/deferred, such as DataTables site search and BMI print/save. That is acceptable for provisional scoring, but future goal-generator work should decide when a longer run should expand from core capabilities into important secondary capabilities.
+
+## 2026-05-18 Final multi-agent audit closure
+
+Timestamp: 2026-05-18 03:08 PDT
+
+Additional validated hypotheses:
+
+- Expected-goal authority was still implicit for spec-interpreter and `initial_tasks` runs. Without discovery events, reconciliation could trust invented Judge/status IDs. Fix: pass explicit expected goals through core/CLI orchestrators, report JSON, and stored-report revalidation.
+- Stored report rendering was not just a display concern. `iris report <run-dir>` without `--revalidate` could re-render stale green goals because derived fields were refreshed without goal-status reconciliation. Fix: render refresh reconciles goals and rebuilds task runs from trace events.
+- Semantic duplicate normalization needed canonical ID maps, not only "seen" sets. Fix: duplicate surfaces/journeys now remap skipped IDs to the kept canonical IDs.
+- Judge-failure fallback rows are diagnostic, not proof. Fix: App Server Judge failures no longer expose Explorer `verified` rows or task runs as authoritative evidence.
+- The scenario completion gate needed runner-level coverage. Fix: App Server runner test now proves a partial claim with complete cited evidence is rejected and must be re-emitted as verified.
+
+Final validation:
+
+- DataTables revalidation: `score=7.6`, `threshold_passed=true`, authority `authoritative`, 4/4 goals verified, core coverage `5/5`, important coverage `6/7`, zero goal-claim downgrades.
+- BMI revalidation: `score=8.2`, `threshold_passed=true`, authority `authoritative`, 2/2 goals verified, core coverage `2/2`, important coverage `4/5`, zero goal-claim downgrades.
+- Focused suites: discovery/reconciler/report/task-runs and CLI report/App Server/scenario-gate/E2E passed.
+- Full workspace: `pnpm -r run test -- --pool=forks` passed across all packages after the final fixes.

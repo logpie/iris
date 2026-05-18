@@ -6,6 +6,18 @@ import {
 } from './scenario-completion-gate.js';
 
 describe('scenario completion gate', () => {
+  it('tells Explorer to trust cited observation text over missing screenshot text', () => {
+    const prompt = formatScenarioGatePrompt([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Showing 26 to 50 of 57 entries'],
+        requiredVisibleText: ['Showing 26 to 50 of 57 entries'],
+      },
+    ]);
+
+    expect(prompt).toContain('trust that text and mark verified');
+  });
+
   it('builds gate checklists from required outputs instead of test-data metadata', () => {
     const gates = buildScenarioCompletionGates({
       v: 1,
@@ -63,6 +75,240 @@ describe('scenario completion gate', () => {
     ]);
   });
 
+  it('matches gates to the product-use job, not just the shared journey id', () => {
+    const gates = buildScenarioCompletionGates({
+      v: 1,
+      target_kind_hint: 'web',
+      product_description: 'employee data grid',
+      goals: [
+        {
+          id: 'G1',
+          description: 'Filter the employee table for London rows.',
+          priority: 'must',
+          journey_id: 'J1',
+          surface_ids: [],
+        },
+        {
+          id: 'G2',
+          description: 'Sort the employee table by Age and verify ascending ages.',
+          priority: 'must',
+          journey_id: 'J1',
+          surface_ids: [],
+        },
+        {
+          id: 'G3',
+          description: 'Set 25 entries per page and verify Showing 26 to 50 of 57 entries.',
+          priority: 'must',
+          journey_id: 'J1',
+          surface_ids: [],
+        },
+      ],
+      product_use_contract: {
+        product_kinds: ['data_grid'],
+        primary_value_loop: 'Use employee table controls.',
+        core_artifacts: ['changed grid state'],
+        value_loops: [],
+        user_jobs: [
+          {
+            id: 'PU1',
+            title: 'Filter the employee table to London rows',
+            journey_id: 'J1',
+            scenario_brief: 'Use table Search to filter London rows.',
+            test_data: ['London'],
+            required_actions: [],
+            proof_obligations: [],
+            expected_artifact: 'Filtered rows',
+            required_outputs: ['London', 'filtered from 57 total entries'],
+            quality_bar: [],
+            acceptable_evidence: [],
+            weak_evidence: [],
+            risk: 'high',
+          },
+          {
+            id: 'PU2',
+            title: 'Sort employees by age',
+            journey_id: 'J1',
+            scenario_brief: 'Sort the employee table by Age.',
+            test_data: ['youngest visible employees such as 19, 20, 21'],
+            required_actions: [],
+            proof_obligations: [],
+            expected_artifact: 'Age sorted rows',
+            required_outputs: ['Age', 'Employee rows with ages ordered consistently'],
+            quality_bar: [],
+            acceptable_evidence: [],
+            weak_evidence: [],
+            risk: 'high',
+          },
+          {
+            id: 'PU3',
+            title: 'Change page length and move to the next page',
+            journey_id: 'J1',
+            scenario_brief: 'Set page length to 25 and navigate to page 2.',
+            test_data: ['25 entries per page', 'Page 2'],
+            required_actions: [],
+            proof_obligations: [],
+            expected_artifact: 'Second page rows',
+            required_outputs: ['25 entries per page', 'Showing 26 to 50 of 57 entries'],
+            quality_bar: [],
+            acceptable_evidence: [],
+            weak_evidence: [],
+            risk: 'medium',
+          },
+        ],
+      },
+      surfaces: [],
+      journeys: [],
+      capabilities: [],
+      focus_areas: [],
+      hints: [],
+      out_of_scope: [],
+    });
+
+    expect(gates).toMatchObject([
+      { goalId: 'G1', requiredVisibleText: ['London', 'filtered from 57 total entries'] },
+      { goalId: 'G2', requiredVisibleText: ['Age', '19', '20', '21'] },
+      {
+        goalId: 'G3',
+        requiredVisibleText: ['Showing 26 to 50 of 57 entries'],
+      },
+    ]);
+  });
+
+  it('builds a conservative union gate when same-journey product-use jobs are ambiguous', () => {
+    const gates = buildScenarioCompletionGates({
+      v: 1,
+      target_kind_hint: 'web',
+      product_description: 'employee data grid',
+      goals: [
+        {
+          id: 'G1',
+          description: 'Use employee grid controls and verify the table changes.',
+          priority: 'must',
+          journey_id: 'J1',
+          surface_ids: [],
+        },
+      ],
+      product_use_contract: {
+        product_kinds: ['data_grid'],
+        primary_value_loop: 'Use employee table controls.',
+        core_artifacts: ['changed grid state'],
+        value_loops: [],
+        user_jobs: [
+          {
+            id: 'PU1',
+            title: 'Filter London rows',
+            journey_id: 'J1',
+            scenario_brief: 'Filter London rows.',
+            test_data: [],
+            required_actions: [],
+            proof_obligations: [],
+            expected_artifact: 'Filtered rows',
+            required_outputs: ['London'],
+            quality_bar: [],
+            acceptable_evidence: [],
+            weak_evidence: [],
+            risk: 'high',
+          },
+          {
+            id: 'PU2',
+            title: 'Sort age rows',
+            journey_id: 'J1',
+            scenario_brief: 'Sort by Age.',
+            test_data: [],
+            required_actions: [],
+            proof_obligations: [],
+            expected_artifact: 'Sorted rows',
+            required_outputs: ['Age'],
+            quality_bar: [],
+            acceptable_evidence: [],
+            weak_evidence: [],
+            risk: 'high',
+          },
+        ],
+      },
+      surfaces: [],
+      journeys: [],
+      capabilities: [],
+      focus_areas: [],
+      hints: [],
+      out_of_scope: [],
+    });
+
+    expect(gates).toEqual([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['London', 'Age'],
+        requiredVisibleText: ['London', 'Age'],
+      },
+    ]);
+  });
+
+  it('builds a conservative union gate when a generic goal has no journey id', () => {
+    const gates = buildScenarioCompletionGates({
+      v: 1,
+      target_kind_hint: 'web',
+      product_description: 'employee data grid',
+      goals: [
+        {
+          id: 'G1',
+          description: 'Use the employee grid.',
+          priority: 'must',
+          surface_ids: [],
+        },
+      ],
+      product_use_contract: {
+        product_kinds: ['data_grid'],
+        primary_value_loop: 'Use employee table controls.',
+        core_artifacts: ['changed grid state'],
+        value_loops: [],
+        user_jobs: [
+          {
+            id: 'PU1',
+            title: 'Filter London rows',
+            scenario_brief: 'Filter London rows.',
+            test_data: [],
+            required_actions: [],
+            proof_obligations: [],
+            expected_artifact: 'Filtered rows',
+            required_outputs: ['London'],
+            quality_bar: [],
+            acceptable_evidence: [],
+            weak_evidence: [],
+            risk: 'high',
+          },
+          {
+            id: 'PU2',
+            title: 'Sort age rows',
+            scenario_brief: 'Sort by Age.',
+            test_data: [],
+            required_actions: [],
+            proof_obligations: [],
+            expected_artifact: 'Sorted rows',
+            required_outputs: ['Age'],
+            quality_bar: [],
+            acceptable_evidence: [],
+            weak_evidence: [],
+            risk: 'high',
+          },
+        ],
+      },
+      surfaces: [],
+      journeys: [],
+      capabilities: [],
+      focus_areas: [],
+      hints: [],
+      out_of_scope: [],
+    });
+
+    expect(gates).toEqual([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['London', 'Age'],
+        requiredVisibleText: ['London', 'Age'],
+      },
+    ]);
+  });
+
   it('rejects verified completion when cited evidence misses a required output', () => {
     const verifier = new ScenarioCompletionGateVerifier([
       {
@@ -99,6 +345,110 @@ describe('scenario completion gate', () => {
     });
 
     expect(verifier.check('G1', ['OBS1']).ok).toBe(true);
+  });
+
+  it('rejects evidence already claimed by a different goal', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Alpha result'],
+        requiredVisibleText: ['Alpha result'],
+      },
+      {
+        goalId: 'G2',
+        requiredOutputs: ['Alpha result'],
+        requiredVisibleText: ['Alpha result'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('ACTION1', 'action_result', { tool: 'click', ok: true });
+    verifier.recordTraceEvent('OBS1', 'observation', { summary: 'Alpha result' });
+    verifier.recordTraceEvent('STATUS1', 'goal_status', {
+      id: 'G1',
+      status: 'verified',
+      evidence_event_ids: ['OBS1'],
+    });
+
+    expect(verifier.check('G2', ['OBS1'])).toEqual({
+      ok: false,
+      missing: ['Alpha result'],
+      required: ['Alpha result'],
+      unacceptableEvidenceEventIds: ['OBS1'],
+    });
+  });
+
+  it('does not synthesize a required phrase across separate evidence events', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Checkout complete'],
+        requiredVisibleText: ['Checkout complete'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('ACTION1', 'action_result', { tool: 'click', ok: true });
+    verifier.recordTraceEvent('OBS1', 'observation', { summary: 'Checkout page' });
+    verifier.recordTraceEvent('OBS2', 'observation', { summary: 'Task complete' });
+
+    expect(verifier.check('G1', ['OBS1', 'OBS2'])).toEqual({
+      ok: false,
+      missing: ['Checkout complete'],
+      required: ['Checkout complete'],
+    });
+  });
+
+  it('does not satisfy separate required outputs from separate evidence events', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['London', 'filtered from 57 total entries'],
+        requiredVisibleText: ['London', 'filtered from 57 total entries'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('ACTION1', 'action_result', { tool: 'click', ok: true });
+    verifier.recordTraceEvent('OBS1', 'observation', {
+      summary: 'London office rows are visible.',
+    });
+    verifier.recordTraceEvent('OBS2', 'observation', {
+      summary: 'Showing 1 to 10 of 57 entries filtered from 57 total entries.',
+    });
+
+    expect(verifier.check('G1', ['OBS1', 'OBS2'])).toEqual({
+      ok: false,
+      missing: ['London', 'filtered from 57 total entries'],
+      required: ['London', 'filtered from 57 total entries'],
+    });
+  });
+
+  it('rejects unowned stale evidence from before the current goal attempt', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Alpha'],
+        requiredVisibleText: ['Alpha'],
+      },
+      {
+        goalId: 'G2',
+        requiredOutputs: ['Alpha'],
+        requiredVisibleText: ['Alpha'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('ACTION1', 'action_result', { tool: 'click', ok: true });
+    verifier.recordTraceEvent('OBS1', 'observation', { summary: 'Alpha' });
+    verifier.recordTraceEvent('STATUS1', 'goal_status', {
+      id: 'G1',
+      status: 'partial',
+      evidence_event_ids: [],
+    });
+
+    expect(verifier.check('G2', ['OBS1'])).toEqual({
+      ok: false,
+      missing: [],
+      required: ['Alpha'],
+      unacceptableEvidenceEventIds: ['OBS1'],
+    });
   });
 
   it('does not gate visual-only required outputs as text substrings', () => {
@@ -277,8 +627,8 @@ describe('scenario completion gate', () => {
     const verifier = new ScenarioCompletionGateVerifier([
       {
         goalId: 'G2',
-        requiredOutputs: ['Product: Sauce Labs Backpack', 'Search: London'],
-        requiredVisibleText: ['Sauce Labs Backpack', 'London'],
+        requiredOutputs: ['Product: Sauce Labs Backpack'],
+        requiredVisibleText: ['Sauce Labs Backpack'],
       },
     ]);
 
@@ -296,6 +646,33 @@ describe('scenario completion gate', () => {
     });
 
     expect(verifier.check('G2', ['PROBE1']).ok).toBe(true);
+  });
+
+  it('does not let selectors, urls, roles, or field values satisfy visible proof', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Checkout complete', 'London'],
+        requiredVisibleText: ['Checkout complete', 'London'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('ACTION1', 'action_result', { tool: 'click', ok: true });
+    verifier.recordTraceEvent('OBS1', 'observation', {
+      summary: 'Cart page',
+      perception_state: {
+        url: 'https://shop.example/checkout-complete',
+        elements: [
+          { selector: '#checkout-complete', role: 'status' },
+          { selector: '#search', value: 'London' },
+        ],
+      },
+    });
+
+    expect(verifier.check('G1', ['OBS1'])).toMatchObject({
+      ok: false,
+      missing: ['Checkout complete', 'London'],
+    });
   });
 
   it('rejects stale pre-action evidence even when it contains the required text', () => {
@@ -318,6 +695,47 @@ describe('scenario completion gate', () => {
       required: ['Dashboard saved'],
       unacceptableEvidenceEventIds: ['OBS_PRE'],
     });
+  });
+
+  it('rejects pre-action screenshots or vision descriptions as completion proof', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Dashboard saved'],
+        requiredVisibleText: ['Dashboard saved'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('SS1', 'action_result', {
+      tool: 'screenshot',
+      ok: true,
+      description: 'Dashboard saved',
+    });
+    verifier.recordTraceEvent('VISION1', 'action_result', {
+      tool: 'vision_describe',
+      ok: true,
+      description: 'Dashboard saved',
+    });
+
+    expect(verifier.checkEvidenceEventIds(['SS1', 'VISION1'], { goalId: 'G1' })).toEqual({
+      ok: false,
+      unknown: [],
+      unacceptable: ['SS1', 'VISION1'],
+    });
+    expect(verifier.check('G1', ['SS1', 'VISION1'])).toEqual({
+      ok: false,
+      missing: ['Dashboard saved'],
+      required: ['Dashboard saved'],
+      unacceptableEvidenceEventIds: ['SS1', 'VISION1'],
+    });
+
+    verifier.recordTraceEvent('RESULT1', 'action_result', { tool: 'click', ok: true });
+    verifier.recordTraceEvent('SS2', 'action_result', {
+      tool: 'screenshot',
+      ok: true,
+      description: 'Dashboard saved',
+    });
+    expect(verifier.check('G1', ['SS2']).ok).toBe(true);
   });
 
   it('uses token boundaries so short labels do not pass on unrelated substrings', () => {
@@ -347,6 +765,45 @@ describe('scenario completion gate', () => {
       summary: 'Age: 42',
     });
     expect(verifier.check('G1', ['OBS2']).ok).toBe(true);
+  });
+
+  it('accepts approximate BMI result text and selected unit mode evidence', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Metric Units tab active', 'BMI near 29.4 kg/m2', 'Overweight category'],
+        requiredVisibleText: [
+          'Metric Units tab active',
+          'BMI near 29.4 kg/m2',
+          'Overweight category',
+        ],
+      },
+      {
+        goalId: 'G2',
+        requiredOutputs: ['Other Units tab active', 'BMI near 28.1 kg/m2'],
+        requiredVisibleText: ['Other Units tab active', 'BMI near 28.1 kg/m2'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('ACTION1', 'action', {
+      tool: 'click',
+      args: { selector: '#calculate' },
+    });
+    verifier.recordTraceEvent('RESULT1', 'action_result', { tool: 'click', ok: true });
+    verifier.recordTraceEvent('OBS1', 'observation', {
+      summary:
+        'BMI Calculator US Units Metric Units Other Units Result BMI = 29.4 kg/m2 (Overweight) Healthy BMI range: 18.5 kg/m2 - 25 kg/m2',
+      perception_state: {
+        url: 'https://www.calculator.net/bmi-calculator.html?ctype=metric&x=Calculate',
+        elements: [{ selector: 'li#menuon a', text: 'Metric Units' }, { text: 'Other Units' }],
+      },
+    });
+
+    expect(verifier.check('G1', ['OBS1']).ok).toBe(true);
+    expect(verifier.check('G2', ['OBS1'])).toMatchObject({
+      ok: false,
+      missing: ['Other Units tab active', 'BMI near 28.1 kg/m2'],
+    });
   });
 
   it('reports unknown and unacceptable evidence ids', () => {

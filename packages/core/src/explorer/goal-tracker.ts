@@ -88,6 +88,10 @@ export class GoalTracker {
     }
   }
 
+  hasPendingGoal(id: string): boolean {
+    return this.ledger.some((entry) => entry.id === id && entry.status === 'pending');
+  }
+
   completeCurrent(status: GoalStatus, rationale: string): void {
     if (this.idx >= this.ledger.length) return;
     const entry = this.ledger[this.idx];
@@ -102,18 +106,19 @@ export class GoalTracker {
   // goal_status out of order). Returns true if a transition happened.
   completeById(id: string, status: GoalStatus, rationale: string): boolean {
     const target = this.ledger.findIndex((e) => e.id === id);
-    if (target < 0 || this.ledger[target]!.status !== 'pending') return false;
+    const targetEntry = this.ledger[target];
+    if (!targetEntry || targetEntry.status !== 'pending') return false;
     // Skip ahead: any goals between current idx and target are auto-skipped.
     for (let i = this.idx; i < target; i++) {
-      const entry = this.ledger[i]!;
+      const entry = this.ledger[i];
+      if (!entry) continue;
       if (entry.status === 'pending') {
         entry.status = 'skipped';
         entry.rationale = 'skipped — explorer moved past without completing';
       }
     }
-    const entry = this.ledger[target]!;
-    entry.status = status;
-    entry.rationale = rationale;
+    targetEntry.status = status;
+    targetEntry.rationale = rationale;
     this.idx = target + 1;
     this.turnsOnCurrent = 0;
     return true;

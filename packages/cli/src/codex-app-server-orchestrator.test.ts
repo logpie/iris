@@ -83,7 +83,7 @@ describe('buildJudgeFailureOutput', () => {
     expect(out.scores.overall.weighted_from).toEqual([]);
     expect(out.scores.profiles.quality?.score).toBe(0);
     expect(out.scores.profiles.quality?.dimensions.correctness?.score).toBeNull();
-    expect(out.spec_compliance.goals[0]?.status).toBe('verified');
+    expect(out.spec_compliance.goals[0]?.status).toBe('partial');
     expect(out.spec_compliance.summary).toContain('diagnostic only');
     expect(out.meta.confidence_overall).toBe(0);
   });

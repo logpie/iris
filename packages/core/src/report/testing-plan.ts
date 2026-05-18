@@ -8,6 +8,7 @@ import type {
   ProductUseValueLoop,
 } from '../discovery/discovery.js';
 import type { JudgeOutput } from '../judge/judge.js';
+import { selectProductUseJobForGoal } from '../scenario/scenario-data.js';
 
 type JudgeGoal = JudgeOutput['spec_compliance']['goals'][number];
 
@@ -90,8 +91,6 @@ export function deriveTestingPlan(input: {
   const journeyById = new Map((discovery?.journeys ?? []).map((journey) => [journey.id, journey]));
   const surfaceById = new Map((discovery?.surfaces ?? []).map((surface) => [surface.id, surface]));
   const contract = discovery?.product_use_contract;
-  const jobsByJourney = indexJobsByJourney(contract?.user_jobs ?? []);
-  const jobsByGoalText = indexJobsByText(contract?.user_jobs ?? []);
   const loops = contract?.value_loops ?? [];
   const scenarioSourceGoals: ScenarioSourceGoal[] =
     discoveryGoals.length > 0
@@ -113,7 +112,7 @@ export function deriveTestingPlan(input: {
 
   const rawScenarios = scenarioSourceGoals.map((goal) => {
     const rawJourney = goal.journey_id ? journeyById.get(goal.journey_id) : undefined;
-    const job = findJobForGoal(goal, rawJourney, jobsByJourney, jobsByGoalText);
+    const job = findJobForGoal(goal, rawJourney, contract?.user_jobs ?? []);
     const loopId =
       job?.value_loop_id ??
       inferLoopId(`${goal.description} ${rawJourney?.title ?? ''} ${job?.title ?? ''}`, loops) ??
@@ -189,36 +188,15 @@ export function deriveTestingPlan(input: {
   };
 }
 
-function indexJobsByJourney(jobs: ProductUseJob[]): Map<string, ProductUseJob[]> {
-  const out = new Map<string, ProductUseJob[]>();
-  for (const job of jobs) {
-    if (!job.journey_id) continue;
-    const existing = out.get(job.journey_id) ?? [];
-    existing.push(job);
-    out.set(job.journey_id, existing);
-  }
-  return out;
-}
-
-function indexJobsByText(jobs: ProductUseJob[]): ProductUseJob[] {
-  return jobs.filter((job) => job.title || job.expected_artifact);
-}
-
 function findJobForGoal(
   goal: DiscoveryGoal,
   journey: DiscoveryJourney | undefined,
-  jobsByJourney: Map<string, ProductUseJob[]>,
-  jobsByGoalText: ProductUseJob[],
+  jobs: ProductUseJob[],
 ): ProductUseJob | undefined {
-  const journeyJobs = goal.journey_id ? (jobsByJourney.get(goal.journey_id) ?? []) : [];
-  if (journeyJobs.length === 1) return journeyJobs[0];
-  const text = normalizeText(`${goal.description} ${journey?.title ?? ''}`);
-  return (
-    journeyJobs.find((job) => textOverlaps(text, normalizeText(job.title))) ??
-    jobsByGoalText.find((job) =>
-      textOverlaps(text, normalizeText(`${job.title} ${job.expected_artifact}`)),
-    )
-  );
+  const description = `${goal.description} ${journey?.title ?? ''} ${
+    journey?.suggested_goal ?? ''
+  }`;
+  return selectProductUseJobForGoal(jobs, { ...goal, description });
 }
 
 function buildUserJourneys(input: {
@@ -330,14 +308,39 @@ function mergeDuplicateScenarios(scenarios: UserScenario[]): UserScenario[] {
 
 function areDuplicateScenarios(a: UserScenario, b: UserScenario): boolean {
   if (a.journey_id !== b.journey_id) return false;
-  const aTitle = words(a.title);
-  const bTitle = words(b.title);
-  if (aTitle.length >= 2 && bTitle.length >= 2) {
-    return aTitle[0] === bTitle[0] && aTitle[1] === bTitle[1];
+  if (
+    a.required_outputs.length > 0 &&
+    b.required_outputs.length > 0 &&
+    !requiredOutputsOverlap(a.required_outputs, b.required_outputs)
+  ) {
+    return false;
   }
   const aText = normalizeText(a.title);
   const bText = normalizeText(b.title);
-  return Boolean(aText && bText && (aText.includes(bText) || bText.includes(aText)));
+  if (!aText || !bText) return false;
+  if (aText === bText) return true;
+  if ((aText.includes(bText) || bText.includes(aText)) && overlapScore(aText, bText) >= 3) {
+    return true;
+  }
+  const aSpecific = scenarioSpecificWords(a.title);
+  const bSpecific = scenarioSpecificWords(b.title);
+  const shared = aSpecific.filter((word) => bSpecific.includes(word));
+  const required = Math.max(2, Math.ceil(Math.min(aSpecific.length, bSpecific.length) * 0.6));
+  return shared.length >= required;
+}
+
+function requiredOutputsOverlap(a: string[], b: string[]): boolean {
+  const aOutputs = a.map(normalizeText).filter(Boolean);
+  const bOutputs = b.map(normalizeText).filter(Boolean);
+  return aOutputs.some((aOutput) =>
+    bOutputs.some(
+      (bOutput) =>
+        aOutput === bOutput ||
+        aOutput.includes(bOutput) ||
+        bOutput.includes(aOutput) ||
+        overlapScore(aOutput, bOutput) >= 2,
+    ),
+  );
 }
 
 function chooseMoreSpecificText(a: string, b: string): string {
@@ -404,10 +407,6 @@ function uniqueStrings(values: string[]): string[] {
   return out;
 }
 
-function textOverlaps(a: string, b: string): boolean {
-  return overlapScore(a, b) >= 2 || a.includes(b) || b.includes(a);
-}
-
 function overlapScore(a: string, b: string): number {
   const aWords = new Set(words(a));
   let score = 0;
@@ -429,6 +428,10 @@ function words(value: string): string[] {
     .filter((word) => word.length > 2 && !STOP_WORDS.has(word));
 }
 
+function scenarioSpecificWords(value: string): string[] {
+  return words(value).filter((word) => !SCENARIO_GENERIC_WORDS.has(word));
+}
+
 const STOP_WORDS = new Set([
   'and',
   'the',
@@ -444,4 +447,24 @@ const STOP_WORDS = new Set([
   'current',
   'product',
   'user',
+]);
+
+const SCENARIO_GENERIC_WORDS = new Set([
+  'use',
+  'open',
+  'change',
+  'check',
+  'view',
+  'show',
+  'table',
+  'grid',
+  'rows',
+  'row',
+  'data',
+  'dashboard',
+  'settings',
+  'page',
+  'scenario',
+  'workflow',
+  'task',
 ]);

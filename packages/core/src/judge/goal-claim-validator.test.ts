@@ -1569,6 +1569,596 @@ describe('validateGoalClaims', () => {
     expect(result.goals.map((g) => g.status)).toEqual(['verified', 'verified']);
   });
 
+  it('keeps calculator goals verified when cited proof uses near-number and active-unit semantics', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [
+          {
+            id: 'G1',
+            description: 'Switch to Metric Units and calculate BMI near 29.4',
+            journey_id: 'J1',
+          },
+        ],
+        product_use_contract: {
+          product_kinds: ['calculator_tool'],
+          primary_value_loop: 'Calculate BMI and read the result.',
+          core_artifacts: ['BMI result panel'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Metric BMI calculation',
+              journey_id: 'J1',
+              required_actions: ['Click Calculate.', 'submit or calculate the result'],
+              required_outputs: [
+                'Metric Units tab active',
+                'BMI near 29.4 kg/m2',
+                'Overweight category',
+              ],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation', {
+        summary:
+          'BMI Calculator US Units Metric Units Other Units Result BMI = 29.4 kg/m2 (Overweight) Healthy BMI range: 18.5 kg/m2 - 25 kg/m2',
+        perception_state: {
+          url: 'https://www.calculator.net/bmi-calculator.html?ctype=metric&x=Calculate',
+          elements: [{ selector: 'li#menuon a', text: 'Metric Units' }],
+        },
+      }),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['B'],
+        rationale: 'Metric calculation result shows BMI 29.4 Overweight.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Switch to Metric Units and calculate BMI near 29.4',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Observation B shows BMI 29.4 Overweight after a metric calculation.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('downgrades verified claims when notes or Explorer rationale explicitly say proof is incomplete', () => {
+    const trace: TraceEvent[] = [
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation', { summary: 'Result panel opened.' }),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['B'],
+        rationale: 'The result panel opened, but could not verify the final calculated result.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'calculate result',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Result panel was observed, but final result proof is incomplete.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.summary.downgrade_reasons[0]).toContain('incomplete-proof');
+    expect(result.goals[0]?.status).toBe('partial');
+  });
+
+  it('does not let non-visible metadata satisfy required scenario outputs', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Complete checkout', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['commerce_checkout'],
+          primary_value_loop: 'Reach checkout confirmation.',
+          core_artifacts: ['confirmation state'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Checkout',
+              journey_id: 'J1',
+              required_outputs: ['Checkout complete'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation', {
+        summary: 'Cart page is still visible.',
+        perception_state: {
+          url: 'https://shop.example/checkout-complete',
+          elements: [
+            { selector: '#checkout-complete', role: 'status', value: 'Checkout complete' },
+          ],
+        },
+      }),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['B'],
+        rationale: 'Checkout complete is implied by the URL.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Complete checkout',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'The URL changed to checkout-complete after clicking.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.summary.downgrade_reasons[0]).toContain('Checkout complete');
+    expect(result.goals[0]?.status).toBe('partial');
+  });
+
+  it('does not borrow previous goal evidence for scenario-specific proof', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [
+          { id: 'G1', description: 'Show Alpha', journey_id: 'J1' },
+          { id: 'G2', description: 'Show Alpha again', journey_id: 'J2' },
+        ],
+        product_use_contract: {
+          product_kinds: ['calculator_tool'],
+          primary_value_loop: 'Produce scenario-specific results.',
+          core_artifacts: ['result panel'],
+          user_jobs: [
+            { id: 'PU1', title: 'First', journey_id: 'J1', required_outputs: ['Alpha result'] },
+            { id: 'PU2', title: 'Second', journey_id: 'J2', required_outputs: ['Alpha result'] },
+          ],
+        },
+      }),
+      ev('A1', 'action_result', { tool: 'click', ok: true }),
+      ev('B1', 'observation', { summary: 'Alpha result' }),
+      ev('C1', 'goal_status', { id: 'G1', status: 'verified', evidence_event_ids: ['B1'] }),
+      ev('A2', 'action_result', { tool: 'click', ok: true }),
+      ev('B2', 'observation', { summary: 'Beta result' }),
+      ev('C2', 'goal_status', { id: 'G2', status: 'verified', evidence_event_ids: ['B2'] }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Show Alpha',
+        status: 'verified',
+        evidence: ['B1'],
+        notes: 'Alpha result was visible after the first action.',
+      },
+      {
+        id: 'G2',
+        description: 'Show Alpha again',
+        status: 'verified',
+        evidence: ['B2'],
+        notes: 'Second goal cited its own observation after the second action.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B1'], G2: ['B2'] }),
+    });
+
+    expect(result.goals[0]?.status).toBe('verified');
+    expect(result.goals[1]?.status).toBe('partial');
+    expect(result.summary.downgrade_reasons[0]).toContain('Alpha result');
+  });
+
+  it('rejects evidence already cited by a previous different goal', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [
+          { id: 'G1', description: 'Show Alpha', journey_id: 'J1' },
+          { id: 'G2', description: 'Show Alpha again', journey_id: 'J2' },
+        ],
+        product_use_contract: {
+          product_kinds: ['calculator_tool'],
+          primary_value_loop: 'Produce scenario-specific results.',
+          core_artifacts: ['result panel'],
+          user_jobs: [
+            { id: 'PU1', title: 'First', journey_id: 'J1', required_outputs: ['Alpha result'] },
+            { id: 'PU2', title: 'Second', journey_id: 'J2', required_outputs: ['Alpha result'] },
+          ],
+        },
+      }),
+      ev('A1', 'action_result', { tool: 'click', ok: true }),
+      ev('B1', 'observation', { summary: 'Alpha result' }),
+      ev('C1', 'goal_status', { id: 'G1', status: 'verified', evidence_event_ids: ['B1'] }),
+      ev('A2', 'action_result', { tool: 'click', ok: true }),
+      ev('B2', 'observation', { summary: 'Beta result' }),
+      ev('C2', 'goal_status', { id: 'G2', status: 'verified', evidence_event_ids: ['B1'] }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Show Alpha',
+        status: 'verified',
+        evidence: ['B1'],
+        notes: 'Alpha result was visible after the first action.',
+      },
+      {
+        id: 'G2',
+        description: 'Show Alpha again',
+        status: 'verified',
+        evidence: ['B1'],
+        notes: 'The second goal reused the prior Alpha observation.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B1'], G2: ['B1'] }),
+    });
+
+    expect(result.goals[0]?.status).toBe('verified');
+    expect(result.goals[1]?.status).toBe('partial');
+    expect(result.summary.downgrade_reasons[0]).toMatch(/Alpha result|outcome artifact/);
+  });
+
+  it('does not synthesize scenario proof phrases across separate evidence events', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Complete checkout', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['commerce_checkout'],
+          primary_value_loop: 'Complete checkout.',
+          core_artifacts: ['checkout confirmation'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Complete checkout',
+              journey_id: 'J1',
+              required_outputs: ['Checkout complete'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation', { summary: 'Checkout page' }),
+      ev('C', 'observation', { summary: 'Task complete' }),
+      ev('D', 'goal_status', { id: 'G1', status: 'verified', evidence_event_ids: ['B', 'C'] }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Complete checkout',
+        status: 'verified',
+        evidence: ['B', 'C'],
+        notes: 'Cited evidence contains checkout and complete words.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B', 'C'] }),
+    });
+
+    expect(result.goals[0]?.status).toBe('partial');
+    expect(result.summary.downgrade_reasons[0]).toContain('Checkout complete');
+  });
+
+  it('does not let one action satisfy multiple required actions', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Export report', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['dashboard_filtering'],
+          primary_value_loop: 'Export a report.',
+          core_artifacts: ['downloaded report'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Export report',
+              journey_id: 'J1',
+              required_actions: ['Open the export menu', 'Click the CSV export button'],
+              required_outputs: ['Export complete'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation', { summary: 'Export complete' }),
+      ev('C', 'goal_status', { id: 'G1', status: 'verified', evidence_event_ids: ['B'] }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Export report',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Export complete is visible after one click.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+
+    expect(result.goals[0]?.status).toBe('partial');
+    expect(result.summary.downgrade_reasons[0]).toContain('click the csv export button');
+  });
+
+  it('keeps data-grid proof verified when actions and visible row output are present', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'Filter table for Tokyo', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use table controls.',
+          core_artifacts: ['filtered table state'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Filter table',
+              journey_id: 'J1',
+              required_actions: [
+                'Click the table Search input next to the employee table.',
+                'Type Tokyo.',
+                'Observe the table body and summary text.',
+                'apply a table search, sort, page-length, pagination, grouping, or row-detail control',
+                'inspect the resulting table rows, count, order, or detail state',
+              ],
+              required_outputs: ['Airi Satou', 'filtered from 57 total entries'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'action_result', { tool: 'type', ok: true }),
+      ev('C', 'observation', {
+        summary:
+          'Airi Satou Accountant Tokyo 33 2008-11-28 $162,700\nShowing 1 to 5 of 5 entries (filtered from 57 total entries)',
+      }),
+      ev('D', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['C'],
+        rationale: 'Tokyo filter shows Airi Satou and a filtered-from-57 summary.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Filter table for Tokyo',
+        status: 'verified',
+        evidence: ['C'],
+        notes: 'Airi Satou is visible in the filtered Tokyo results with a filtered count.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['C'] }),
+    });
+
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('matches same-journey product-use jobs before enforcing required outputs', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [
+          {
+            id: 'G3',
+            description: 'Set 25 entries per page and verify Showing 26 to 50 of 57 entries.',
+            journey_id: 'J1',
+          },
+        ],
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use employee table controls.',
+          core_artifacts: ['changed grid state'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Filter the employee table to London rows',
+              journey_id: 'J1',
+              required_outputs: ['London', 'filtered from 57 total entries'],
+            },
+            {
+              id: 'PU2',
+              title: 'Sort employees by age',
+              journey_id: 'J1',
+              required_outputs: ['Age', '19', '20', '21'],
+            },
+            {
+              id: 'PU3',
+              title: 'Change page length and move to the next page',
+              journey_id: 'J1',
+              required_actions: [
+                'Open the entries per page select',
+                'Choose 25',
+                'Click the next pagination control',
+                'apply a table search, sort, page-length, pagination, grouping, or row-detail control',
+                'inspect the resulting table rows, count, order, or detail state',
+              ],
+              required_outputs: ['25 entries per page', 'Showing 26 to 50 of 57 entries'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'select', ok: true }),
+      ev('B', 'action_result', { tool: 'click', ok: true }),
+      ev('C', 'observation', {
+        summary:
+          '25 entries per page\nShowing 26 to 50 of 57 entries\nQuinn Flynn Support Lead Edinburgh',
+      }),
+      ev('D', 'goal_status', {
+        id: 'G3',
+        status: 'verified',
+        evidence_event_ids: ['C'],
+        rationale: 'Page length is 25 and the second-page status is visible.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G3',
+        description: 'Set 25 entries per page and verify Showing 26 to 50 of 57 entries.',
+        status: 'verified',
+        evidence: ['C'],
+        notes: 'The page-size and second-page status text are visible.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G3: ['C'] }),
+    });
+
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('uses concrete numeric test data for data-grid sort proof instead of semantic prose', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G2', description: 'Sort the employee table by Age.', journey_id: 'J2' }],
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use employee table controls.',
+          core_artifacts: ['changed grid state'],
+          user_jobs: [
+            {
+              id: 'PU2',
+              title: 'Sort employees by age',
+              journey_id: 'J2',
+              required_actions: ['Click the Age column header', 'Observe the first visible rows'],
+              test_data: ['youngest visible employees such as 19, 20, 21'],
+              required_outputs: ['Age', 'Employee rows with ages ordered consistently'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation', {
+        summary: 'Age\nTatyana Fitzpatrick 19\nShou Itou 20\nCaesar Vance 21',
+      }),
+      ev('C', 'goal_status', {
+        id: 'G2',
+        status: 'verified',
+        evidence_event_ids: ['B'],
+        rationale: 'Age-sorted rows show ages 19, 20, and 21.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G2',
+        description: 'Sort the employee table by Age.',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Age-sorted rows show ages 19, 20, and 21.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G2: ['B'] }),
+    });
+
+    expect(result.summary.verified_kept).toBe(1);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('keeps a calculator goal partial when the required unit mode is not actually active', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [
+          {
+            id: 'G1',
+            description: 'Open Other Units and calculate BMI near 28.1',
+            journey_id: 'J1',
+          },
+        ],
+        product_use_contract: {
+          product_kinds: ['calculator_tool'],
+          primary_value_loop: 'Calculate BMI and read the result.',
+          core_artifacts: ['BMI result panel'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Other-units BMI calculation',
+              journey_id: 'J1',
+              required_outputs: ['Other Units tab active', 'BMI near 28.1 kg/m2'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'click', ok: true }),
+      ev('B', 'observation', {
+        summary:
+          'BMI Calculator US Units Metric Units Other Units Result BMI = 28.1 kg/m2 (Overweight)',
+        perception_state: {
+          url: 'https://www.calculator.net/bmi-calculator.html?ctype=metric&x=Calculate',
+          elements: [{ selector: 'li#menuon a', text: 'Metric Units' }],
+        },
+      }),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['B'],
+        rationale: 'BMI 28.1 appears but Other Units did not stay active.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Open Other Units and calculate BMI near 28.1',
+        status: 'verified',
+        evidence: ['B'],
+        notes: 'Observation B shows BMI 28.1.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['B'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.summary.downgrade_reasons[0]).toContain('Other Units tab active');
+    expect(result.goals[0]?.status).toBe('partial');
+  });
+
   it('leaves non-verified goals untouched', () => {
     const judge = judgeWithGoals([
       { id: 'G1', description: 'x', status: 'partial', evidence: [] },
@@ -1579,6 +2169,523 @@ describe('validateGoalClaims', () => {
     const result = validateGoalClaims({ judge, trace: [], outcome_contract: contract });
     expect(result.summary.downgraded).toBe(0);
     expect(result.goals.map((g) => g.status)).toEqual(['partial', 'blocked', 'untested']);
+  });
+
+  it('uses the canonical Discovery goal text when Judge paraphrases a same-journey goal', () => {
+    const trace: TraceEvent[] = [
+      ev('DISC', 'discovery', {
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use employee table controls.',
+          core_artifacts: ['changed table state'],
+          value_loops: [],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Filter London rows',
+              journey_id: 'J1',
+              scenario_brief: 'Filter London rows.',
+              required_actions: [],
+              proof_obligations: [],
+              expected_artifact: 'Filtered rows',
+              acceptable_evidence: [],
+              test_data: [],
+              required_outputs: ['London'],
+              quality_bar: [],
+              weak_evidence: [],
+              risk: 'high',
+            },
+            {
+              id: 'PU2',
+              title: 'Sort employees by age',
+              journey_id: 'J1',
+              scenario_brief: 'Sort the employee table by Age ascending.',
+              required_actions: [],
+              proof_obligations: [],
+              expected_artifact: 'Age-sorted rows',
+              acceptable_evidence: [],
+              test_data: [],
+              required_outputs: ['Age', '19', '20', '21'],
+              quality_bar: [],
+              weak_evidence: [],
+              risk: 'high',
+            },
+          ],
+        },
+        goals: [
+          {
+            id: 'G2',
+            description: 'Sort the employee table by Age and verify ascending ages.',
+            journey_id: 'J1',
+          },
+        ],
+      }),
+      ev('ACT', 'action_result', { tool: 'click', ok: true }),
+      ev('OBS', 'observation', { summary: 'Age column sorted: 19, 20, 21.' }),
+      ev('STATUS', 'goal_status', {
+        id: 'G2',
+        status: 'verified',
+        evidence_event_ids: ['OBS'],
+        rationale: 'Observation OBS shows Age values 19, 20, 21 in sorted order.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G2',
+        description: 'Use employee grid controls and verify the table changes.',
+        status: 'verified',
+        evidence: ['OBS'],
+        notes: 'Observation OBS shows Age values 19, 20, 21 in sorted order.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G2: ['OBS'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[0]?.status).toBe('verified');
+  });
+
+  it('keeps selector-based data-grid sort proof when goal statuses are emitted late', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [
+          { id: 'G1', description: 'Filter the employee table for Tokyo.', journey_id: 'J1' },
+          { id: 'G2', description: 'Sort the table by Salary descending.', journey_id: 'J2' },
+        ],
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use employee table controls.',
+          core_artifacts: ['changed grid state'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Filter employees by office',
+              journey_id: 'J1',
+              required_actions: ['Type Tokyo into the table search.'],
+              required_outputs: ['Tokyo', 'filtered from 57 total entries'],
+            },
+            {
+              id: 'PU2',
+              title: 'Sort the table by salary',
+              journey_id: 'J2',
+              required_actions: [
+                'Clear the table search field if it contains text.',
+                'Click the Salary column header.',
+                'If needed, click again to reach descending order.',
+                'Observe the reordered rows and Salary header sort state.',
+              ],
+              test_data: ['Column: Salary', 'High-salary row example: Angelica Ramos, $1,200,000'],
+              required_outputs: ['Salary', '$1,200,000', 'Angelica Ramos'],
+            },
+          ],
+        },
+      }),
+      ev('G1-A', 'action_result', { tool: 'type', ok: true }),
+      ev('G1-E', 'observation', {
+        summary: 'Tokyo rows are visible and the footer says filtered from 57 total entries.',
+      }),
+      ev('G2-A1', 'action', {
+        tool: 'click',
+        args: { selector: '#example thead th:last-child' },
+      }),
+      ev('G2-R1', 'action_result', { tool: 'click', ok: true }),
+      {
+        ...ev('G1-AUTO', 'goal_status', {
+          id: 'G1',
+          status: 'partial',
+          evidence_event_ids: [],
+          auto_cutover: true,
+          rationale: 'auto-cutover after 15 turns without explicit goal_status',
+        }),
+        step: 6,
+      },
+      {
+        ...ev('G1-S', 'goal_status', {
+          id: 'G1',
+          status: 'verified',
+          evidence_event_ids: ['G1-E'],
+          rationale: 'Tokyo filtered rows are visible.',
+        }),
+        step: 7,
+      },
+      {
+        ...ev('G2-E', 'observation', {
+          summary: 'Salary sorted descending. Angelica Ramos appears first with $1,200,000.',
+        }),
+        step: 7,
+      },
+      {
+        ...ev('G2-S', 'goal_status', {
+          id: 'G2',
+          status: 'verified',
+          evidence_event_ids: ['G2-E'],
+          rationale: 'Salary descending sort is visible with Angelica Ramos and $1,200,000.',
+        }),
+        step: 7,
+      },
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Filter the employee table for Tokyo.',
+        status: 'verified',
+        evidence: ['G1-E'],
+        notes: 'Tokyo filtered rows are visible.',
+      },
+      {
+        id: 'G2',
+        description: 'Sort the table by Salary descending.',
+        status: 'verified',
+        evidence: ['G2-E'],
+        notes: 'Angelica Ramos appears first with $1,200,000 after Salary sorting.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['G1-E'], G2: ['G2-E'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(0);
+    expect(result.goals[1]?.status).toBe('verified');
+  });
+
+  it('downgrades ambiguous same-journey product-use matches instead of skipping the contract', () => {
+    const trace: TraceEvent[] = [
+      ev('DISC', 'discovery', {
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use employee table controls.',
+          core_artifacts: ['changed table state'],
+          value_loops: [],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Filter London rows',
+              journey_id: 'J1',
+              scenario_brief: 'Filter London rows.',
+              required_actions: [],
+              proof_obligations: [],
+              expected_artifact: 'Filtered rows',
+              acceptable_evidence: [],
+              test_data: [],
+              required_outputs: ['London'],
+              quality_bar: [],
+              weak_evidence: [],
+              risk: 'high',
+            },
+            {
+              id: 'PU2',
+              title: 'Sort by age',
+              journey_id: 'J1',
+              scenario_brief: 'Sort by Age.',
+              required_actions: [],
+              proof_obligations: [],
+              expected_artifact: 'Sorted rows',
+              acceptable_evidence: [],
+              test_data: [],
+              required_outputs: ['Age'],
+              quality_bar: [],
+              weak_evidence: [],
+              risk: 'high',
+            },
+          ],
+        },
+        goals: [{ id: 'G1', description: 'Use table controls.', journey_id: 'J1' }],
+      }),
+      ev('ACT', 'action_result', { tool: 'click', ok: true }),
+      ev('OBS', 'observation', { summary: 'The table changed.' }),
+      ev('STATUS', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['OBS'],
+        rationale: 'Observation OBS shows the table changed.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Use table controls.',
+        status: 'verified',
+        evidence: ['OBS'],
+        notes: 'Observation OBS shows the table changed.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['OBS'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.goals[0]?.notes).toContain('product-use contract ambiguous');
+  });
+
+  it('downgrades ambiguous no-journey product-use matches instead of skipping the contract', () => {
+    const trace: TraceEvent[] = [
+      ev('DISC', 'discovery', {
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use employee table controls.',
+          core_artifacts: ['changed table state'],
+          value_loops: [],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Filter London rows',
+              scenario_brief: 'Filter London rows.',
+              required_actions: [],
+              proof_obligations: [],
+              expected_artifact: 'Filtered rows',
+              acceptable_evidence: [],
+              test_data: [],
+              required_outputs: ['London'],
+              quality_bar: [],
+              weak_evidence: [],
+              risk: 'high',
+            },
+            {
+              id: 'PU2',
+              title: 'Sort by age',
+              scenario_brief: 'Sort by Age.',
+              required_actions: [],
+              proof_obligations: [],
+              expected_artifact: 'Sorted rows',
+              acceptable_evidence: [],
+              test_data: [],
+              required_outputs: ['Age'],
+              quality_bar: [],
+              weak_evidence: [],
+              risk: 'high',
+            },
+          ],
+        },
+        goals: [{ id: 'G1', description: 'Use table controls.' }],
+      }),
+      ev('ACT', 'action_result', { tool: 'click', ok: true }),
+      ev('OBS', 'observation', { summary: 'The table changed.' }),
+      ev('STATUS', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['OBS'],
+        rationale: 'Observation OBS shows the table changed.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Use table controls.',
+        status: 'verified',
+        evidence: ['OBS'],
+        notes: 'Observation OBS shows the table changed.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['OBS'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.goals[0]?.notes).toContain('product-use contract ambiguous');
+  });
+
+  it('does not satisfy multiple scenario outputs from separate cited evidence events', () => {
+    const trace: TraceEvent[] = [
+      ev('DISC', 'discovery', {
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use table controls.',
+          core_artifacts: ['changed table state'],
+          value_loops: [],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Filter London rows',
+              journey_id: 'J1',
+              scenario_brief: 'Filter London rows.',
+              required_actions: [],
+              proof_obligations: [],
+              expected_artifact: 'Filtered rows',
+              acceptable_evidence: [],
+              test_data: [],
+              required_outputs: ['London', 'filtered from 57 total entries'],
+              quality_bar: [],
+              weak_evidence: [],
+              risk: 'high',
+            },
+          ],
+        },
+        goals: [{ id: 'G1', description: 'Filter London rows.', journey_id: 'J1' }],
+      }),
+      ev('ACT', 'action_result', { tool: 'click', ok: true }),
+      ev('OBS1', 'observation', { summary: 'London rows are visible.' }),
+      ev('OBS2', 'observation', { summary: 'filtered from 57 total entries.' }),
+      ev('STATUS', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['OBS1', 'OBS2'],
+        rationale: 'OBS1 shows London and OBS2 shows filtered from 57 total entries.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Filter London rows.',
+        status: 'verified',
+        evidence: ['OBS1', 'OBS2'],
+        notes: 'OBS1 shows London and OBS2 shows filtered from 57 total entries.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['OBS1', 'OBS2'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.goals[0]?.notes).toContain('scenario-specific proof missing required content');
+  });
+
+  it('does not treat mutating action_result narration as visible scenario proof', () => {
+    const trace: TraceEvent[] = [
+      ev('DISC', 'discovery', {
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use table controls.',
+          core_artifacts: ['changed table state'],
+          value_loops: [],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Filter London rows',
+              journey_id: 'J1',
+              scenario_brief: 'Filter London rows.',
+              required_actions: [],
+              proof_obligations: [],
+              expected_artifact: 'Filtered rows',
+              acceptable_evidence: [],
+              test_data: [],
+              required_outputs: ['London'],
+              quality_bar: [],
+              weak_evidence: [],
+              risk: 'high',
+            },
+          ],
+        },
+        goals: [{ id: 'G1', description: 'Filter London rows.', journey_id: 'J1' }],
+      }),
+      ev('ACT', 'action_result', {
+        tool: 'type',
+        ok: true,
+        description: 'Typed London into the search box.',
+      }),
+      ev('OBS', 'observation', { summary: 'No matching records found.' }),
+      ev('STATUS', 'goal_status', {
+        id: 'G1',
+        status: 'verified',
+        evidence_event_ids: ['ACT', 'OBS'],
+        rationale: 'Typed London and observed the table.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'Filter London rows.',
+        status: 'verified',
+        evidence: ['ACT', 'OBS'],
+        notes: 'Typed London and observed the table.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G1: ['OBS'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.goals[0]?.notes).toContain('scenario-specific proof missing required content');
+  });
+
+  it('rejects stale unowned evidence from before an earlier goal status', () => {
+    const trace: TraceEvent[] = [
+      ev('DISC', 'discovery', {
+        product_use_contract: {
+          product_kinds: ['data_grid'],
+          primary_value_loop: 'Use table controls.',
+          core_artifacts: ['changed table state'],
+          value_loops: [],
+          user_jobs: [
+            {
+              id: 'PU2',
+              title: 'Show Alpha rows',
+              journey_id: 'J2',
+              scenario_brief: 'Show Alpha rows.',
+              required_actions: [],
+              proof_obligations: [],
+              expected_artifact: 'Alpha rows',
+              acceptable_evidence: [],
+              test_data: [],
+              required_outputs: ['Alpha'],
+              quality_bar: [],
+              weak_evidence: [],
+              risk: 'high',
+            },
+          ],
+        },
+        goals: [
+          { id: 'G1', description: 'First goal.', journey_id: 'J1' },
+          { id: 'G2', description: 'Show Alpha rows.', journey_id: 'J2' },
+        ],
+      }),
+      ev('OBS1', 'observation', { summary: 'Alpha' }),
+      ev('STATUS1', 'goal_status', {
+        id: 'G1',
+        status: 'partial',
+        evidence_event_ids: [],
+        rationale: 'First goal was partial.',
+      }),
+      ev('STATUS2', 'goal_status', {
+        id: 'G2',
+        status: 'verified',
+        evidence_event_ids: ['OBS1'],
+        rationale: 'Alpha was visible in a stale observation.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'First goal.',
+        status: 'partial',
+        evidence: [],
+        notes: 'First goal was partial.',
+      },
+      {
+        id: 'G2',
+        description: 'Show Alpha rows.',
+        status: 'verified',
+        evidence: ['OBS1'],
+        notes: 'Alpha was visible in a stale observation.',
+      },
+    ]);
+
+    const result = validateGoalClaims({
+      judge,
+      trace,
+      outcome_contract: stubContract({ G2: ['OBS1'] }),
+    });
+
+    expect(result.summary.downgraded).toBe(1);
+    expect(result.goals[1]?.notes).toContain('scenario-specific proof missing');
   });
 
   it('rewrites stale Judge summary when validation downgrades a goal', () => {
@@ -1620,6 +2727,42 @@ describe('validateGoalClaims', () => {
     expect(applied.meta.confidence_caveats).toContain(
       '1 verified goal claim(s) were downgraded by deterministic evidence validation.',
     );
+  });
+
+  it('removes stale goal-validation caveats before applying the current validation summary', () => {
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'inspect source code',
+        status: 'verified',
+        evidence: ['OBS1'],
+        notes: 'Source code was visible.',
+      },
+    ]);
+    judge.meta.confidence_caveats = [
+      'G1 was downgraded by goal validation in an earlier pass.',
+      'Checkout validation scenario was not tested on mobile.',
+      'Network requests were not exhaustively inspected.',
+    ];
+    const firstGoal = judge.spec_compliance.goals[0];
+    if (!firstGoal) throw new Error('expected goal');
+
+    const applied = applyGoalClaimValidationToJudgeOutput(judge, {
+      goals: [firstGoal],
+      summary: {
+        verified_kept: 1,
+        partial_upgraded: 0,
+        partial_kept: 0,
+        downgraded: 0,
+        downgrade_reasons: [],
+        partial_reasons: [],
+      },
+    });
+
+    expect(applied.meta.confidence_caveats).toEqual([
+      'Checkout validation scenario was not tested on mobile.',
+      'Network requests were not exhaustively inspected.',
+    ]);
   });
 
   it('caps goal-dependent rubric scores after validated goal downgrades', () => {

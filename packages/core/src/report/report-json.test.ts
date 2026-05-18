@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { TraceEvent } from '../trace/schema.js';
 import { fakeJudge, fakeRun } from './_fakes.js';
 import { buildReportJson, refreshReportJsonDerivedFields } from './report-json.js';
 
@@ -37,6 +38,95 @@ describe('buildReportJson', () => {
       '4 partial scenarios indicate Iris did not fully prove outcomes',
     );
     expect(r.evaluation?.evidence_confidence.reasons).toContain('No confirmed product findings');
+  });
+
+  it('does not describe suggestion-only reports as confirmed product issues', () => {
+    const judge = fakeJudge();
+    judge.findings = [
+      {
+        id: 'F-suggestion',
+        title: 'Consider exposing keyboard shortcuts',
+        category: 'suggestion',
+        severity: 'suggestion',
+        evidence: [],
+        rationale: 'This could improve power-user efficiency.',
+      },
+    ];
+    judge.scores.overall.score = 8;
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'load article', status: 'verified', evidence: ['T2'] },
+      { id: 'G2', description: 'open history', status: 'partial', evidence: ['T3'] },
+    ];
+
+    const r = buildReportJson({ judge, run: fakeRun() });
+
+    expect(r.evaluation?.product_score.interpretation).toContain(
+      'No product defects were confirmed',
+    );
+    expect(r.evaluation?.product_score.interpretation).not.toContain('Product issues were found');
+  });
+
+  it('marks high-score zero-scenario runs as insufficient evidence', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 9.2;
+    judge.meta.confidence_overall = 0.95;
+    judge.meta.confidence_caveats = [];
+    judge.spec_compliance = {
+      applicable: false,
+      goals: [],
+      summary: 'No goals.',
+    };
+
+    const r = buildReportJson({ judge, run: fakeRun(), threshold: 7 });
+
+    expect(r.evaluation?.product_score.authority).toBe('insufficient');
+    expect(r.headline.threshold_passed).toBe(false);
+    expect(r.evaluation?.evidence_confidence.reasons).toContain(
+      'No product scenarios were available to anchor the product score',
+    );
+  });
+
+  it('reconstructs omitted discovery goals before computing coverage and task runs', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.spec_compliance.goals = [
+      {
+        id: 'G1',
+        description: 'Search content',
+        status: 'verified',
+        evidence: ['OBS1'],
+        notes: 'Observation shows search content.',
+      },
+    ];
+
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      threshold: 7,
+      trace_events: [
+        traceEvent('DISC', 0, 'discovery', {
+          goals: [
+            { id: 'G1', description: 'Search content' },
+            { id: 'G2', description: 'Open history' },
+          ],
+        }),
+        traceEvent('OBS1', 1, 'observation', { ref: 'OBS-000001', summary: 'Search content' }),
+        traceEvent('OBS2', 2, 'observation', { ref: 'OBS-000002', summary: 'History partial' }),
+        traceEvent('GS2', 3, 'goal_status', {
+          id: 'G2',
+          status: 'partial',
+          rationale: 'History was not fully proven.',
+          evidence_event_ids: ['OBS2'],
+        }),
+      ],
+    });
+
+    expect(r.headline.goals_total).toBe(2);
+    expect(r.headline.goals_verified).toBe(1);
+    expect(r.headline.threshold_passed).toBe(false);
+    expect(r.spec_compliance.goals.map((goal) => goal.id)).toEqual(['G1', 'G2']);
+    expect(r.task_runs?.map((run) => run.id)).toContain('TR-G2');
   });
 
   it('caps score authority when selected scenarios cover too little of the learned product denominator', () => {
@@ -154,6 +244,70 @@ describe('buildReportJson', () => {
     );
   });
 
+  it('counts verified implementation-code goals toward developer documentation capability coverage', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 8.3;
+    judge.meta.confidence_overall = 0.84;
+    judge.meta.confidence_caveats = [];
+    judge.spec_compliance.goals = [
+      {
+        id: 'G4',
+        description: 'Inspect the JavaScript implementation tab and dependency context.',
+        status: 'verified',
+        evidence: ['OBS4'],
+        notes: "OBS4 shows Javascript, new DataTable('#example'), and library dependency text.",
+      },
+    ];
+
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      trace_events: [
+        traceEvent('DISC', 0, 'discovery', {
+          goals: [
+            {
+              id: 'G4',
+              description: 'Inspect the JavaScript implementation tab and dependency context.',
+              surface_ids: ['S-code'],
+            },
+          ],
+          capabilities: [
+            {
+              id: 'C5',
+              label: 'Read implementation code or dependencies',
+              product_kind: 'developer_documentation',
+              importance: 'core',
+              status: 'deferred',
+              selection_expectation: 'must_test',
+              skip_reason:
+                'Central product capability was expected to be tested, but no selected scenario covered it.',
+              confidence: 0.9,
+              source: 'model',
+              scenario_ids: [],
+              journey_ids: ['J4'],
+              surface_ids: ['S-code'],
+              evidence: [
+                "Visible code sample new DataTable('#example');",
+                'Visible library dependency links.',
+              ],
+              denominator_reason:
+                'Developer documentation value requires showing implementation behind the live example.',
+              coverage_gap: 'No selected scenario covered implementation code.',
+            },
+          ],
+        }),
+      ],
+    });
+
+    expect(r.evaluation?.capability_coverage?.summary).toBe(
+      '1/1 core capabilities covered; 1/1 important capabilities covered; 0 important skipped.',
+    );
+    expect(r.evaluation?.capability_coverage?.gaps).not.toContain(
+      'Read implementation code or dependencies',
+    );
+  });
+
   it('synthesizes capability coverage for older discovery events that lack capabilities', () => {
     const judge = fakeJudge();
     judge.findings = [];
@@ -251,11 +405,15 @@ describe('buildReportJson', () => {
     expect(r.headline.threshold_passed).toBe(false);
   });
 
-  it('threshold omitted means threshold_passed=true when no blocker or major findings (Phase 12)', () => {
+  it('threshold omitted means threshold_passed=true when authoritative evidence has no blocker or major findings', () => {
     const clean = fakeJudge();
     clean.findings = clean.findings.filter(
       (f) => f.severity !== 'blocker' && f.severity !== 'major',
     );
+    clean.spec_compliance.goals = [
+      { id: 'G1', description: 'sign in', status: 'verified', evidence: ['T2'] },
+      { id: 'G2', description: 'export', status: 'verified', evidence: ['T8'] },
+    ];
     const r = buildReportJson({ judge: clean, run: fakeRun() });
     expect(r.headline.threshold_passed).toBe(true);
   });
@@ -290,7 +448,7 @@ describe('buildReportJson', () => {
     expect(r.headline.threshold_passed).toBe(false);
   });
 
-  it('threshold_passed true when coverage ≥ 50% and no blockers (Phase 12)', () => {
+  it('threshold_passed false when coverage is only partial/provisional even without blockers', () => {
     const judge = fakeJudge();
     judge.findings = [];
     judge.spec_compliance.goals = [
@@ -299,9 +457,42 @@ describe('buildReportJson', () => {
       { id: 'G3', description: 'c', status: 'untested', evidence: [] },
       { id: 'G4', description: 'd', status: 'untested', evidence: [] },
     ];
-    // 2/4 = 50% — exactly at the floor.
+    // 2/4 = 50% but only one verified — enough for a provisional score, not an acceptance pass.
     const r = buildReportJson({ judge, run: fakeRun(), threshold: 5.0 });
+    expect(r.evaluation?.product_score.authority).toBe('provisional');
+    expect(r.headline.threshold_passed).toBe(false);
+  });
+
+  it('threshold_passed true when authoritative coverage meets the threshold', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'a', status: 'verified', evidence: ['T1'] },
+      { id: 'G2', description: 'b', status: 'verified', evidence: ['T2'] },
+      { id: 'G3', description: 'c', status: 'verified', evidence: ['T3'] },
+      { id: 'G4', description: 'd', status: 'verified', evidence: ['T4'] },
+    ];
+    const r = buildReportJson({ judge, run: fakeRun(), threshold: 5.0 });
+    expect(r.evaluation?.product_score.authority).toBe('authoritative');
     expect(r.headline.threshold_passed).toBe(true);
+  });
+
+  it('threshold_passed false when all attempted scenarios are partial', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 8;
+    judge.meta.confidence_overall = 0.9;
+    judge.meta.confidence_caveats = [];
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'a', status: 'partial', evidence: ['T1'] },
+      { id: 'G2', description: 'b', status: 'partial', evidence: ['T2'] },
+      { id: 'G3', description: 'c', status: 'partial', evidence: ['T3'] },
+    ];
+
+    const r = buildReportJson({ judge, run: fakeRun(), threshold: 5.0 });
+
+    expect(r.evaluation?.product_score.authority).toBe('insufficient');
+    expect(r.headline.threshold_passed).toBe(false);
   });
 
   it('threshold_passed stays false when score authority is insufficient', () => {
@@ -398,6 +589,78 @@ describe('buildReportJson', () => {
     expect(r.headline.threshold_passed).toBe(false);
   });
 
+  it('infers calculator input/unit capabilities from verified calculator goals', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 8.2;
+    judge.meta.confidence_overall = 0.9;
+    judge.meta.confidence_caveats = [];
+    judge.spec_compliance.goals = [
+      {
+        id: 'G1',
+        description:
+          'Calculate BMI in US units for a 35-year-old male who is 5 ft 10 in and 200 lb.',
+        status: 'verified',
+        evidence: ['OBS1'],
+        notes: 'BMI = 28.7 kg/m2 (Overweight) with healthy range details.',
+      },
+      {
+        id: 'G2',
+        description: 'Switch to Metric Units, calculate BMI for 170 cm and 70 kg.',
+        status: 'verified',
+        evidence: ['OBS2'],
+        notes: 'BMI = 24.2 kg/m2 (Normal) with healthy weight in kilograms.',
+      },
+    ];
+    const r = buildReportJson({
+      judge,
+      run: fakeRun(),
+      threshold: 7,
+      trace_events: [
+        traceEvent('DISC', 0, 'discovery', {
+          capabilities: [
+            {
+              id: 'C1',
+              label: 'Calculate a concrete result',
+              product_kind: 'calculator_tool',
+              importance: 'core',
+              status: 'selected',
+              selection_expectation: 'must_test',
+              confidence: 0.8,
+              source: 'model',
+              evidence: [],
+              scenario_ids: ['G1', 'G2'],
+              journey_ids: [],
+              surface_ids: [],
+              denominator_reason: 'Primary calculator result.',
+              coverage_gap: '',
+            },
+            {
+              id: 'C2',
+              label: 'Use input fields and unit options',
+              product_kind: 'calculator_tool',
+              importance: 'important',
+              status: 'deferred',
+              selection_expectation: 'should_test_or_explain',
+              confidence: 0.7,
+              source: 'model',
+              evidence: [],
+              scenario_ids: [],
+              journey_ids: [],
+              surface_ids: [],
+              denominator_reason: 'Calculator users need concrete input values and unit options.',
+              coverage_gap: '',
+            },
+          ],
+        }),
+      ],
+    });
+
+    expect(r.evaluation?.capability_coverage?.important_covered).toBe(2);
+    expect(r.evaluation?.product_score.authority).toBe('authoritative');
+    expect(r.headline.threshold_passed).toBe(true);
+  });
+
   it('threshold_passed false when report is blocked', () => {
     const judge = fakeJudge();
     judge.findings = [];
@@ -414,6 +677,10 @@ describe('buildReportJson', () => {
     const judge = fakeJudge();
     judge.findings = [];
     judge.scores.overall.score = 91;
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'first task', status: 'verified', evidence: ['T1'] },
+      { id: 'G2', description: 'second task', status: 'verified', evidence: ['T2'] },
+    ];
     const profile = judge.scores.profiles.quality;
     if (!profile) throw new Error('fake judge is missing quality profile');
     profile.score = 88;
@@ -1034,3 +1301,21 @@ describe('buildReportJson', () => {
     expect(r.next_actions.for_re_evaluation).toContain('--persona keyboard_only');
   });
 });
+
+function traceEvent(
+  id: string,
+  step: number,
+  kind: TraceEvent['kind'],
+  payload: Record<string, unknown>,
+): TraceEvent {
+  return {
+    v: 1,
+    id,
+    ts: step,
+    step,
+    target_kind: 'web',
+    kind,
+    actor: kind === 'observation' ? 'adapter' : kind === 'goal_status' ? 'explorer' : 'system',
+    payload,
+  };
+}
