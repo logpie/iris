@@ -153,7 +153,7 @@ describe('validateGoalClaims', () => {
     expect(result.goals[0]?.status).toBe('verified');
   });
 
-  it('upgrades partial when cited evidence satisfies the product-use contract', () => {
+  it('preserves partial when cited evidence satisfies the product-use contract', () => {
     const trace: TraceEvent[] = [
       ev('DISCOVERY', 'discovery', {
         goals: [{ id: 'G1', description: 'complete checkout', journey_id: 'J1' }],
@@ -192,13 +192,61 @@ describe('validateGoalClaims', () => {
     const contract = stubContract({ G1: ['B'] });
     const result = validateGoalClaims({ judge, trace, outcome_contract: contract });
     expect(result.summary.verified_kept).toBe(0);
-    expect(result.summary.partial_upgraded).toBe(1);
+    expect(result.summary.partial_upgraded).toBe(0);
+    expect(result.summary.partial_kept).toBe(1);
     expect(result.summary.downgraded).toBe(0);
-    expect(result.goals[0]?.status).toBe('verified');
-    expect(result.goals[0]?.notes).toContain('partial upgraded');
+    expect(result.goals[0]?.status).toBe('partial');
+    expect(result.goals[0]?.notes).toContain('validator does not upgrade partial claims');
   });
 
-  it('rewrites stale Judge summary when validation upgrades a partial goal', () => {
+  it('keeps partial when the claim explicitly says proof is incomplete', () => {
+    const trace: TraceEvent[] = [
+      ev('DISCOVERY', 'discovery', {
+        goals: [{ id: 'G1', description: 'inspect reference tables', journey_id: 'J1' }],
+        product_use_contract: {
+          product_kinds: ['calculator_tool'],
+          primary_value_loop: 'Use calculator reference content.',
+          core_artifacts: ['reference table'],
+          user_jobs: [
+            {
+              id: 'PU1',
+              title: 'Inspect reference tables',
+              journey_id: 'J1',
+              required_outputs: ['BMI table for adults', 'Chart for boys'],
+            },
+          ],
+        },
+      }),
+      ev('A', 'action_result', { tool: 'screenshot', ok: true }),
+      ev('B', 'observation', {
+        summary: 'BMI table for adults and Chart for boys are visible in the reference area.',
+      }),
+      ev('C', 'goal_status', {
+        id: 'G1',
+        status: 'partial',
+        evidence_event_ids: ['B'],
+        rationale:
+          'Screenshots were captured, but full adult and child table proof remained partial.',
+      }),
+    ];
+    const judge = judgeWithGoals([
+      {
+        id: 'G1',
+        description: 'inspect reference tables',
+        status: 'partial',
+        evidence: ['B'],
+        notes: 'The cited evidence does not fully prove all required reference table details.',
+      },
+    ]);
+    const contract = stubContract({ G1: ['B'] });
+    const result = validateGoalClaims({ judge, trace, outcome_contract: contract });
+    expect(result.summary.partial_upgraded).toBe(0);
+    expect(result.summary.partial_kept).toBe(1);
+    expect(result.goals[0]?.status).toBe('partial');
+    expect(result.goals[0]?.notes).toContain('partial explicitly reported incomplete proof');
+  });
+
+  it('rewrites stale Judge summary when validation preserves a partial goal', () => {
     const judge = judgeWithGoals([
       {
         id: 'G1',
@@ -216,26 +264,26 @@ describe('validateGoalClaims', () => {
       goals: [
         {
           ...goal,
-          status: 'verified' as const,
-          notes: `${goal.notes} [goal-claim validator: partial upgraded after cited outcome evidence satisfied the product-use contract]`,
+          notes: `${goal.notes} [goal-claim validator: partial claim preserved; validator does not upgrade partial claims]`,
         },
       ],
       summary: {
         verified_kept: 0,
-        partial_upgraded: 1,
-        partial_kept: 0,
+        partial_upgraded: 0,
+        partial_kept: 1,
         downgraded: 0,
         downgrade_reasons: [],
-        partial_reasons: [],
+        partial_reasons: ['G1: partial claim preserved; validator does not upgrade partial claims'],
       },
     });
 
     expect(applied.spec_compliance.summary).toBe(
-      'Goal evidence validation upgraded 1 partial claim. Final goal status: 1 verified.',
+      'Goal evidence validation kept 1 partial claim as partial. Final goal status: 1 partial.',
     );
-    expect(applied.spec_compliance.goal_claim_validation?.partial_upgraded).toBe(1);
+    expect(applied.spec_compliance.goal_claim_validation?.partial_upgraded).toBe(0);
+    expect(applied.spec_compliance.goal_claim_validation?.partial_kept).toBe(1);
     expect(applied.meta.confidence_caveats).toContain(
-      '1 partial goal claim(s) were upgraded after deterministic evidence validation.',
+      '1 partial goal claim(s) stayed partial after deterministic evidence validation.',
     );
   });
 

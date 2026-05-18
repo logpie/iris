@@ -44,6 +44,8 @@ export interface GoalClaimValidationOutput {
   goals: JudgeOutput['spec_compliance']['goals'];
   summary: {
     verified_kept: number;
+    // Kept for historical reports and renderers. New validation runs preserve
+    // conservative partials instead of upgrading them.
     partial_upgraded: number;
     partial_kept: number;
     downgraded: number;
@@ -74,7 +76,6 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
   const goalStatusInfo = latestGoalStatusInfo(trace, goals);
   const traceIndexById = new Map(trace.map((e, idx) => [e.id, idx]));
   let verifiedKept = 0;
-  let partialUpgraded = 0;
   let partialKept = 0;
   let downgraded = 0;
   const reasons: string[] = [];
@@ -164,6 +165,9 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
     ];
     const uniqueArtifacts = uniqueArtifactsByRef(artifacts);
     const cited = uniqueArtifacts.some((a) => citedSet.has(a.ref));
+    const explicitlyIncomplete = wasPartial
+      ? hasExplicitIncompleteProofLanguage(`${notes}\n${statusRationale}`)
+      : false;
     const hasSideEffectOnly =
       !cited &&
       ((g.notes && SIDE_EFFECT_PATTERNS.some((p) => p.test(g.notes ?? ''))) ||
@@ -174,14 +178,10 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
 
     if (cited) {
       if (wasPartial) {
-        partialUpgraded++;
-        const upgradeNote =
-          '[goal-claim validator: partial upgraded after cited outcome evidence satisfied the product-use contract]';
-        return {
-          ...g,
-          status: 'verified' as const,
-          notes: notes ? `${notes} ${upgradeNote}` : upgradeNote,
-        };
+        if (explicitlyIncomplete) {
+          return keepPartial('partial explicitly reported incomplete proof');
+        }
+        return keepPartial('partial claim preserved; validator does not upgrade partial claims');
       }
       verifiedKept++;
       return noteBackfill
@@ -230,7 +230,7 @@ export function validateGoalClaims(input: ValidateGoalClaimsInputs): GoalClaimVa
     goals: next,
     summary: {
       verified_kept: verifiedKept,
-      partial_upgraded: partialUpgraded,
+      partial_upgraded: 0,
       partial_kept: partialKept,
       downgraded,
       downgrade_reasons: reasons,
@@ -958,6 +958,29 @@ function hasOutcomeLanguage(text: string): boolean {
       normalized,
     );
   return outcomeVerb && outcomeObject;
+}
+
+function hasExplicitIncompleteProofLanguage(text: string): boolean {
+  const normalized = normalizeText(text);
+  if (!normalized) return false;
+  return (
+    /\b(remained partial|remains partial|stayed partial|stays partial|still partial)\b/.test(
+      normalized,
+    ) ||
+    /\b(not fully|not completely)\b.*\b(verified|proven|proved|confirmed|shown|visible|readable)\b/.test(
+      normalized,
+    ) ||
+    /\b(could not|cannot|failed to|unable to)\b.*\b(verify|prove|confirm|read|see|show|expose|capture)\b/.test(
+      normalized,
+    ) ||
+    /\b(does not|do not|did not|doesn t|don t|didn t)\b.*\b(visibly show|show|prove|confirm|include|expose)\b/.test(
+      normalized,
+    ) ||
+    /\b(lacks|lacked|missing)\b.*\b(visible|required|outcome|proof|evidence|result)\b/.test(
+      normalized,
+    ) ||
+    /\b(full|complete)\b.*\bproof\b.*\b(partial|missing|incomplete|not)\b/.test(normalized)
+  );
 }
 
 function genericWeakEvidencePhrases(contract: ProductUseContractLike): string[] {
