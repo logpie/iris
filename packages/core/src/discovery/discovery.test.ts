@@ -30,6 +30,8 @@ describe('DISCOVERY_SYSTEM', () => {
     expect(DISCOVERY_SYSTEM).toContain('Only "core" and selected "secondary_workflow"');
     expect(DISCOVERY_SYSTEM).toContain('A word editor should type a real paragraph');
     expect(DISCOVERY_SYSTEM).toContain('normally perform as setup before a material goal');
+    expect(DISCOVERY_SYSTEM).toContain('one coherent state transition');
+    expect(DISCOVERY_SYSTEM).toContain('support/reference coverage crowd out primary');
   });
 });
 
@@ -3632,9 +3634,280 @@ describe('runDiscovery', () => {
     expect(docsJob).toBeDefined();
     expect(docsJob?.required_actions.join('\n')).not.toMatch(/settings|preferences|help/i);
     expect(docsJob?.proof_obligations.join('\n')).toContain('developer-facing instructions');
+    const selectedJourneyIds = result.output.coverage_plan?.selected_journey_ids ?? [];
+    expect(selectedJourneyIds[0]).toBe('J1');
+    expect(selectedJourneyIds).toHaveLength(2);
+    const selectedJourneyText = result.output.journeys
+      .filter((journey) => selectedJourneyIds.includes(journey.id))
+      .map((journey) => `${journey.title} ${journey.suggested_goal}`)
+      .join('\n');
+    expect(selectedJourneyText).toMatch(/sort|page|entries|pagination|row order|data-grid/i);
+    expect(selectedJourneyIds).not.toContain('J2');
+    expect(result.output.coverage_plan?.deferred_surface_ids).toContain('S2');
+    const goalDescriptions = result.output.goals.map((goal) => goal.description).join('\n');
+    expect(goalDescriptions).not.toMatch(/implementation|javascript|cdn|dependency/i);
+    expect(goalDescriptions).not.toMatch(/visible content navigation|section anchors|citations/i);
+    expect(goalDescriptions).toMatch(/table|row|count|order|range/i);
+    const explorerContext = formatDiscoveryExplorerContext(result.output);
+    expect(explorerContext).toContain('Filter the employee table');
+    expect(explorerContext).not.toContain('Inspect the initialization code');
     expect(result.output.capabilities.map((capability) => capability.label)).toContain(
       'Filter data-grid rows',
     );
+  });
+
+  it('keeps calculator reference and related-link coverage out of seed goals', async () => {
+    const result = await runDiscovery({
+      url: 'https://calculator.example/bmi',
+      observation_summary:
+        'BMI Calculator with US Units, Metric Units, Other Units, adult BMI table, child/teen reference tables, CDC PDF charts, related Body Fat calculator link, and site search.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A BMI calculator with supporting reference content.',
+          product_use_contract: {
+            product_kinds: ['calculator_tool', 'developer_documentation'],
+            primary_value_loop:
+              'A user enters height and weight, calculates BMI, and sees the resulting BMI value and category.',
+            core_artifacts: ['BMI result value and category'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Calculate BMI in US units',
+                journey_id: 'J1',
+                scenario_brief:
+                  'Calculate BMI for a 32-year-old adult who is 6 feet 0 inches and 210 pounds.',
+                required_actions: [],
+                required_outputs: ['BMI', 'Overweight'],
+                expected_artifact: 'BMI result panel',
+                risk: 'high',
+              },
+              {
+                id: 'PU2',
+                title: 'Read BMI reference content',
+                journey_id: 'J2',
+                scenario_brief:
+                  'Scroll to the adult BMI table and child/teen section, then sample a Chart for boys PDF link.',
+                required_actions: [],
+                required_outputs: [
+                  'Metric Units tab active',
+                  'BMI table for adults',
+                  'Chart for boys',
+                ],
+                expected_artifact: 'Readable BMI reference content',
+                risk: 'medium',
+              },
+              {
+                id: 'PU3',
+                title: 'Find related calculator',
+                journey_id: 'J3',
+                scenario_brief:
+                  'Use a related calculator link to open the Body Fat Calculator page.',
+                required_actions: [],
+                required_outputs: ['Other Units tab active', 'Body Fat Calculator'],
+                expected_artifact: 'Related calculator destination',
+                risk: 'medium',
+              },
+              {
+                id: 'PU4',
+                title: 'Clear calculator form',
+                journey_id: 'J4',
+                scenario_brief:
+                  'After entering non-default values, click Clear and verify the form resets to default state.',
+                required_actions: [],
+                required_outputs: ['Inputs reset or defaults restored'],
+                expected_artifact: 'Reset calculator form',
+                risk: 'medium',
+              },
+            ],
+          },
+          capabilities: [
+            {
+              id: 'C1',
+              label: 'Use BMI result and reference table to interpret category',
+              product_kind: 'calculator_tool',
+              importance: 'important',
+              status: 'deferred',
+              confidence: 0.8,
+              source: 'model',
+              evidence: ['BMI table is visible below the calculator.'],
+              scenario_ids: [],
+              journey_ids: ['J2'],
+              surface_ids: ['S2'],
+              denominator_reason:
+                'Reference tables can help users interpret a calculated BMI result.',
+              coverage_gap: 'Reference content can be deferred after primary calculation proof.',
+            },
+            {
+              id: 'C2',
+              label: 'Print or save a calculation result',
+              product_kind: 'calculator_tool',
+              importance: 'important',
+              status: 'deferred',
+              confidence: 0.7,
+              source: 'model',
+              evidence: ['Print link is visible near results.'],
+              scenario_ids: [],
+              journey_ids: [],
+              surface_ids: ['S2'],
+              denominator_reason: 'Printing is a support utility for calculated results.',
+              coverage_gap: 'Print/save can be deferred for a normal calculator-user audit.',
+            },
+            {
+              id: 'C3',
+              label:
+                'Interpret calculated BMI with category, healthy range, BMI Prime, and Ponderal Index',
+              product_kind: 'calculator_tool',
+              importance: 'important',
+              status: 'deferred',
+              confidence: 0.8,
+              source: 'model',
+              evidence: ['BMI result details are visible after calculation.'],
+              scenario_ids: [],
+              journey_ids: [],
+              surface_ids: ['S1'],
+              denominator_reason:
+                'BMI calculators should explain the computed number with category and range details.',
+              coverage_gap: 'Covered by selected calculation scenarios.',
+            },
+            {
+              id: 'C4',
+              label: 'Find a related BMR calculator from the BMI page',
+              product_kind: 'calculator_tool',
+              importance: 'important',
+              status: 'deferred',
+              confidence: 0.7,
+              source: 'model',
+              evidence: ['Related calculator links are visible.'],
+              scenario_ids: [],
+              journey_ids: [],
+              surface_ids: ['S3'],
+              denominator_reason: 'Related calculators are support navigation.',
+              coverage_gap: 'Related calculators can be deferred after primary calculation proof.',
+            },
+          ],
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'BMI calculator form and result panel',
+              kind: 'form',
+              url: 'https://calculator.example/bmi',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'Adult BMI table and child teen CDC chart PDFs',
+              kind: 'content',
+              url: 'https://calculator.example/bmi#reference',
+              source: 'scroll',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
+            {
+              id: 'S3',
+              label: 'Related calculators and Body Fat link',
+              kind: 'nav',
+              url: 'https://calculator.example/bmi#related',
+              source: 'scroll',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Calculate BMI in US units',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Calculate a personal BMI result.',
+              suggested_goal:
+                'Calculate BMI for a 32-year-old adult who is 6 feet 0 inches and 210 pounds, then verify BMI and Overweight category.',
+              expected_evidence: ['BMI', 'Overweight'],
+              risk: 'high',
+            },
+            {
+              id: 'J2',
+              title: 'Use BMI reference content',
+              priority: 'should',
+              goal_class: 'secondary_workflow',
+              surface_ids: ['S2'],
+              user_intent: 'Interpret BMI using reference tables.',
+              suggested_goal:
+                'Scroll to the adult BMI table and child/teen section, verify category ranges, and sample the Chart for boys PDF link.',
+              expected_evidence: ['BMI table for adults', 'Chart for boys'],
+              risk: 'medium',
+            },
+            {
+              id: 'J3',
+              title: 'Find a related health calculator',
+              priority: 'should',
+              goal_class: 'secondary_workflow',
+              surface_ids: ['S3'],
+              user_intent: 'Navigate to related calculator content.',
+              suggested_goal:
+                'Find the Body Fat Calculator using the related calculator link and verify the destination page matches.',
+              expected_evidence: ['Body Fat Calculator'],
+              risk: 'medium',
+            },
+            {
+              id: 'J4',
+              title: 'Clear calculator form',
+              priority: 'should',
+              goal_class: 'secondary_workflow',
+              surface_ids: ['S1'],
+              user_intent: 'Reset calculator inputs.',
+              suggested_goal:
+                'After entering non-default values, click Clear and verify the form resets to default state.',
+              expected_evidence: ['Inputs reset or defaults restored'],
+              risk: 'medium',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1', 'J2', 'J3', 'J4'],
+            deferred_surface_ids: [],
+            rationale: 'Calculator, reference, and related calculator coverage selected.',
+            coverage_risk: 'medium',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    if (!result) throw new Error('expected discovery result');
+    expect(result.output.product_use_contract?.product_kinds).toEqual(['calculator_tool']);
+    expect(result.output.coverage_plan?.selected_journey_ids).toEqual(['J1']);
+    expect(result.output.coverage_plan?.deferred_surface_ids).toEqual(
+      expect.arrayContaining(['S2', 'S3']),
+    );
+    expect(result.output.goals).toHaveLength(1);
+    expect(result.output.goals[0]?.description).toContain('Calculate BMI');
+    expect(result.output.goals.map((goal) => goal.description).join('\n')).not.toMatch(
+      /reference|child|teen|chart|pdf|related|body fat|clear|reset/i,
+    );
+    expect(
+      result.output.product_use_contract?.user_jobs
+        .flatMap((job) => job.required_outputs)
+        .join('\n'),
+    ).not.toMatch(/units tab active/i);
+    expect(
+      result.output.capabilities.find((capability) =>
+        /related bmr|related calculator/i.test(capability.label),
+      )?.status,
+    ).not.toBe('selected');
+    expect(
+      result.output.capabilities.find((capability) => /clear calculator/i.test(capability.label))
+        ?.status,
+    ).not.toBe('selected');
   });
 
   it('does not silently drop product-native content tools when the model labels them setup', async () => {

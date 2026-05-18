@@ -183,6 +183,71 @@ Once you answer these — even briefly — I'll write `docs/superpowers/specs/20
 
 ---
 
+# Iris Goal Generator Research — 2026-05-17
+
+**Status:** Active research before goal-selection changes.
+
+## Question
+
+Can Iris learn product use like a normal user and choose stronger top-of-funnel goals, so the downstream Explorer, Judge, validator, and report are not brittle?
+
+## Current Evidence
+
+Recent strict-validator reruns show the distinction between good product goals and overly broad/supporting goals:
+
+- **TodoMVC** (`iris-runs/todomvc-postfix-e2e-20260517-181230`): selected goals are normal task-list workflows: create, complete/filter/clear, edit/delete, toggle-all. Downstream report verified 4/4 goals. This is the shape we want: concrete user state changes and visible proof.
+- **DataTables zero-configuration example** (`iris-runs/datatables-postfix-e2e-20260517-181920`): selected goals mix the live table value loop with developer docs/navigation. Table filter/sort/page-size goals are normal for a developer using the demo, but implementation snippet, related example navigation, and site-search goals expand the denominator. Downstream report ended 3/6 verified, 3 partial. One primary table goal was partial because evidence did not visibly prove filtered counts/no-match state; two support/docs goals were partial or fragile.
+- **BMI calculator** (`iris-runs/bmicalc-postfix-e2e-20260517-182858`): US, Metric, and Other Units calculations are strong normal-user goals. Reference-table/PDF and related-calculator navigation are secondary/supporting. Downstream report ended 4/5 verified, 1 partial; the partial was the reference/PDF goal.
+- **Wikipedia** (`iris-runs/wikipedia-rootfix-final-20260516-171606`): secondary content/navigation goals are legitimate because the product is a content/search product. Search, article read, table-of-contents, history, linked article, and language switch are normal Wikipedia user workflows.
+
+## What Exists Today
+
+- The discovery prompt already asks for a primary value loop, concrete artifacts, scenario briefs, weak evidence, and seed goals only from core/selected secondary workflows.
+- `normalizeContractProductKinds` can infer `developer_documentation` from broad terms such as `javascript`, `html`, `css`, `docs`, `example`, `dependency`, `cdn`, and `source`.
+- `normalizeDiscoveryCoveragePlan` selects all non-`could` seed-class journeys, plus contract-backed journeys. A model-labeled `secondary_workflow` is still eligible for the tested goal denominator.
+- `classifyMateriality` treats any priority `must`, high risk, core surface, product-job text, or action+evidence pair as `core`. It does not have a strong concept of "normal user value" versus "support/reference/navigation coverage."
+- `closeDiscoveryCapabilityGaps` can add journeys to close important capability gaps. This protects against under-coverage, but if capability priors are too broad it can also promote supporting paths.
+
+## Hypotheses
+
+1. **Coverage pressure is too strong.** The selector optimizes "cover discovered capabilities" more than "sample the highest-value normal user outcomes." This causes docs/reference/navigation goals to enter the same denominator as primary workflows.
+2. **Product-kind inference is too permissive for supporting docs.** DataTables legitimately has developer docs, but a BMI calculator should not become `developer_documentation` because it contains related links, source-ish text, or examples. Supporting documentation should usually be surface context unless docs are the product.
+3. **Secondary workflows lack a denominator boundary.** `secondary_workflow` currently means "seed goal eligible." For tool products, some secondary flows should be explored as context or optional coverage but not counted equally with primary goal success.
+4. **Required outputs are still too string-shaped.** Goals can demand visible strings like snippets, table labels, or PDF names, but they do not always encode the complete state predicate a human would use. This contributed to DataTables G1 partial: the goal knew "filtered counts/no-match," but proof was still too easy to miss.
+5. **Persona is implicit.** DataTables is developer-facing, so docs can be normal for a developer persona. BMI is consumer-facing, so reference/PDF sampling is not the same as calculating BMI. The generator needs to pin the dominant persona before ranking goals.
+
+## Research Directions
+
+1. **Primary-user-value score:** add deterministic demotion/ranking for support/docs/reference/navigation journeys when a concrete tool/product kind is present and content/docs are not the primary product.
+2. **Support-kind pruning:** treat `developer_documentation` as a supporting kind when another concrete primary kind exists, unless the primary value loop explicitly says the user is learning/implementing docs or the URL/product is primarily documentation.
+3. **Goal denominator split:** keep secondary/support goals as hints, deferred surfaces, or optional coverage probes instead of seed goals for app/tool products. Preserve secondary content workflows for `search_content`/`content_site`.
+4. **Structured proof predicates:** strengthen generated `required_outputs`/proof obligations for state-change goals so the Explorer knows it must capture before/after or specific changed row/count/result state.
+5. **Persona-first generation:** add a dominant persona/user-value field or derive it from `product_kinds`, then use it to decide whether docs/reference/support are normal goals or context.
+
+## Validation Matrix
+
+Use a mixed product set:
+
+- TodoMVC / CRUD workflow: goals should remain all product-state workflows.
+- DataTables / developer-facing data grid: table interaction must dominate; implementation docs can be selected only if explicitly normal for the page's developer persona and should not crowd out table-state proof.
+- BMI calculator / consumer calculator: calculation variants should dominate; reference/PDF/related links should not be first-class seed goals unless needed for result interpretation.
+- Wikipedia / search-content/content site: content navigation secondary goals should remain selected, because they are normal product use.
+- tldraw / canvas editor: artifact creation/manipulation should dominate; menus/help/preferences should stay supporting.
+
+## Evaluation Metrics
+
+- Normal-user primary ratio: selected seed goals that are primary user workflows divided by all selected seed goals.
+- Partial-rate pressure: how many selected goals become partial because the goal is broad/supporting rather than product-stateful.
+- Product-kind precision: whether supporting kinds like `developer_documentation`, `auth_account`, and `settings_tool` are kept out of primary kind lists unless they are actually primary.
+- Goal count quality: fewer but stronger primary goals is better than padded secondary coverage.
+- Downstream report quality: authoritative versus provisional status, and whether partial reasons point to missing proof rather than bad goal selection.
+
+## Initial Conclusion
+
+This is not primarily a prompt-wording problem. The prompt is already close to the intended policy. The next improvement should be a conservative post-processing/ranking fix: protect primary value-loop goals for tool/app products, demote support/docs/reference journeys unless the product is content/docs-first, and add regression tests around DataTables, BMI, TodoMVC, Wikipedia, and canvas-editor examples.
+
+---
+
 # TodoMVC Realistic Demo Vendoring — Research
 
 **Date:** 2026-05-13

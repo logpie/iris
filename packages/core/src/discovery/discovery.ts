@@ -479,6 +479,18 @@ function capabilityGapsWorthPlanning(
     .filter((capability) => capability.status !== 'not_applicable')
     .filter((capability) => {
       const prior = capabilityPriorForCapability(capability);
+      const capabilityText = [
+        capability.label,
+        capability.denominator_reason,
+        capability.coverage_gap,
+      ].join(' ');
+      if (isSupportWorkflowForConcreteProduct(capabilityText, productKinds)) return false;
+      if (
+        capability.product_kind === 'developer_documentation' &&
+        hasConcreteWorkflowProductKind(productKinds)
+      ) {
+        return false;
+      }
       if (
         prior?.requiresSurfaceMatch &&
         capability.surface_ids.length === 0 &&
@@ -507,12 +519,133 @@ function capabilityAlreadySelected(
   journeys: DiscoveryJourney[],
   selectedJourneyIds: Set<string>,
 ): boolean {
+  if (
+    isCalculatorResultCapability(capability) ||
+    isCalculatorInputsUnitsCapability(capability) ||
+    isCalculatorInterpretationCapability(capability)
+  ) {
+    const selectedText = journeys
+      .filter((journey) => selectedJourneyIds.has(journey.id))
+      .map(journeyScenarioText)
+      .join(' ');
+    if (
+      (isCalculatorResultCapability(capability) && calculatorResultCoveredByText(selectedText)) ||
+      (isCalculatorInputsUnitsCapability(capability) &&
+        calculatorInputsUnitsCoveredByText(selectedText)) ||
+      (isCalculatorInterpretationCapability(capability) &&
+        calculatorInterpretationCoveredByText(selectedText))
+    ) {
+      return true;
+    }
+  }
+  if (isDataGridFilterCapability(capability) || isDataGridSortPageCapability(capability)) {
+    const selectedText = journeys
+      .filter((journey) => selectedJourneyIds.has(journey.id))
+      .map(journeyScenarioText)
+      .join(' ');
+    if (isDataGridFilterCapability(capability)) return dataGridFilterCoveredByText(selectedText);
+    return dataGridSortPageCoveredByText(selectedText);
+  }
   if (coverageGapIndicatesUncovered(capability.coverage_gap)) return false;
   if (capability.journey_ids.some((journeyId) => selectedJourneyIds.has(journeyId))) return true;
   return journeys.some((journey) => {
     if (!selectedJourneyIds.has(journey.id)) return false;
     return capabilityMatchesText(capabilityToSeed(capability), journeyScenarioText(journey));
   });
+}
+
+function isCalculatorResultCapability(capability: DiscoveryCapability): boolean {
+  if (capability.product_kind !== 'calculator_tool') return false;
+  const text = normalizeTextForMatching(
+    [capability.label, capability.denominator_reason, capability.coverage_gap].join(' '),
+  );
+  return /\b(calculate|computed?|submitted?|result|value|output|estimate|classification)\b/.test(
+    text,
+  );
+}
+
+function isCalculatorInputsUnitsCapability(capability: DiscoveryCapability): boolean {
+  if (capability.product_kind !== 'calculator_tool') return false;
+  const text = normalizeTextForMatching(
+    [capability.label, capability.denominator_reason, capability.coverage_gap].join(' '),
+  );
+  return /\b(input|field|unit|option|variant|metric|imperial|height|weight|age|loan|interest|term|selector)\b/.test(
+    text,
+  );
+}
+
+function isCalculatorInterpretationCapability(capability: DiscoveryCapability): boolean {
+  if (capability.product_kind !== 'calculator_tool') return false;
+  const text = normalizeTextForMatching(
+    [capability.label, capability.denominator_reason, capability.coverage_gap].join(' '),
+  );
+  return /\b(interpret|category|classification|healthy range|healthy weight|bmi prime|ponderal|gauge)\b/.test(
+    text,
+  );
+}
+
+function calculatorResultCoveredByText(text: string): boolean {
+  const normalized = normalizeTextForMatching(text);
+  return (
+    /\b(calculate|computed?|estimate|convert|submit)\b/.test(normalized) &&
+    /\b(result|value|output|category|classification|payment|bmi|mortgage|loan|total|answer)\b/.test(
+      normalized,
+    )
+  );
+}
+
+function calculatorInputsUnitsCoveredByText(text: string): boolean {
+  const normalized = normalizeTextForMatching(text);
+  if (!/\b(calculate|computed?|estimate|convert|submit|enter)\b/.test(normalized)) return false;
+  const inputTerms = [
+    /\b(input|field|non default|option|unit|metric|imperial)\b/,
+    /\b(height|weight|age|feet|foot|inch|inches|pounds?|lbs?|kg|kilograms?|cm|centimeters?)\b/,
+    /\b(home|purchase|down|interest|rate|term|loan|principal|amount)\b/,
+  ].filter((pattern) => pattern.test(normalized)).length;
+  return inputTerms >= 1;
+}
+
+function calculatorInterpretationCoveredByText(text: string): boolean {
+  const normalized = normalizeTextForMatching(text);
+  if (!/\b(calculate|computed?|result|bmi)\b/.test(normalized)) return false;
+  return /\b(category|classification|healthy range|healthy weight|bmi prime|ponderal|overweight|normal|obese)\b/.test(
+    normalized,
+  );
+}
+
+function isDataGridFilterCapability(capability: DiscoveryCapability): boolean {
+  if (capability.product_kind !== 'data_grid') return false;
+  const text = normalizeTextForMatching(
+    [capability.label, capability.denominator_reason, capability.coverage_gap].join(' '),
+  );
+  return /\b(search|filter|query)\b/.test(text);
+}
+
+function isDataGridSortPageCapability(capability: DiscoveryCapability): boolean {
+  if (capability.product_kind !== 'data_grid') return false;
+  const text = normalizeTextForMatching(
+    [capability.label, capability.denominator_reason, capability.coverage_gap].join(' '),
+  );
+  return /\b(sort|order|column|page length|entries per page|pagination|next|previous|row range)\b/.test(
+    text,
+  );
+}
+
+function dataGridFilterCoveredByText(text: string): boolean {
+  const normalized = normalizeTextForMatching(text);
+  return (
+    /\b(search|filter|query)\b/.test(normalized) &&
+    /\b(table|grid|datatable|rows?|count|entries)\b/.test(normalized)
+  );
+}
+
+function dataGridSortPageCoveredByText(text: string): boolean {
+  const normalized = normalizeTextForMatching(text);
+  return (
+    /\b(sort|sorted|order|column|page length|entries per page|pagination|next|previous|page \d+|row range|displayed range)\b/.test(
+      normalized,
+    ) && /\b(table|grid|datatable|rows?|entries|column|range)\b/.test(normalized)
+  );
 }
 
 function capabilityToSeed(capability: DiscoveryCapability): DiscoveryCapabilitySeed {
@@ -663,6 +796,18 @@ function capabilitySpecificSuggestedGoal(
       ' ',
     ),
   );
+  if (capability.product_kind === 'data_grid') {
+    if (/\b(search|filter)\b/.test(text)) {
+      return 'Use the table search or filter control with a concrete query and verify the visible rows, count, or empty state changes.';
+    }
+    if (/\b(sort|order|column)\b/.test(text)) {
+      return 'Sort an interactive table column and verify the visible row order changes consistently with that column.';
+    }
+    if (/\b(page length|entries per page|pagination|next|previous|page)\b/.test(text)) {
+      return 'Change the table page length or pagination state and verify the displayed row range or visible rows update.';
+    }
+    return 'Use a data-grid control and verify the table rows, count, order, range, or detail state changes.';
+  }
   if (/\b(section|contents|toc|anchor|reference|citation|related|pagination)\b/.test(text)) {
     return 'Use the visible content navigation such as contents, section anchors, citations, related links, or pagination and verify the destination content or heading changes.';
   }
@@ -684,6 +829,12 @@ function capabilitySpecificEvidence(
       ' ',
     ),
   );
+  if (capability.product_kind === 'data_grid') {
+    return [
+      'table rows, count, order, page range, or detail state visibly changes',
+      'the evidence shows changed grid data, not only an opened menu or focused control',
+    ];
+  }
   if (/\b(section|contents|toc|anchor|reference|citation|related|pagination)\b/.test(text)) {
     return [
       'destination section heading, citation, related item, or paginated content is visible',
@@ -994,7 +1145,7 @@ function enrichProductUseJob(job: ProductUseJob, productKinds: ProductKind[]): P
     productKinds,
   );
   const mergeScaffold = shouldMergeScenarioScaffold(job, scaffold);
-  return {
+  const enriched: ProductUseJob = {
     ...job,
     title:
       scaffold.scenarioTitle && isGenericProductUseTitle(job.title) && mergeScaffold
@@ -1031,6 +1182,36 @@ function enrichProductUseJob(job: ProductUseJob, productKinds: ProductKind[]): P
     quality_bar: mergeScaffoldStrings(job.quality_bar, scaffold.qualityBar, mergeScaffold),
     weak_evidence: mergeScaffoldStrings(job.weak_evidence, scaffold.weakEvidence, mergeScaffold),
   };
+  return relaxCalculatorUnitModeProof(enriched, productKinds);
+}
+
+function relaxCalculatorUnitModeProof(
+  job: ProductUseJob,
+  productKinds: ProductKind[],
+): ProductUseJob {
+  if (!productKinds.includes('calculator_tool')) return job;
+  return {
+    ...job,
+    required_outputs: job.required_outputs.filter((output) => !isCalculatorTabActiveProof(output)),
+    proof_obligations: uniqueNonEmptyStrings(
+      job.proof_obligations.map((proof) => relaxCalculatorProofText(proof, productKinds)),
+    ),
+    acceptable_evidence: uniqueNonEmptyStrings(
+      job.acceptable_evidence.map((proof) => relaxCalculatorProofText(proof, productKinds)),
+    ),
+    quality_bar: uniqueNonEmptyStrings(
+      job.quality_bar.map((proof) => relaxCalculatorProofText(proof, productKinds)),
+    ),
+  };
+}
+
+function isCalculatorTabActiveProof(text: string): boolean {
+  return /\b(?:us|metric|other)\s+units?\s+tab\s+active\b/i.test(text);
+}
+
+function relaxCalculatorProofText(text: string, productKinds: ProductKind[]): string {
+  if (!productKinds.includes('calculator_tool')) return text;
+  return text.replace(/\b(?:us|metric|other)\s+units?\s+tab\s+active;?\s*/gi, '').trim();
 }
 
 function shouldMergeScenarioScaffold(job: ProductUseJob, scaffold: MaterialityScaffold): boolean {
@@ -1831,6 +2012,13 @@ function normalizeContractProductKinds(
         hasOtherPrimary: hasOtherPrimary(kind),
       });
     }
+    if (kind === 'developer_documentation') {
+      return shouldKeepDeveloperDocumentationKind({
+        contractText,
+        supportText,
+        hasOtherPrimary: hasOtherPrimary(kind),
+      });
+    }
     if (isSupportingProductKind(kind) && primaryKinds.length > 0) {
       return false;
     }
@@ -1940,6 +2128,31 @@ function shouldKeepDeveloperToolKind(input: {
     );
   if (!input.hasOtherPrimary) return contractDeveloperWorkflow || productDeveloperSurface;
   return contractDeveloperWorkflow;
+}
+
+function shouldKeepDeveloperDocumentationKind(input: {
+  contractText: string;
+  supportText: string;
+  hasOtherPrimary: boolean;
+}): boolean {
+  const docsCentricWorkflow =
+    /\b(developer|implement|implementation|integrat|code|snippet|api|docs?|documentation|guide|dependency|cdn|source)\b/.test(
+      input.contractText,
+    ) &&
+    /\b(read|learn|inspect|find|search|verify|use|follow|copy|implement|integrat)\b/.test(
+      input.contractText,
+    );
+  const consumerToolWorkflow =
+    /\b(calculate|calculator|computed result|health|bmi|mortgage|loan|checkout|cart|purchase|todo|task|canvas|whiteboard|diagram|media|image|video)\b/.test(
+      input.contractText,
+    );
+  if (!input.hasOtherPrimary) {
+    return (
+      docsCentricWorkflow ||
+      productKindTextPattern('developer_documentation').test(input.supportText)
+    );
+  }
+  return docsCentricWorkflow && !consumerToolWorkflow;
 }
 
 function shouldKeepDocumentEditorKind(input: {
@@ -2708,6 +2921,7 @@ function normalizeDiscoveryCapabilities(
         journeys,
         surfaces,
         selectedJourneyIds,
+        productKinds,
       }),
     )
     .filter((capability) => capability.label.trim())
@@ -2902,6 +3116,7 @@ function matchingCapabilitySeedKey(
   for (const [key, existing] of seeds) {
     if (normalizedSeedLabel && normalizedSeedLabel === normalizeTextForMatching(existing.label))
       return key;
+    if (areDistinctCapabilityFamilies(existing, seed)) continue;
     const existingTokens = capabilityTokens(existing.label);
     const shared = seedTokens.filter((token) => existingTokens.includes(token));
     if (seedTokens.length >= 2 && existingTokens.length >= 2 && shared.length >= 2) return key;
@@ -2922,6 +3137,32 @@ function matchingCapabilitySeedKey(
   return undefined;
 }
 
+function areDistinctCapabilityFamilies(
+  existing: DiscoveryCapabilitySeed,
+  seed: DiscoveryCapabilitySeed,
+): boolean {
+  if (existing.product_kind !== seed.product_kind) return false;
+  if (existing.product_kind === 'data_grid') {
+    const existingFamily = dataGridCapabilityFamily(existing);
+    const seedFamily = dataGridCapabilityFamily(seed);
+    return Boolean(existingFamily && seedFamily && existingFamily !== seedFamily);
+  }
+  return false;
+}
+
+function dataGridCapabilityFamily(seed: DiscoveryCapabilitySeed): 'filter' | 'sort_page' | '' {
+  const text = normalizeTextForMatching([seed.key, seed.label, seed.denominator_reason].join(' '));
+  if (/\b(search|filter|query)\b/.test(text)) return 'filter';
+  if (
+    /\b(sort|order|column|page length|entries per page|pagination|next|previous|row range)\b/.test(
+      text,
+    )
+  ) {
+    return 'sort_page';
+  }
+  return '';
+}
+
 function finalizeCapabilitySeed(
   seed: DiscoveryCapabilitySeed,
   input: {
@@ -2929,14 +3170,24 @@ function finalizeCapabilitySeed(
     journeys: DiscoveryJourney[];
     surfaces: DiscoverySurface[];
     selectedJourneyIds: Set<string>;
+    productKinds: ProductKind[];
   },
 ): DiscoveryCapability {
   const goalById = new Map(input.goals.map((goal) => [goal.id, goal]));
+  const suppressScenarioMatching = isSupportWorkflowForConcreteProduct(
+    [seed.label, seed.denominator_reason, seed.coverage_gap].join(' '),
+    input.productKinds,
+  );
+  const seedJourneyIds = suppressScenarioMatching
+    ? seed.journey_ids.filter((journeyId) => !input.selectedJourneyIds.has(journeyId))
+    : seed.journey_ids;
   const journeyIds = uniqueNonEmptyStrings([
-    ...seed.journey_ids,
-    ...input.journeys
-      .filter((journey) => capabilityMatchesText(seed, journeyScenarioText(journey)))
-      .map((journey) => journey.id),
+    ...seedJourneyIds,
+    ...(suppressScenarioMatching
+      ? []
+      : input.journeys
+          .filter((journey) => capabilityMatchesScenarioText(seed, journeyScenarioText(journey)))
+          .map((journey) => journey.id)),
   ]);
   const surfaceIds = uniqueNonEmptyStrings([
     ...seed.surface_ids,
@@ -2946,15 +3197,17 @@ function finalizeCapabilitySeed(
   ]);
   const finalGoalIds = new Set(input.goals.map((goal) => goal.id));
   const rawGapIndicatesUncovered = coverageGapIndicatesUncovered(seed.coverage_gap);
-  const matchedGoalIds = input.goals
-    .filter((goal) => {
-      if (goal.journey_id && journeyIds.includes(goal.journey_id)) return true;
-      if (goal.surface_ids.some((surfaceId) => surfaceIds.includes(surfaceId))) {
-        return capabilityMatchesText(seed, goal.description);
-      }
-      return capabilityMatchesText(seed, goal.description);
-    })
-    .map((goal) => goal.id);
+  const matchedGoalIds = suppressScenarioMatching
+    ? []
+    : input.goals
+        .filter((goal) => {
+          if (goal.journey_id && journeyIds.includes(goal.journey_id)) return true;
+          if (goal.surface_ids.some((surfaceId) => surfaceIds.includes(surfaceId))) {
+            return capabilityMatchesScenarioText(seed, goal.description);
+          }
+          return capabilityMatchesScenarioText(seed, goal.description);
+        })
+        .map((goal) => goal.id);
   const gapCoveredByStrongGoal =
     rawGapIndicatesUncovered &&
     matchedGoalIds.some((id) => {
@@ -2963,13 +3216,15 @@ function finalizeCapabilitySeed(
     });
   const gapIndicatesUncovered = rawGapIndicatesUncovered && !gapCoveredByStrongGoal;
   const scenarioIds = uniqueNonEmptyStrings([
-    ...seed.scenario_ids
-      .filter((id) => (input.goals.length === 0 ? /^G\d+/i.test(id) : finalGoalIds.has(id)))
-      .filter((id) => {
-        if (input.goals.length === 0) return true;
-        const goal = goalById.get(id);
-        return goal ? capabilityMatchesText(seed, goal.description) : false;
-      }),
+    ...(suppressScenarioMatching
+      ? []
+      : seed.scenario_ids
+          .filter((id) => (input.goals.length === 0 ? /^G\d+/i.test(id) : finalGoalIds.has(id)))
+          .filter((id) => {
+            if (input.goals.length === 0) return true;
+            const goal = goalById.get(id);
+            return goal ? capabilityMatchesScenarioText(seed, goal.description) : false;
+          })),
     ...matchedGoalIds,
   ]).filter(() => !gapIndicatesUncovered);
   const selected =
@@ -3163,6 +3418,15 @@ function compatibleCapabilityPriorForText(
       capabilityPriorCompatibleWithKinds(productKinds, prior.productKind);
     return compatible && prior.textPattern.test(text);
   });
+}
+
+function capabilityMatchesScenarioText(seed: DiscoveryCapabilitySeed, text: string): boolean {
+  if (seed.product_kind === 'data_grid') {
+    const family = dataGridCapabilityFamily(seed);
+    if (family === 'filter') return dataGridFilterCoveredByText(text);
+    if (family === 'sort_page') return dataGridSortPageCoveredByText(text);
+  }
+  return capabilityMatchesText(seed, text);
 }
 
 function capabilityMatchesText(seed: DiscoveryCapabilitySeed, text: string): boolean {
@@ -3843,7 +4107,11 @@ function applyScenarioBriefToGoal(
   const description = isGenericGoalForScenarioReplacement(goal.description, job)
     ? job.scenario_brief
     : goal.description;
-  return { ...goal, description: appendScenarioAcceptanceToGoal(description, job) };
+  const relaxedDescription = relaxCalculatorProofText(
+    description,
+    productUseContract?.product_kinds ?? [],
+  );
+  return { ...goal, description: appendScenarioAcceptanceToGoal(relaxedDescription, job) };
 }
 
 function productUseJobForJourney(
@@ -4552,6 +4820,7 @@ function classifyMateriality(input: {
     return primaryText.includes('sample') ? 'sample' : 'peripheral';
   if (isSetupText(primaryText) || (hasSetupSurface && isDismissalText(primaryText))) return 'setup';
   if (isDiagnosticText(primaryText)) return 'diagnostic';
+  if (isSupportWorkflowForConcreteProduct(primaryText, input.productKinds)) return 'sample';
   if (
     isArtifactEditorProduct(input.productKinds) &&
     isBroadArtifactEditorUtilityText(primaryText)
@@ -4602,6 +4871,61 @@ function isDiagnosticText(text: string): boolean {
   return (
     /\b(diagnostic|smoke|baseline|health check)\b/.test(text) ||
     /\b(check|confirm|verify)\b.*\b(layout|accessibility|axe|console|error state)\b/.test(text)
+  );
+}
+
+function isSupportWorkflowForConcreteProduct(text: string, productKinds: ProductKind[]): boolean {
+  if (!hasConcreteWorkflowProductKind(productKinds)) return false;
+  if (isContentOrDocumentationFirstProduct(productKinds)) return false;
+  const normalized = normalizeTextForMatching(text);
+  if (
+    isArtifactEditorProduct(productKinds) &&
+    /\b(export|download|save|share|invite)\b/.test(normalized)
+  ) {
+    return false;
+  }
+  const developerReference =
+    (/\b(javascript|html|css|code|snippet|implementation|cdn|source|api|docs?|documentation|reference)\b/.test(
+      normalized,
+    ) ||
+      (/\bdependenc(?:y|ies)\b/.test(normalized) &&
+        /\b(code|javascript|cdn|package|library|implementation)\b/.test(normalized))) &&
+    /\b(read|inspect|open|find|search|verify|example|tab|section|reference)\b/.test(normalized);
+  const explanatoryReference =
+    /\b(reference content|reference table|adult .*table|child(?:ren)?(?:\s+| and )teens?|cdc chart|chart for boys|chart for girls|pdf|interpretation content|supporting article)\b/.test(
+      normalized,
+    );
+  const calculatorUtility =
+    productKinds.includes('calculator_tool') &&
+    (/\b(print|save|export|download|pdf)\b/.test(normalized) ||
+      /\b(clear|reset)\b.{0,50}\b(form|input|calculator|entries|defaults?)\b/.test(normalized));
+  const relatedNavigation =
+    /\b(related example|related calculator|related link|site search|header search|right-rail search|destination page|navigate to a related|open a related)\b/.test(
+      normalized,
+    ) || /\brelated\b.{0,50}\b(calculator|example|link|page|destination)\b/.test(normalized);
+  return developerReference || explanatoryReference || calculatorUtility || relatedNavigation;
+}
+
+function hasConcreteWorkflowProductKind(productKinds: ProductKind[]): boolean {
+  return productKinds.some(
+    (kind) =>
+      kind !== 'unknown' &&
+      kind !== 'content_site' &&
+      kind !== 'search_content' &&
+      kind !== 'developer_documentation' &&
+      kind !== 'auth_account' &&
+      kind !== 'settings_tool',
+  );
+}
+
+function isContentOrDocumentationFirstProduct(productKinds: ProductKind[]): boolean {
+  if (productKinds.length === 0) return false;
+  return productKinds.every(
+    (kind) =>
+      kind === 'content_site' ||
+      kind === 'search_content' ||
+      kind === 'developer_documentation' ||
+      kind === 'unknown',
   );
 }
 
@@ -4969,9 +5293,7 @@ function productUseJobsForExplorerContext(out: DiscoveryOutput): ProductUseJob[]
     (job) => job.journey_id && selectedJourneyIds.has(job.journey_id),
   );
   if (selectedJobs.length === 0) return jobs.slice(0, 8);
-  const selectedJobIds = new Set(selectedJobs.map((job) => job.id));
-  const remainingJobs = jobs.filter((job) => !selectedJobIds.has(job.id));
-  return [...selectedJobs, ...remainingJobs.slice(0, Math.max(0, 8 - selectedJobs.length))];
+  return selectedJobs.slice(0, 8);
 }
 
 function appendLinesWithinBudget(

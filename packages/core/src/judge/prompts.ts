@@ -369,7 +369,7 @@ function prioritizeProductUseJobsForDigest(
     if (journey && selectedJourneyIds.has(journey)) selected.push(job);
     else other.push(job);
   }
-  return [...selected, ...other];
+  return selected.length > 0 ? selected : other;
 }
 
 function summarizeProductUseJobForDigest(job: unknown): string {

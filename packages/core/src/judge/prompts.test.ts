@@ -122,5 +122,6 @@ describe('JUDGE_SYSTEM', () => {
     expect(digest).toContain('PU9/J9');
     expect(digest).toContain('Backlog');
     expect(digest).toContain('toolbar selected only');
+    expect(digest).not.toContain('PU1/J1');
   });
 });
