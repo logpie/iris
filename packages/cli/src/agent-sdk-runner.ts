@@ -10,8 +10,8 @@ import type { trace as iristrace } from '@iris/core';
 import { ulid } from 'ulid';
 import { type ZodRawShape, z } from 'zod';
 import {
-  ScenarioCompletionGateVerifier,
   type ScenarioCompletionGate,
+  ScenarioCompletionGateVerifier,
 } from './scenario-completion-gate.js';
 
 /**
@@ -60,6 +60,20 @@ function isUnattemptedSkipRationale(rationale: string): boolean {
   return /\b(not (attempted|exercised|tested)|never reached|not reached|ran out|out of time|no time|before budget|budget ran out|budget was exhausted|did not (attempt|exercise|test|reach|visit)|not visited)\b/i.test(
     rationale,
   );
+}
+
+function invalidEvidenceEventIdsMessage(input: {
+  unknown: readonly string[];
+  unacceptable: readonly string[];
+}): string {
+  const parts: string[] = [];
+  if (input.unknown.length > 0) {
+    parts.push(`unknown event id(s): ${input.unknown.join(', ')}`);
+  }
+  if (input.unacceptable.length > 0) {
+    parts.push(`not accepted outcome evidence: ${input.unacceptable.join(', ')}`);
+  }
+  return `ERROR: goal_status evidence_event_ids must cite existing accepted outcome evidence events (post-action observation, screenshot/vision_describe action_result, or post-action/post-explorer probe_result). ${parts.join('; ')}.`;
 }
 
 async function runSdkIteratorWithTimeout(
@@ -608,8 +622,8 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
           'probe_result',
           'probe',
           result.ok
-            ? { probe: spec.name, summary: result.summary, data: result.data }
-            : { probe: spec.name, error: result.error },
+            ? { probe: spec.name, ok: true, summary: result.summary, data: result.data }
+            : { probe: spec.name, ok: false, error: result.error },
         );
         return {
           content: [
@@ -984,6 +998,19 @@ export async function runAgentSdkExplorer(config: ExplorerSdkConfig): Promise<Ex
                   },
                 ],
               };
+            }
+            if (evidenceEventIds.length > 0) {
+              const evidenceCheck = scenarioGate.checkEvidenceEventIds(evidenceEventIds);
+              if (!evidenceCheck.ok) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: invalidEvidenceEventIdsMessage(evidenceCheck),
+                    },
+                  ],
+                };
+              }
             }
             if (args.status === 'verified' && scenarioGate.enabled) {
               const check = scenarioGate.check(args.id, evidenceEventIds);

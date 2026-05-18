@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CODEX_APP_SERVER_JUDGE_SYSTEM,
+  buildJudgeFailureOutput,
   parseJudgeOutput,
 } from './codex-app-server-orchestrator.js';
 
@@ -36,5 +37,54 @@ describe('CODEX_APP_SERVER_JUDGE_SYSTEM', () => {
       'If the discovery event includes product_use_contract',
     );
     expect(CODEX_APP_SERVER_JUDGE_SYSTEM).toContain('Codex App Server Output Constraints');
+  });
+});
+
+describe('buildJudgeFailureOutput', () => {
+  it('keeps Explorer goal rows diagnostic and never turns Judge failure into a positive score', () => {
+    const out = buildJudgeFailureOutput({
+      reason: 'malformed Judge JSON',
+      goals: [{ description: 'Create a launch plan' }],
+      rubricProfiles: [
+        {
+          name: 'quality',
+          applies_to_targets: ['web'],
+          applies_to_modes: ['free', 'grounded', 'targeted'],
+          weight_in_overall: 1,
+          dimensions: [
+            {
+              id: 'correctness',
+              weight: 1,
+              description: 'Score correctness',
+            },
+          ],
+        },
+      ],
+      events: [
+        {
+          v: 1,
+          id: 'GS1',
+          ts: 1,
+          step: 1,
+          target_kind: 'web',
+          kind: 'goal_status',
+          actor: 'explorer',
+          payload: {
+            id: 'G1',
+            status: 'verified',
+            rationale: 'Visible launch plan appeared',
+            evidence_event_ids: ['OBS1'],
+          },
+        },
+      ],
+    });
+
+    expect(out.scores.overall.score).toBe(0);
+    expect(out.scores.overall.weighted_from).toEqual([]);
+    expect(out.scores.profiles.quality?.score).toBe(0);
+    expect(out.scores.profiles.quality?.dimensions.correctness?.score).toBeNull();
+    expect(out.spec_compliance.goals[0]?.status).toBe('verified');
+    expect(out.spec_compliance.summary).toContain('diagnostic only');
+    expect(out.meta.confidence_overall).toBe(0);
   });
 });

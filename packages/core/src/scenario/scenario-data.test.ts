@@ -63,9 +63,7 @@ describe('scenarioVisibleDataTokens', () => {
     ).toEqual(['Ideas', 'Next Steps']);
 
     expect(
-      scenarioInstructionHints([
-        'Target surfaces: Share, Sign in to share, Export, Download',
-      ]),
+      scenarioInstructionHints(['Target surfaces: Share, Sign in to share, Export, Download']),
     ).toEqual(['Target surfaces: Share, Sign in to share, Export, Download']);
   });
 
@@ -191,6 +189,22 @@ describe('scenarioProofVisibleTextTokens', () => {
       'Design complete',
       'Beta launch',
       'Approve?',
+    ]);
+  });
+
+  it('keeps full code-like required outputs instead of reducing them to quoted selectors', () => {
+    expect(
+      scenarioProofVisibleTextTokens([
+        "new DataTable('#example');",
+        "Snippet: new DataTable('#orders')",
+        "Initialization: new DataTable('#users');",
+        "Code sample: $('#example').DataTable();",
+      ]),
+    ).toEqual([
+      "new DataTable('#example');",
+      "new DataTable('#orders')",
+      "new DataTable('#users');",
+      "$('#example').DataTable();",
     ]);
   });
 

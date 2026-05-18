@@ -5,7 +5,7 @@ import { judge as judgeMod, report as reportMod, trace as traceMod } from '@iris
 import { Command } from 'commander';
 import { parseJudgeOutput } from '../codex-app-server-orchestrator.js';
 
-type ReportJson = ReturnType<typeof reportMod.buildReportJson>;
+type ReportJson = ReturnType<typeof reportMod.buildReportJson> & { threshold?: number };
 
 export function reportCommand(): Command {
   return new Command('report')
@@ -34,17 +34,7 @@ export function reportCommand(): Command {
       if (traceEvents) {
         report = await addTraceStoryboards(report, traceEvents, dir);
       }
-      const meta = reportMod.normalizeReportMeta(report.meta, traceEvents);
-      const renderedReport: ReportJson = {
-        ...report,
-        run: enrichRunMetadata(report.run, traceEvents, dir),
-        meta,
-        scores: reportMod.normalizeReportScores(report.scores, {
-          ...(traceEvents ? { traceEvents } : {}),
-          confidenceCaveats: meta.confidence_caveats,
-        }),
-      };
-      renderedReport.evaluation = reportMod.deriveReportEvaluationForReport(renderedReport);
+      const renderedReport = refreshStoredReportForRender(report, traceEvents, dir);
       writeFileSync(join(dir, 'report.md'), reportMod.buildReportMd(renderedReport));
       if (opts.html !== false) {
         writeFileSync(
@@ -80,6 +70,63 @@ export function findingsSnapshotFromReport(report: ReportJson): {
       discarded: report.discarded_findings?.length ?? 0,
     },
     _written_at: new Date().toISOString(),
+  };
+}
+
+export function refreshStoredReportForRender(
+  report: ReportJson,
+  traceEvents: traceMod.TraceEvent[] | undefined,
+  runDir: string,
+): ReportJson {
+  const threshold = resolveStoredReportThreshold(report, runDir);
+  const meta = reportMod.normalizeReportMeta(report.meta, traceEvents);
+  const scores = reportMod.normalizeReportScores(report.scores, {
+    ...(traceEvents ? { traceEvents } : {}),
+    confidenceCaveats: meta.confidence_caveats,
+  });
+  const counts = countSeverities(report.findings);
+  const coverage = countAttemptedGoals(report.spec_compliance.goals);
+  const evaluation = reportMod.deriveReportEvaluationForReport({
+    ...report,
+    headline: { ...report.headline, score: scores.overall.score },
+    scores,
+    meta,
+  });
+  return {
+    ...report,
+    ...(threshold !== undefined ? { threshold } : {}),
+    run: enrichRunMetadata(report.run, traceEvents, runDir),
+    headline: {
+      ...report.headline,
+      score: scores.overall.score,
+      threshold_passed: computeThresholdPassed({
+        score: scores.overall.score,
+        blocked: report.headline.blocked === true,
+        counts,
+        coverage,
+        scoreAuthority: evaluation.product_score.authority,
+        ...(threshold !== undefined ? { threshold } : {}),
+      }),
+      blockers: counts.blocker,
+      majors: counts.major,
+      minors: counts.minor,
+      nits: counts.nit,
+      suggestions: counts.suggestion,
+      ...(report.spec_compliance.applicable
+        ? {
+            goals_attempted: coverage.attempted,
+            goals_verified: coverage.verified,
+            goals_total: coverage.total,
+          }
+        : {}),
+    },
+    scores,
+    meta,
+    evaluation,
+    next_actions: {
+      ...report.next_actions,
+      for_re_evaluation: meta.would_re_explore_with,
+    },
   };
 }
 
@@ -168,14 +215,23 @@ function revalidateStoredReport(
     initiallyPreserveBlocked,
   );
   const preserveBlocked = initiallyPreserveBlocked || run.termination === 'judge_failed';
+  const threshold = resolveStoredReportThreshold(report, runDir);
   return reportMod.buildReportJson({
     judge,
     run,
+    ...(threshold !== undefined ? { threshold } : {}),
     ...(report.artifacts ? { artifacts: report.artifacts } : {}),
     ...(report.preflight ? { preflight: report.preflight } : {}),
     ...(preserveBlocked ? { blocked: { reasons: report.headline.blocked_reasons ?? [] } } : {}),
     trace_events: traceEvents,
   });
+}
+
+export function resolveStoredReportThreshold(
+  report: ReportJson,
+  runDir: string,
+): number | undefined {
+  return numberValue(report.threshold) ?? numberValue(readRunConfig(runDir).threshold);
 }
 
 function shouldPreserveBlockedState(report: ReportJson): boolean {
@@ -290,4 +346,68 @@ function readRunConfig(runDir: string): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function countAttemptedGoals(goals: ReportJson['spec_compliance']['goals']): {
+  total: number;
+  attempted: number;
+  verified: number;
+} {
+  let attempted = 0;
+  let verified = 0;
+  for (const goal of goals) {
+    if (
+      goal.status === 'verified' ||
+      goal.status === 'satisfied' ||
+      goal.status === 'partial' ||
+      goal.status === 'blocked' ||
+      goal.status === 'not_satisfied'
+    ) {
+      attempted += 1;
+    }
+    if (goal.status === 'verified' || goal.status === 'satisfied') {
+      verified += 1;
+    }
+  }
+  return { total: goals.length, attempted, verified };
+}
+
+function countSeverities(findings: ReportJson['findings']): {
+  blocker: number;
+  major: number;
+  minor: number;
+  nit: number;
+  suggestion: number;
+} {
+  const counts = { blocker: 0, major: 0, minor: 0, nit: 0, suggestion: 0 };
+  for (const finding of findings) {
+    counts[finding.severity] = (counts[finding.severity] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function computeThresholdPassed(input: {
+  score: number;
+  threshold?: number;
+  blocked: boolean;
+  counts: ReturnType<typeof countSeverities>;
+  coverage: ReturnType<typeof countAttemptedGoals>;
+  scoreAuthority: 'authoritative' | 'provisional' | 'insufficient';
+}): boolean {
+  const coverageRatio =
+    input.coverage.total > 0 ? input.coverage.attempted / input.coverage.total : 1;
+  const scorePass = input.threshold === undefined ? true : input.score >= input.threshold;
+  const coveragePass = input.coverage.total === 0 || coverageRatio >= 0.5;
+  const noBlockingFindings = input.counts.blocker === 0 && input.counts.major === 0;
+  return (
+    !input.blocked &&
+    scorePass &&
+    coveragePass &&
+    noBlockingFindings &&
+    input.scoreAuthority !== 'insufficient'
+  );
 }

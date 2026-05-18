@@ -122,6 +122,9 @@ describe('CodexAppServerClient', () => {
       import readline from 'node:readline';
       const rl = readline.createInterface({ input: process.stdin });
       const write = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n');
+      let evidenceId = '';
+      const evidenceIdFrom = (msg) =>
+        String(msg.result?.contentItems?.[0]?.text ?? '').match(/(?:outcome_action_result_event_id|post_action_observation_event_id)=([A-Z0-9]+)/)?.[1] ?? '';
       rl.on('line', (line) => {
         const msg = JSON.parse(line);
         if (msg.method === 'initialize') {
@@ -137,8 +140,19 @@ describe('CodexAppServerClient', () => {
           setTimeout(() => {
             write({
               jsonrpc: '2.0',
-              id: 900,
+              id: 899,
               method: 'item/tool/call',
+              params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
+            });
+          }, 10);
+          return;
+        }
+        if (msg.id === 899) {
+          evidenceId = evidenceIdFrom(msg);
+          write({
+            jsonrpc: '2.0',
+            id: 900,
+            method: 'item/tool/call',
               params: {
                 threadId: 'thread-1',
                 turnId: 'turn-1',
@@ -147,11 +161,10 @@ describe('CodexAppServerClient', () => {
                   id: 'J1',
                   status: 'verified',
                   rationale: 'wrong id prefix',
-                  evidence_event_ids: ['OBS-EVENT']
+                  evidence_event_ids: [evidenceId]
                 }
               }
             });
-          }, 10);
           return;
         }
         if (msg.id === 900) {
@@ -167,7 +180,7 @@ describe('CodexAppServerClient', () => {
                 id: 'G1',
                 status: 'verified',
                 rationale: 'correct id',
-                evidence_event_ids: ['OBS-EVENT']
+                evidence_event_ids: [evidenceId]
               }
             }
           });
@@ -202,9 +215,9 @@ describe('CodexAppServerClient', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [],
+      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
       async callTool() {
-        return { ok: false, error: 'no tools' };
+        return { ok: true, evidence_refs: [] };
       },
       async observe() {
         return { observation_ref: 'OBS', summary: 'initial page' };
@@ -435,6 +448,9 @@ describe('runCodexAppServerExplorer', () => {
       import readline from 'node:readline';
       const rl = readline.createInterface({ input: process.stdin });
       const write = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n');
+      let evidenceId = '';
+      const evidenceIdFrom = (msg) =>
+        String(msg.result?.contentItems?.[0]?.text ?? '').match(/(?:outcome_action_result_event_id|post_action_observation_event_id)=([A-Z0-9]+)/)?.[1] ?? '';
       rl.on('line', (line) => {
         const msg = JSON.parse(line);
         if (msg.method === 'initialize') {
@@ -462,21 +478,12 @@ describe('runCodexAppServerExplorer', () => {
             jsonrpc: '2.0',
             id: 901,
             method: 'item/tool/call',
-            params: {
-              threadId: 'thread-1',
-              turnId: 'turn-1',
-              tool: 'goal_status',
-              arguments: {
-                id: 'G1',
-                status: 'verified',
-                rationale: 'observation proves first goal',
-                evidence_event_ids: ['OBS-EVENT']
-              }
-            }
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
           });
           return;
         }
         if (msg.id === 901) {
+          evidenceId = evidenceIdFrom(msg);
           write({
             jsonrpc: '2.0',
             id: 902,
@@ -486,10 +493,10 @@ describe('runCodexAppServerExplorer', () => {
               turnId: 'turn-1',
               tool: 'goal_status',
               arguments: {
-                id: 'G2',
+                id: 'G1',
                 status: 'verified',
-                rationale: 'observation proves second goal',
-                evidence_event_ids: ['OBS-EVENT']
+                rationale: 'observation proves first goal',
+                evidence_event_ids: [evidenceId]
               }
             }
           });
@@ -500,11 +507,30 @@ describe('runCodexAppServerExplorer', () => {
             jsonrpc: '2.0',
             id: 903,
             method: 'item/tool/call',
-            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'done', arguments: {} }
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              tool: 'goal_status',
+              arguments: {
+                id: 'G2',
+                status: 'verified',
+                rationale: 'observation proves second goal',
+                evidence_event_ids: [evidenceId]
+              }
+            }
           });
           return;
         }
         if (msg.id === 903) {
+          write({
+            jsonrpc: '2.0',
+            id: 904,
+            method: 'item/tool/call',
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'done', arguments: {} }
+          });
+          return;
+        }
+        if (msg.id === 904) {
           write({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-1' } });
         }
       });
@@ -524,9 +550,9 @@ describe('runCodexAppServerExplorer', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [],
+      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
       async callTool() {
-        return { ok: false, error: 'no tools' };
+        return { ok: true, evidence_refs: [] };
       },
       async observe() {
         return { observation_ref: 'OBS', summary: 'initial page' };
@@ -591,6 +617,9 @@ describe('runCodexAppServerExplorer', () => {
       import readline from 'node:readline';
       const rl = readline.createInterface({ input: process.stdin });
       const write = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n');
+      let evidenceId = '';
+      const evidenceIdFrom = (msg) =>
+        String(msg.result?.contentItems?.[0]?.text ?? '').match(/(?:outcome_action_result_event_id|post_action_observation_event_id)=([A-Z0-9]+)/)?.[1] ?? '';
       rl.on('line', (line) => {
         const msg = JSON.parse(line);
         if (msg.method === 'initialize') {
@@ -623,6 +652,16 @@ describe('runCodexAppServerExplorer', () => {
             jsonrpc: '2.0',
             id: 901,
             method: 'item/tool/call',
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
+          });
+          return;
+        }
+        if (msg.id === 901) {
+          evidenceId = evidenceIdFrom(msg);
+          write({
+            jsonrpc: '2.0',
+            id: 902,
+            method: 'item/tool/call',
             params: {
               threadId: 'thread-1',
               turnId: 'turn-1',
@@ -631,13 +670,13 @@ describe('runCodexAppServerExplorer', () => {
                 id: 'G1',
                 status: 'verified',
                 rationale: 'observation proves it',
-                evidence_event_ids: ['OBS-EVENT']
+                evidence_event_ids: [evidenceId]
               }
             }
           });
           return;
         }
-        if (msg.id === 901) {
+        if (msg.id === 902) {
           write({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-1' } });
         }
       });
@@ -657,9 +696,9 @@ describe('runCodexAppServerExplorer', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [],
+      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
       async callTool() {
-        return { ok: false, error: 'no tools' };
+        return { ok: true, evidence_refs: [] };
       },
       async observe() {
         return { observation_ref: 'OBS', summary: 'initial page' };
@@ -713,6 +752,9 @@ describe('runCodexAppServerExplorer', () => {
       import readline from 'node:readline';
       const rl = readline.createInterface({ input: process.stdin });
       const write = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n');
+      let evidenceId = '';
+      const evidenceIdFrom = (msg) =>
+        String(msg.result?.contentItems?.[0]?.text ?? '').match(/(?:outcome_action_result_event_id|post_action_observation_event_id)=([A-Z0-9]+)/)?.[1] ?? '';
       rl.on('line', (line) => {
         const msg = JSON.parse(line);
         if (msg.method === 'initialize') {
@@ -749,6 +791,16 @@ describe('runCodexAppServerExplorer', () => {
             jsonrpc: '2.0',
             id: 901,
             method: 'item/tool/call',
+            params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
+          });
+          return;
+        }
+        if (msg.id === 901) {
+          evidenceId = evidenceIdFrom(msg);
+          write({
+            jsonrpc: '2.0',
+            id: 902,
+            method: 'item/tool/call',
             params: {
               threadId: 'thread-1',
               turnId: 'turn-1',
@@ -757,13 +809,13 @@ describe('runCodexAppServerExplorer', () => {
                 id: 'G1',
                 status: 'verified',
                 rationale: 'observation proves it',
-                evidence_event_ids: ['OBS-EVENT']
+                evidence_event_ids: [evidenceId]
               }
             }
           });
           return;
         }
-        if (msg.id === 901) {
+        if (msg.id === 902) {
           write({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-1' } });
         }
       });
@@ -783,9 +835,9 @@ describe('runCodexAppServerExplorer', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [],
+      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
       async callTool() {
-        return { ok: false, error: 'no tools' };
+        return { ok: true, evidence_refs: [] };
       },
       async observe() {
         return { observation_ref: 'OBS', summary: 'initial page' };
@@ -839,6 +891,9 @@ describe('runCodexAppServerExplorer', () => {
       import readline from 'node:readline';
       const rl = readline.createInterface({ input: process.stdin });
       const write = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n');
+      let evidenceId = '';
+      const evidenceIdFrom = (msg) =>
+        String(msg.result?.contentItems?.[0]?.text ?? '').match(/(?:outcome_action_result_event_id|post_action_observation_event_id)=([A-Z0-9]+)/)?.[1] ?? '';
       rl.on('line', (line) => {
         const msg = JSON.parse(line);
         if (msg.method === 'initialize') {
@@ -856,6 +911,17 @@ describe('runCodexAppServerExplorer', () => {
               jsonrpc: '2.0',
               id: 900,
               method: 'item/tool/call',
+              params: { threadId: 'thread-1', turnId: 'turn-1', tool: 'screenshot', arguments: {} }
+            });
+          }, 10);
+          return;
+        }
+        if (msg.id === 900) {
+          evidenceId = evidenceIdFrom(msg);
+          write({
+            jsonrpc: '2.0',
+            id: 901,
+            method: 'item/tool/call',
               params: {
                 threadId: 'thread-1',
                 turnId: 'turn-1',
@@ -864,17 +930,16 @@ describe('runCodexAppServerExplorer', () => {
                   id: 'G1',
                   status: 'partial',
                   rationale: 'not enough proof',
-                  evidence_event_ids: ['PARTIAL-EVENT']
+                  evidence_event_ids: [evidenceId]
                 }
               }
             });
-          }, 10);
           return;
         }
-        if (msg.id === 900) {
+        if (msg.id === 901) {
           write({
             jsonrpc: '2.0',
-            id: 901,
+            id: 902,
             method: 'item/tool/call',
             params: {
               threadId: 'thread-1',
@@ -884,13 +949,13 @@ describe('runCodexAppServerExplorer', () => {
                 id: 'G1',
                 status: 'verified',
                 rationale: 'observation proves it',
-                evidence_event_ids: ['OBS-EVENT']
+                evidence_event_ids: [evidenceId]
               }
             }
           });
           return;
         }
-        if (msg.id === 901) {
+        if (msg.id === 902) {
           write({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-1' } });
         }
       });
@@ -910,9 +975,9 @@ describe('runCodexAppServerExplorer', () => {
       async stop() {
         return { evidence_dir: '', artifact_files: {} };
       },
-      listTools: () => [],
+      listTools: () => [{ name: 'screenshot', description: '', input_schema: {} }],
       async callTool() {
-        return { ok: false, error: 'no tools' };
+        return { ok: true, evidence_refs: [] };
       },
       async observe() {
         return { observation_ref: 'OBS', summary: 'initial page' };

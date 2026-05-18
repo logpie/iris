@@ -21,6 +21,7 @@ export function runStateDelta(
   const afterState = afterPayload.perception_state as PerceptionState | undefined;
   const beforeElements = beforeState?.elements ?? [];
   const afterElements = afterState?.elements ?? [];
+  const perceptionChanges = compactPerceptionChanges(beforeState, afterState);
   const beforeStatus = statusLines(beforeText);
   const afterStatus = statusLines(afterText);
   const addedText = diffLines(afterText, beforeText).slice(0, 12);
@@ -35,7 +36,8 @@ export function runStateDelta(
       beforeText !== afterText ||
       beforePayload.url !== afterPayload.url ||
       activeBefore !== activeAfter ||
-      beforeElements.length !== afterElements.length,
+      beforeElements.length !== afterElements.length ||
+      perceptionChanges.changed,
     url_before: String(beforePayload.url ?? ''),
     url_after: String(afterPayload.url ?? ''),
     text_changed: beforeText !== afterText,
@@ -47,6 +49,10 @@ export function runStateDelta(
     status_after: afterStatus,
     added_text: addedText,
     removed_text: removedText,
+    perception_changed: perceptionChanges.changed,
+    perception_change_reason: perceptionChanges.reason,
+    perception_fields_changed: perceptionChanges.fields,
+    element_changes: perceptionChanges.elementChanges,
   };
 
   return {
@@ -110,4 +116,123 @@ function statusLines(text: string): string[] {
 function elementLabel(element: PerceptionState['active_element'] | undefined): string {
   if (!element) return '';
   return [element.role, element.tag, element.name, element.text].filter(Boolean).join(':');
+}
+
+function compactPerceptionChanges(
+  beforeState: PerceptionState | undefined,
+  afterState: PerceptionState | undefined,
+): {
+  changed: boolean;
+  reason: string;
+  fields: string[];
+  elementChanges: Array<{
+    id: string;
+    label: string;
+    fields: string[];
+  }>;
+} {
+  if (!beforeState || !afterState) {
+    return { changed: false, reason: 'missing_perception_state', fields: [], elementChanges: [] };
+  }
+  const beforeComparable = comparablePerceptionState(beforeState);
+  const afterComparable = comparablePerceptionState(afterState);
+  const size = JSON.stringify(beforeComparable).length + JSON.stringify(afterComparable).length;
+  if (size > 24_000) {
+    return { changed: false, reason: 'perception_state_too_large', fields: [], elementChanges: [] };
+  }
+
+  const fields = [
+    ...fieldChanges(beforeComparable.page, afterComparable.page),
+    ...fieldChanges(beforeComparable.active, afterComparable.active).map(
+      (field) => `active.${field}`,
+    ),
+  ];
+  const beforeByKey = new Map(beforeComparable.elements.map((element) => [element.key, element]));
+  const afterByKey = new Map(afterComparable.elements.map((element) => [element.key, element]));
+  const elementChanges: Array<{ id: string; label: string; fields: string[] }> = [];
+
+  for (const [key, beforeElement] of beforeByKey) {
+    const afterElement = afterByKey.get(key);
+    if (!afterElement) continue;
+    const changedFields = fieldChanges(beforeElement.data, afterElement.data);
+    if (changedFields.length === 0) continue;
+    elementChanges.push({
+      id: key,
+      label: beforeElement.label || afterElement.label,
+      fields: changedFields,
+    });
+    for (const field of changedFields) fields.push(`element.${field}`);
+    if (elementChanges.length >= 12) break;
+  }
+
+  const uniqueFields = Array.from(new Set(fields)).slice(0, 40);
+  return {
+    changed: uniqueFields.length > 0,
+    reason:
+      uniqueFields.length > 0 ? 'compact_perception_state_fields_changed' : 'no_field_changes',
+    fields: uniqueFields,
+    elementChanges,
+  };
+}
+
+function comparablePerceptionState(state: PerceptionState) {
+  return {
+    page: {
+      url: state.url,
+      title: state.title,
+      viewport: state.viewport,
+      scroll: state.scroll,
+    },
+    active: state.active_element ? comparableElement(state.active_element).data : {},
+    elements: state.elements.slice(0, 200).map((element) => {
+      const comparable = comparableElement(element);
+      return {
+        key: elementKey(element),
+        label: comparable.label,
+        data: comparable.data,
+      };
+    }),
+  };
+}
+
+function comparableElement(element: PerceptionState['elements'][number]) {
+  const label = [element.role, element.tag, element.name, element.text]
+    .filter(Boolean)
+    .join(':')
+    .slice(0, 240);
+  return {
+    label,
+    data: {
+      tag: shortString(element.tag),
+      role: shortString(element.role),
+      name: shortString(element.name),
+      text: shortString(element.text),
+      href: shortString(element.href),
+      type: shortString(element.type),
+      value: shortString(element.value),
+      checked: element.checked,
+      disabled: element.disabled,
+      expanded: element.expanded,
+      visible: element.visible,
+    },
+  };
+}
+
+function elementKey(element: PerceptionState['elements'][number]): string {
+  return element.id || element.stable_hash;
+}
+
+function shortString(value: unknown): unknown {
+  return typeof value === 'string' ? value.slice(0, 240) : value;
+}
+
+function fieldChanges(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
+  const fields = new Set([...Object.keys(before), ...Object.keys(after)]);
+  const changed: string[] = [];
+  for (const field of fields) {
+    const beforeValue = before[field];
+    const afterValue = after[field];
+    if (JSON.stringify(beforeValue) !== JSON.stringify(afterValue)) changed.push(field);
+  }
+  return changed;
 }

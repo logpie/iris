@@ -4,6 +4,7 @@ import type { Page } from 'playwright';
 interface MobileViewportArgs {
   width?: number;
   height?: number;
+  persist?: boolean;
 }
 
 export async function runMobileViewport(
@@ -12,7 +13,9 @@ export async function runMobileViewport(
 ): Promise<ProbeResult> {
   const width = boundedInt(args.width, 390, 240, 640);
   const height = boundedInt(args.height, 844, 480, 1200);
+  const persist = args.persist === true;
   const previousViewport = page.viewportSize();
+  let result: ProbeResult;
   try {
     await page.setViewportSize({ width, height });
     await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
@@ -38,7 +41,7 @@ export async function runMobileViewport(
         visibleText,
       };
     });
-    return {
+    result = {
       ok: true,
       probe: 'mobile_viewport',
       summary: {
@@ -52,20 +55,29 @@ export async function runMobileViewport(
       },
     };
   } catch (err) {
-    return {
+    result = {
       ok: false,
       probe: 'mobile_viewport',
       error: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    if (!persist && previousViewport) {
+      try {
+        await page.setViewportSize(previousViewport);
+      } catch (err) {
+        const restoreError = err instanceof Error ? err.message : String(err);
+        result = {
+          ok: false,
+          probe: 'mobile_viewport',
+          error: `mobile_viewport restore failed: ${restoreError}`,
+        };
+      }
+    }
   }
+  return result;
 }
 
-function boundedInt(
-  value: number | undefined,
-  fallback: number,
-  min: number,
-  max: number,
-): number {
+function boundedInt(value: number | undefined, fallback: number, min: number, max: number): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.round(n)));

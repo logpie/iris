@@ -511,10 +511,7 @@ function capabilityAlreadySelected(
   if (capability.journey_ids.some((journeyId) => selectedJourneyIds.has(journeyId))) return true;
   return journeys.some((journey) => {
     if (!selectedJourneyIds.has(journey.id)) return false;
-    return capabilityMatchesText(
-      capabilityToSeed(capability),
-      journeyScenarioText(journey),
-    );
+    return capabilityMatchesText(capabilityToSeed(capability), journeyScenarioText(journey));
   });
 }
 
@@ -536,12 +533,8 @@ function capabilityToSeed(capability: DiscoveryCapability): DiscoveryCapabilityS
     surface_ids: capability.surface_ids,
     denominator_reason: capability.denominator_reason,
     coverage_gap: capability.coverage_gap,
-    ...(prior?.surfacePattern
-      ? { surfacePattern: prior.surfacePattern }
-      : {}),
-    ...(prior?.textPattern
-      ? { textPattern: prior.textPattern }
-      : {}),
+    ...(prior?.surfacePattern ? { surfacePattern: prior.surfacePattern } : {}),
+    ...(prior?.textPattern ? { textPattern: prior.textPattern } : {}),
   };
 }
 
@@ -585,7 +578,8 @@ function journeyForCapabilityGap(input: {
   const productKinds = normalizedProductKinds(input.productUseContract);
   const capabilityKind =
     input.capability.product_kind !== 'unknown' ? input.capability.product_kind : undefined;
-  const scaffoldKinds = productKinds.length > 0 ? productKinds : capabilityKind ? [capabilityKind] : [];
+  const scaffoldKinds =
+    productKinds.length > 0 ? productKinds : capabilityKind ? [capabilityKind] : [];
   const surfaceText = input.surfaces
     .filter((surface) => input.surfaceIds.includes(surface.id))
     .map(surfaceSearchText)
@@ -607,9 +601,10 @@ function journeyForCapabilityGap(input: {
     ...scaffold.proofObligations,
   ].join(' ');
   const useScaffold = scaffoldCoversCapability(input.capability, scaffoldText);
-  const title = useScaffold && scaffold.scenarioTitle
-    ? scaffold.scenarioTitle
-    : capabilityJourneyTitle(input.capability);
+  const title =
+    useScaffold && scaffold.scenarioTitle
+      ? scaffold.scenarioTitle
+      : capabilityJourneyTitle(input.capability);
   const suggestedGoal =
     useScaffold && scaffold.scenarioBrief
       ? scaffold.scenarioBrief
@@ -664,7 +659,9 @@ function capabilitySpecificSuggestedGoal(
   surfaceText: string,
 ): string {
   const text = normalizeTextForMatching(
-    [capability.label, capability.denominator_reason, capability.coverage_gap, surfaceText].join(' '),
+    [capability.label, capability.denominator_reason, capability.coverage_gap, surfaceText].join(
+      ' ',
+    ),
   );
   if (/\b(section|contents|toc|anchor|reference|citation|related|pagination)\b/.test(text)) {
     return 'Use the visible content navigation such as contents, section anchors, citations, related links, or pagination and verify the destination content or heading changes.';
@@ -683,7 +680,9 @@ function capabilitySpecificEvidence(
   surfaceText: string,
 ): string[] {
   const text = normalizeTextForMatching(
-    [capability.label, capability.denominator_reason, capability.coverage_gap, surfaceText].join(' '),
+    [capability.label, capability.denominator_reason, capability.coverage_gap, surfaceText].join(
+      ' ',
+    ),
   );
   if (/\b(section|contents|toc|anchor|reference|citation|related|pagination)\b/.test(text)) {
     return [
@@ -730,17 +729,16 @@ function normalizeProductUseContract(
 ): ProductUseContract | undefined {
   if (!contract) return undefined;
   const journeyIds = new Set(journeys.map((journey) => journey.id));
-  const productKinds: ProductKind[] =
-    normalizeContractProductKinds(contract, journeys, surfaces);
+  const productKinds: ProductKind[] = normalizeContractProductKinds(contract, journeys, surfaces);
   let userJobs = contract.user_jobs
     .filter((job) => job.title.trim() || job.expected_artifact.trim() || job.scenario_brief.trim())
     .map((job, index) => {
       const { journey_id, value_loop_id, ...rest } = job;
       const declaredJourneyId = journey_id?.trim();
       const linkedJourneyId =
-        declaredJourneyId
+        declaredJourneyId && journeyIds.has(declaredJourneyId)
           ? declaredJourneyId
-          : matchingProductUseJobJourneyId(job, journeys);
+          : matchingProductUseJobJourneyId(job, journeys) || declaredJourneyId;
       const normalizedJob: ProductUseJob = {
         ...rest,
         id: job.id || `PU${index + 1}`,
@@ -976,7 +974,9 @@ function hasSpecificJourneyScenario(journey: DiscoveryJourney): boolean {
   const carriesConcreteData =
     /\b(named|called|titled|labeled|labelled|exact)\b/.test(text) ||
     Boolean(journey.sample_input?.trim());
-  return concreteTokens.length >= 4 && (carriesConcreteData || journey.expected_evidence.length >= 2);
+  return (
+    concreteTokens.length >= 4 && (carriesConcreteData || journey.expected_evidence.length >= 2)
+  );
 }
 
 function enrichProductUseJob(job: ProductUseJob, productKinds: ProductKind[]): ProductUseJob {
@@ -1196,14 +1196,12 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
     !mediaImportLike &&
     (settingsTermLike || (productKinds.includes('settings_tool') && !artifactEditor));
   const developerDocsLike =
-    (productKinds.includes('developer_tool') ||
-      productKinds.includes('developer_documentation')) &&
+    (productKinds.includes('developer_tool') || productKinds.includes('developer_documentation')) &&
     /\b(api|code|snippet|javascript|html|css|docs?|documentation|example|dependency|cdn|source|manual|guide)\b/.test(
       text,
     ) &&
     !/\b(run|execute|build|deploy|console|logs?|debug)\b/.test(text);
-  const calculatorLike =
-    productKinds.includes('calculator_tool') || isCalculatorProductText(text);
+  const calculatorLike = productKinds.includes('calculator_tool') || isCalculatorProductText(text);
   const contentLike =
     productKinds.includes('search_content') || productKinds.includes('content_site');
   const crudLike = productKinds.includes('crud_workflow');
@@ -1625,14 +1623,20 @@ function materialityScaffold(sourceText: string, productKinds: ProductKind[]): M
         ],
         expectedArtifact: 'changed data-grid rows, count, order, page range, or detail state',
         acceptableEvidence: ['post-action evidence showing changed data-grid state'],
-        weakEvidence: ['filter menu opened', 'search input focused', 'column header clicked without rows'],
+        weakEvidence: [
+          'filter menu opened',
+          'search input focused',
+          'column header clicked without rows',
+        ],
       },
       {
         scenarioTitle: 'Change the data grid with a real control',
         scenarioBrief:
           'Apply a table search, sort, page length, pagination, grouping, or row-detail control and verify row, count, order, or detail output changes.',
         requiredOutputs: ['changed table rows, count, order, range, or detail state'],
-        qualityBar: ['the grid data must change; a focused input or open dropdown alone is weak evidence'],
+        qualityBar: [
+          'the grid data must change; a focused input or open dropdown alone is weak evidence',
+        ],
       },
     );
   }
@@ -1762,10 +1766,7 @@ function normalizeContractProductKinds(
     ].join(' '),
   );
   const materialSurfaceText = normalizeTextForMatching(
-    surfaces
-      .filter(isProductKindEvidenceSurface)
-      .map(surfaceSearchText)
-      .join(' '),
+    surfaces.filter(isProductKindEvidenceSurface).map(surfaceSearchText).join(' '),
   );
   const journeyText = normalizeTextForMatching(
     journeys
@@ -1837,7 +1838,8 @@ function normalizeContractProductKinds(
   });
 
   if (kept.length > 0) return kept;
-  const fallback = nonUnknownKinds.find((kind) => !isSupportingProductKind(kind)) ?? nonUnknownKinds[0];
+  const fallback =
+    nonUnknownKinds.find((kind) => !isSupportingProductKind(kind)) ?? nonUnknownKinds[0];
   return fallback ? [fallback] : ['unknown'];
 }
 
@@ -1926,8 +1928,7 @@ function shouldKeepDeveloperToolKind(input: {
   const developerIdentity =
     /\b(api|sdk|developer|code|console|integration|deploy|logs?|debug)\b/.test(
       input.contractText,
-    ) ||
-    /\b(project|workspace)\b.{0,40}\b(run|execute|build|deploy)\b/.test(input.contractText);
+    ) || /\b(project|workspace)\b.{0,40}\b(run|execute|build|deploy)\b/.test(input.contractText);
   const contractDeveloperWorkflow =
     developerIdentity &&
     /\b(configure|run|execute|build|deploy|inspect|debug|generate|integrate)\b/.test(
@@ -1954,7 +1955,10 @@ function shouldKeepDocumentEditorKind(input: {
   return (
     /\b(document editor|word processor|write a document|compose a document|draft a document|author a document)\b/.test(
       input.contractText,
-    ) || /\b(document|doc)\b.{0,40}\b(write|compose|draft|author|format|publish|save)\b/.test(input.contractText)
+    ) ||
+    /\b(document|doc)\b.{0,40}\b(write|compose|draft|author|format|publish|save)\b/.test(
+      input.contractText,
+    )
   );
 }
 
@@ -2162,7 +2166,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     importance: 'core',
     denominatorReason: 'Canvas editors must let users create visible work on the canvas.',
     surfacePattern: /\b(canvas|whiteboard|board|workspace|shape|draw|rectangle|object)\b/i,
-    textPattern: /\b(create|place|draw|add|make).{0,60}\b(canvas|board|shape|object|artifact|diagram)\b/i,
+    textPattern:
+      /\b(create|place|draw|add|make).{0,60}\b(canvas|board|shape|object|artifact|diagram)\b/i,
   },
   {
     key: 'canvas.text_notes',
@@ -2178,16 +2183,20 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Use shape-library objects',
     productKind: 'canvas_editor',
     importance: 'core',
-    denominatorReason: 'A canvas editor exposing shape tools should prove more than one default object.',
-    surfacePattern: /\b(shapes?|rectangle|ellipse|triangle|diamond|cloud|star|heart|hexagon|oval)\b/i,
-    textPattern: /\b(shapes?|non[- ]default shape|shape library|shape picker|diamond|cloud|ellipse|triangle|star|heart|hexagon)\b/i,
+    denominatorReason:
+      'A canvas editor exposing shape tools should prove more than one default object.',
+    surfacePattern:
+      /\b(shapes?|rectangle|ellipse|triangle|diamond|cloud|star|heart|hexagon|oval)\b/i,
+    textPattern:
+      /\b(shapes?|non[- ]default shape|shape library|shape picker|diamond|cloud|ellipse|triangle|star|heart|hexagon)\b/i,
   },
   {
     key: 'canvas.connectors',
     label: 'Connect or draw relationships',
     productKind: 'canvas_editor',
     importance: 'core',
-    denominatorReason: 'Diagram/whiteboard use often depends on connectors, arrows, lines, or freehand marks.',
+    denominatorReason:
+      'Diagram/whiteboard use often depends on connectors, arrows, lines, or freehand marks.',
     surfacePattern: /\b(arrow|connector|line|draw|freehand|pen|stroke)\b/i,
     textPattern: /\b(arrow|connector|line|freehand|draw|relationship|connect)\b/i,
   },
@@ -2196,7 +2205,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Style or format canvas objects',
     productKind: 'canvas_editor',
     importance: 'core',
-    denominatorReason: 'Visible style controls should change artifact content, not just toolbar state.',
+    denominatorReason:
+      'Visible style controls should change artifact content, not just toolbar state.',
     surfacePattern: /\b(color|fill|stroke|dash|opacity|size|font|style|format)\b/i,
     textPattern: /\b(style|restyle|format|color|fill|dash|stroke|opacity|size|font)\b/i,
   },
@@ -2205,9 +2215,11 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Revise existing objects',
     productKind: 'canvas_editor',
     importance: 'core',
-    denominatorReason: 'Creation tools should support post-creation changes such as move, resize, duplicate, delete, undo, or redo.',
+    denominatorReason:
+      'Creation tools should support post-creation changes such as move, resize, duplicate, delete, undo, or redo.',
     surfacePattern: /\b(move|resize|duplicate|delete|undo|redo|arrange|copy|paste|history)\b/i,
-    textPattern: /\b(move|resize|duplicate|delete|undo|redo|arrange|copy|paste|history|revise|edit)\b/i,
+    textPattern:
+      /\b(move|resize|duplicate|delete|undo|redo|arrange|copy|paste|history|revise|edit)\b/i,
     requiresSurfaceMatch: true,
   },
   {
@@ -2215,7 +2227,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Import media or embeds',
     productKind: 'canvas_editor',
     importance: 'important',
-    denominatorReason: 'Media/import surfaces are important secondary artifact-expansion paths when visible.',
+    denominatorReason:
+      'Media/import surfaces are important secondary artifact-expansion paths when visible.',
     surfacePattern: /\b(media|upload|embed|import|image|file|insert)\b/i,
     textPattern: /\b(media|upload|embed|import|image|file|insert)\b/i,
     requiresSurfaceMatch: true,
@@ -2225,7 +2238,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Export or save the board',
     productKind: 'canvas_editor',
     importance: 'important',
-    denominatorReason: 'Durable output matters for artifact editors that expose export, save, download, or print.',
+    denominatorReason:
+      'Durable output matters for artifact editors that expose export, save, download, or print.',
     surfacePattern: /\b(export|download|save as|save|print|output)\b/i,
     textPattern: /\b(export|download|save as|save|print|output)\b/i,
     requiresSurfaceMatch: true,
@@ -2235,7 +2249,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Share or collaborate on the board',
     productKind: 'canvas_editor',
     importance: 'important',
-    denominatorReason: 'Share/collaboration is important when the product exposes board-linked sharing or auth entry points.',
+    denominatorReason:
+      'Share/collaboration is important when the product exposes board-linked sharing or auth entry points.',
     surfacePattern: /\b(share|collaborat|invite|permission|sign in|sign-in|login)\b/i,
     textPattern: /\b(share|collaborat|invite|permission|sign in|sign-in|login)\b/i,
     requiresSurfaceMatch: true,
@@ -2263,7 +2278,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Organize document structure',
     productKind: 'document_editor',
     importance: 'important',
-    denominatorReason: 'Document products often need headings, lists, sections, or layout structure.',
+    denominatorReason:
+      'Document products often need headings, lists, sections, or layout structure.',
     surfacePattern: /\b(heading|section|list|table|layout|outline)\b/i,
     textPattern: /\b(heading|section|list|table|layout|outline|structure)\b/i,
   },
@@ -2272,7 +2288,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Save, export, or share document output',
     productKind: 'document_editor',
     importance: 'important',
-    denominatorReason: 'A document artifact should become durable through save, export, share, or publish.',
+    denominatorReason:
+      'A document artifact should become durable through save, export, share, or publish.',
     surfacePattern: /\b(save|export|download|publish|share|print)\b/i,
     textPattern: /\b(save|export|download|publish|share|print)\b/i,
     requiresSurfaceMatch: true,
@@ -2282,7 +2299,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Search for specific content',
     productKind: 'search_content',
     importance: 'core',
-    denominatorReason: 'Search/content products should prove a specific query can reach useful content.',
+    denominatorReason:
+      'Search/content products should prove a specific query can reach useful content.',
     surfacePattern: /\b(search|query|find|lookup|input)\b/i,
     textPattern: /\b(search|query|find|lookup)\b/i,
   },
@@ -2291,7 +2309,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Open and read a content result',
     productKind: 'search_content',
     importance: 'core',
-    denominatorReason: 'A search result is only useful if the user can open and consume the target content.',
+    denominatorReason:
+      'A search result is only useful if the user can open and consume the target content.',
     surfacePattern: /\b(article|result|content|page|read|title)\b/i,
     textPattern: /\b(article|result|content|read|open)\b/i,
   },
@@ -2300,8 +2319,10 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Navigate within content',
     productKind: 'search_content',
     importance: 'important',
-    denominatorReason: 'Content products often expose sections, contents, citations, related links, or pagination.',
-    surfacePattern: /\b(section|contents|toc|reference|citation|related|next|previous|pagination)\b/i,
+    denominatorReason:
+      'Content products often expose sections, contents, citations, related links, or pagination.',
+    surfacePattern:
+      /\b(section|contents|toc|reference|citation|related|next|previous|pagination)\b/i,
     textPattern: /\b(section|contents|toc|reference|citation|related|navigate|navigation)\b/i,
     requiresSurfaceMatch: true,
   },
@@ -2310,7 +2331,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Use visible content tools',
     productKind: 'search_content',
     importance: 'secondary',
-    denominatorReason: 'Language, edit/history, or account tools are secondary content-product capabilities when visible.',
+    denominatorReason:
+      'Language, edit/history, or account tools are secondary content-product capabilities when visible.',
     surfacePattern: /\b(language|translate|edit|history|talk|login|account|create account)\b/i,
     textPattern: /\b(language|translate|edit|history|talk|login|account)\b/i,
     requiresSurfaceMatch: true,
@@ -2320,9 +2342,11 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Consume visible content',
     productKind: 'content_site',
     importance: 'core',
-    denominatorReason: 'Content sites should prove the user can reach and consume specific content.',
+    denominatorReason:
+      'Content sites should prove the user can reach and consume specific content.',
     surfacePattern: /\b(article|content|card|post|documentation|docs|read|media)\b/i,
-    textPattern: /\b(open|read|consume|inspect).{0,60}\b(content|article|post|documentation|docs|media)\b/i,
+    textPattern:
+      /\b(open|read|consume|inspect).{0,60}\b(content|article|post|documentation|docs|media)\b/i,
   },
   {
     key: 'calculator.calculate',
@@ -2331,14 +2355,16 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     importance: 'core',
     denominatorReason: 'Calculator tools must prove submitted inputs produce a computed result.',
     surfacePattern: /\b(calculator|calculate|input|form|result|bmi|mortgage|payment|converter)\b/i,
-    textPattern: /\b(calculate|computed?|estimate|convert).{0,80}\b(result|value|category|payment|bmi|output)\b/i,
+    textPattern:
+      /\b(calculate|computed?|estimate|convert).{0,80}\b(result|value|category|payment|bmi|output)\b/i,
   },
   {
     key: 'calculator.inputs_units',
     label: 'Use input fields and unit options',
     productKind: 'calculator_tool',
     importance: 'important',
-    denominatorReason: 'Form calculators usually expose unit, option, or input variants that affect the result.',
+    denominatorReason:
+      'Form calculators usually expose unit, option, or input variants that affect the result.',
     surfacePattern: /\b(units?|input|field|height|weight|age|metric|imperial|option|selector)\b/i,
     textPattern: /\b(unit|input|field|metric|imperial|option|selector|non[- ]default)\b/i,
     requiresSurfaceMatch: true,
@@ -2348,7 +2374,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Create a record or item',
     productKind: 'crud_workflow',
     importance: 'core',
-    denominatorReason: 'CRUD workflows need a saved entity or workflow state, not just an open form.',
+    denominatorReason:
+      'CRUD workflows need a saved entity or workflow state, not just an open form.',
     surfacePattern: /\b(create|new|add|submit|save|form|item|record|task)\b/i,
     textPattern: /\b(create|new|add|submit|save).{0,60}\b(item|record|task|entity|row)\b/i,
   },
@@ -2377,8 +2404,10 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     productKind: 'dashboard_filtering',
     importance: 'core',
     denominatorReason: 'Dashboards must prove controls change data, charts, or tables.',
-    surfacePattern: /\b(filter|sort|date range|segment|facet|pivot|grouping|column control|view control|drilldown)\b/i,
-    textPattern: /\b(filter|sort|drill|change|apply).{0,60}\b(chart|table|metric|dashboard|data)\b/i,
+    surfacePattern:
+      /\b(filter|sort|date range|segment|facet|pivot|grouping|column control|view control|drilldown)\b/i,
+    textPattern:
+      /\b(filter|sort|drill|change|apply).{0,60}\b(chart|table|metric|dashboard|data)\b/i,
     requiresSurfaceMatch: true,
     requiresEvidenceAlways: true,
   },
@@ -2397,7 +2426,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Filter data-grid rows',
     productKind: 'data_grid',
     importance: 'core',
-    denominatorReason: 'Data grids must prove table search/filter controls change visible rows or counts.',
+    denominatorReason:
+      'Data grids must prove table search/filter controls change visible rows or counts.',
     surfacePattern: /\b(search|filter|table|rows?|data grid|datatable|entries)\b/i,
     textPattern: /\b(search|filter).{0,80}\b(table|rows?|entries|data grid|datatable|count)\b/i,
     requiresSurfaceMatch: true,
@@ -2408,8 +2438,10 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Sort or page data-grid rows',
     productKind: 'data_grid',
     importance: 'core',
-    denominatorReason: 'Data grids should prove sorting, page length, pagination, or row order changes.',
-    surfacePattern: /\b(sort|column|pagination|page length|entries per page|next|previous|rows?)\b/i,
+    denominatorReason:
+      'Data grids should prove sorting, page length, pagination, or row order changes.',
+    surfacePattern:
+      /\b(sort|column|pagination|page length|entries per page|next|previous|rows?)\b/i,
     textPattern: /\b(sort|page length|entries per page|pagination|row order|column)\b/i,
     requiresSurfaceMatch: true,
     requiresEvidenceAlways: true,
@@ -2419,8 +2451,10 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Read implementation code or dependencies',
     productKind: 'developer_documentation',
     importance: 'core',
-    denominatorReason: 'Developer documentation should prove users can find concrete code, API, or dependency instructions.',
-    surfacePattern: /\b(code|snippet|javascript|html|css|api|docs?|documentation|dependency|cdn|source|example)\b/i,
+    denominatorReason:
+      'Developer documentation should prove users can find concrete code, API, or dependency instructions.',
+    surfacePattern:
+      /\b(code|snippet|javascript|html|css|api|docs?|documentation|dependency|cdn|source|example)\b/i,
     textPattern: /\b(code|snippet|javascript|html|css|api|dependency|cdn|source|example)\b/i,
     requiresSurfaceMatch: true,
   },
@@ -2438,7 +2472,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Reach cart or checkout with a selected item',
     productKind: 'commerce_checkout',
     importance: 'core',
-    denominatorReason: 'Checkout quality requires a product-specific cart or purchase-boundary state.',
+    denominatorReason:
+      'Checkout quality requires a product-specific cart or purchase-boundary state.',
     surfacePattern: /\b(cart|checkout|buy|purchase|add to cart|bag|order)\b/i,
     textPattern: /\b(cart|checkout|buy|purchase|add to cart|bag|order)\b/i,
   },
@@ -2447,7 +2482,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Configure and run a developer workflow',
     productKind: 'developer_tool',
     importance: 'core',
-    denominatorReason: 'Developer tools should prove configuration or execution, not only documentation navigation.',
+    denominatorReason:
+      'Developer tools should prove configuration or execution, not only documentation navigation.',
     surfacePattern: /\b(run|build|deploy|execute|configure|project|workspace|api|sdk|console)\b/i,
     textPattern: /\b(run|build|deploy|execute|configure|project|workspace|api|sdk|console)\b/i,
   },
@@ -2486,7 +2522,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Share, invite, or collaborate',
     productKind: 'communication_tool',
     importance: 'important',
-    denominatorReason: 'Communication surfaces should prove sharing, invite, message, or collaboration state.',
+    denominatorReason:
+      'Communication surfaces should prove sharing, invite, message, or collaboration state.',
     surfacePattern: /\b(share|invite|message|comment|collaborat|team|permission)\b/i,
     textPattern: /\b(share|invite|message|comment|collaborat|team|permission)\b/i,
     requiresSurfaceMatch: true,
@@ -2496,7 +2533,8 @@ const DISCOVERY_CAPABILITY_PRIORS: DiscoveryCapabilityPrior[] = [
     label: 'Load or transform media',
     productKind: 'media_tool',
     importance: 'core',
-    denominatorReason: 'Media tools need visible media content and an observable transform or output.',
+    denominatorReason:
+      'Media tools need visible media content and an observable transform or output.',
     surfacePattern: /\b(media|image|video|audio|upload|crop|trim|filter|transform|export)\b/i,
     textPattern: /\b(media|image|video|audio|upload|crop|trim|filter|transform|export)\b/i,
   },
@@ -2512,7 +2550,10 @@ function normalizeDiscoveryCapabilities(
 ): DiscoveryCapability[] {
   const seeds = new Map<string, DiscoveryCapabilitySeed>();
   const productKinds = normalizedProductKinds(productUseContract);
-  for (const capability of filterModelCapabilitiesForProductKinds(modelCapabilities, productKinds)) {
+  for (const capability of filterModelCapabilitiesForProductKinds(
+    modelCapabilities,
+    productKinds,
+  )) {
     mergeCapabilitySeed(seeds, {
       key: capabilityKey(capability.label || capability.id),
       label: capability.label,
@@ -2538,7 +2579,8 @@ function normalizeDiscoveryCapabilities(
   for (const prior of DISCOVERY_CAPABILITY_PRIORS) {
     const kindMatches = productKinds.includes(prior.productKind);
     const surfaceInferenceAllowed =
-      productKinds.length === 0 || capabilityPriorCompatibleWithKinds(productKinds, prior.productKind);
+      productKinds.length === 0 ||
+      capabilityPriorCompatibleWithKinds(productKinds, prior.productKind);
     const matchingSurfaceIds = surfaces
       .filter((surface) => prior.surfacePattern.test(surfaceSearchText(surface)))
       .map((surface) => surface.id);
@@ -2554,7 +2596,8 @@ function normalizeDiscoveryCapabilities(
     if (
       (prior.requiresEvidenceAlways || (prior.requiresSurfaceMatch && !singleKind)) &&
       !evidenceMatches
-    ) continue;
+    )
+      continue;
     mergeCapabilitySeed(seeds, {
       key: prior.key,
       label: prior.label,
@@ -2587,13 +2630,24 @@ function normalizeDiscoveryCapabilities(
     for (const capabilityText of loop.required_capabilities ?? []) {
       const matchedPrior = compatibleCapabilityPriorForText(capabilityText, productKinds);
       if (matchedPrior) {
-        mergeCapabilitySeed(seeds, seedFromPrior(matchedPrior, {
-          confidence: 0.72,
-          evidence: [`value loop ${loop.id}: ${capabilityText}`],
-          source: 'product_kind_prior',
-        }));
+        mergeCapabilitySeed(
+          seeds,
+          seedFromPrior(matchedPrior, {
+            confidence: 0.72,
+            evidence: [`value loop ${loop.id}: ${capabilityText}`],
+            source: 'product_kind_prior',
+          }),
+        );
       } else if (productKinds.length === 0) {
-        mergeCapabilitySeed(seeds, seedFromFreeformCapability(capabilityText, productKinds[0] ?? 'unknown', 'important', 'user_job'));
+        mergeCapabilitySeed(
+          seeds,
+          seedFromFreeformCapability(
+            capabilityText,
+            productKinds[0] ?? 'unknown',
+            'important',
+            'user_job',
+          ),
+        );
       }
     }
   }
@@ -2609,12 +2663,15 @@ function normalizeDiscoveryCapabilities(
     const jobSelected = job.journey_id ? selectedJourneyIds.has(job.journey_id) : false;
     const matchedPrior = compatibleCapabilityPriorForText(text, productKinds);
     if (matchedPrior) {
-      mergeCapabilitySeed(seeds, seedFromPrior(matchedPrior, {
-        confidence: 0.78,
-        source: 'product_kind_prior',
-        evidence: [`scenario ${job.id}: ${job.title}`],
-        journey_ids: job.journey_id ? [job.journey_id] : [],
-      }));
+      mergeCapabilitySeed(
+        seeds,
+        seedFromPrior(matchedPrior, {
+          confidence: 0.78,
+          source: 'product_kind_prior',
+          evidence: [`scenario ${job.id}: ${job.title}`],
+          journey_ids: job.journey_id ? [job.journey_id] : [],
+        }),
+      );
       if (!jobSelected && shouldSeedFreeformUserJobCapability(job)) {
         mergeCapabilitySeed(seeds, seedFromUserJobCapability(job, productKinds));
       }
@@ -2627,9 +2684,16 @@ function normalizeDiscoveryCapabilities(
     }
   }
   if (seeds.size === 0) {
-    for (const journey of journeys.filter((journey) => isSeedGoalClass(journey.goal_class ?? 'core'))) {
+    for (const journey of journeys.filter((journey) =>
+      isSeedGoalClass(journey.goal_class ?? 'core'),
+    )) {
       mergeCapabilitySeed(seeds, {
-        ...seedFromFreeformCapability(journey.title, productKinds[0] ?? 'unknown', journey.priority === 'must' ? 'core' : 'important', 'journey'),
+        ...seedFromFreeformCapability(
+          journey.title,
+          productKinds[0] ?? 'unknown',
+          journey.priority === 'must' ? 'core' : 'important',
+          'journey',
+        ),
         journey_ids: [journey.id],
         surface_ids: journey.surface_ids,
       });
@@ -2723,10 +2787,12 @@ function isArtifactEditorKind(kind: ProductKind): boolean {
 
 function seedFromPrior(
   prior: DiscoveryCapabilityPrior,
-  overrides: Partial<Pick<
-    DiscoveryCapabilitySeed,
-    'confidence' | 'source' | 'evidence' | 'scenario_ids' | 'journey_ids' | 'surface_ids'
-  >> = {},
+  overrides: Partial<
+    Pick<
+      DiscoveryCapabilitySeed,
+      'confidence' | 'source' | 'evidence' | 'scenario_ids' | 'journey_ids' | 'surface_ids'
+    >
+  > = {},
 ): DiscoveryCapabilitySeed {
   return {
     key: prior.key,
@@ -2834,10 +2900,8 @@ function matchingCapabilitySeedKey(
   const normalizedSeedLabel = normalizeTextForMatching(seed.label);
   const seedTokens = capabilityTokens(seed.label);
   for (const [key, existing] of seeds) {
-    if (
-      normalizedSeedLabel &&
-      normalizedSeedLabel === normalizeTextForMatching(existing.label)
-    ) return key;
+    if (normalizedSeedLabel && normalizedSeedLabel === normalizeTextForMatching(existing.label))
+      return key;
     const existingTokens = capabilityTokens(existing.label);
     const shared = seedTokens.filter((token) => existingTokens.includes(token));
     if (seedTokens.length >= 2 && existingTokens.length >= 2 && shared.length >= 2) return key;
@@ -2845,18 +2909,15 @@ function matchingCapabilitySeedKey(
       existing.product_kind === seed.product_kind ||
       existing.product_kind === 'unknown' ||
       seed.product_kind === 'unknown';
-    if (
-      sameKind &&
-      shared.length > 0 &&
-      seed.textPattern &&
-      seed.textPattern.test(existing.label)
-    ) return key;
+    if (sameKind && shared.length > 0 && seed.textPattern && seed.textPattern.test(existing.label))
+      return key;
     if (
       sameKind &&
       shared.length > 0 &&
       existing.textPattern &&
       existing.textPattern.test(seed.label)
-    ) return key;
+    )
+      return key;
   }
   return undefined;
 }
@@ -2903,7 +2964,7 @@ function finalizeCapabilitySeed(
   const gapIndicatesUncovered = rawGapIndicatesUncovered && !gapCoveredByStrongGoal;
   const scenarioIds = uniqueNonEmptyStrings([
     ...seed.scenario_ids
-      .filter((id) => input.goals.length === 0 ? /^G\d+/i.test(id) : finalGoalIds.has(id))
+      .filter((id) => (input.goals.length === 0 ? /^G\d+/i.test(id) : finalGoalIds.has(id)))
       .filter((id) => {
         if (input.goals.length === 0) return true;
         const goal = goalById.get(id);
@@ -2984,7 +3045,10 @@ function normalizedCapabilityCoverageGap(
 ): string {
   const raw = rawCoverageGap.trim();
   if (status === 'selected') {
-    return raw || `Selected for this run${scenarioIds.length > 0 ? ` via ${scenarioIds.join(', ')}` : ''}.`;
+    return (
+      raw ||
+      `Selected for this run${scenarioIds.length > 0 ? ` via ${scenarioIds.join(', ')}` : ''}.`
+    );
   }
   if (coverageGapIndicatesUncovered(raw)) return raw;
   if (skipReason) return skipReason;
@@ -3039,7 +3103,10 @@ function normalizedCapabilitySkipReason(
   const raw = rawSkipReason.trim();
   if (status === 'selected' || status === 'not_applicable') return raw;
   if (expectation === 'must_test') {
-    return raw || 'Central product capability was expected to be tested, but no selected scenario covered it.';
+    return (
+      raw ||
+      'Central product capability was expected to be tested, but no selected scenario covered it.'
+    );
   }
   if (expectation === 'should_test_or_explain') {
     const relatedJourney = journeys.find((journey) => journeyIds.includes(journey.id));
@@ -3092,7 +3159,8 @@ function compatibleCapabilityPriorForText(
 ): DiscoveryCapabilityPrior | undefined {
   return DISCOVERY_CAPABILITY_PRIORS.find((prior) => {
     const compatible =
-      productKinds.length === 0 || capabilityPriorCompatibleWithKinds(productKinds, prior.productKind);
+      productKinds.length === 0 ||
+      capabilityPriorCompatibleWithKinds(productKinds, prior.productKind);
     return compatible && prior.textPattern.test(text);
   });
 }
@@ -3187,12 +3255,17 @@ function strongerCapabilitySelectionExpectation(
   return rank[b] < rank[a] ? b : a;
 }
 
-function capabilityPriorCompatibleWithKinds(productKinds: ProductKind[], productKind: ProductKind): boolean {
+function capabilityPriorCompatibleWithKinds(
+  productKinds: ProductKind[],
+  productKind: ProductKind,
+): boolean {
   if (productKinds.includes(productKind)) return true;
   if (productKind === 'content_site' && productKinds.includes('search_content')) return true;
   if (productKind === 'search_content' && productKinds.includes('content_site')) return true;
-  if (productKind === 'auth_account') return productKinds.length === 1 && productKinds[0] === 'auth_account';
-  if (productKind === 'settings_tool') return productKinds.length === 1 && productKinds[0] === 'settings_tool';
+  if (productKind === 'auth_account')
+    return productKinds.length === 1 && productKinds[0] === 'auth_account';
+  if (productKind === 'settings_tool')
+    return productKinds.length === 1 && productKinds[0] === 'settings_tool';
   if (productKind === 'communication_tool') {
     return productKinds.length === 1 && productKinds[0] === 'communication_tool';
   }
@@ -3479,9 +3552,10 @@ function ensureJourneysForUnlinkedProductUseJobs(
       productKinds: productUseContract?.product_kinds ?? [],
     });
     if (!isSeedGoalClass(goalClass)) continue;
-    const id = job.journey_id && !out.some((journey) => journey.id === job.journey_id)
-      ? job.journey_id
-      : nextJourneyId(out, reservedJobJourneyIds);
+    const id =
+      job.journey_id && !out.some((journey) => journey.id === job.journey_id)
+        ? job.journey_id
+        : nextJourneyId(out, reservedJobJourneyIds);
     out.push({
       id,
       title: job.title,
@@ -3751,7 +3825,9 @@ function shouldPreferJourneySuggestedGoal(description: string, journey: Discover
     return false;
   }
   return !scaffoldCoversAnchor(
-    [journey.title, journey.user_intent, journey.suggested_goal, ...journey.expected_evidence].join(' '),
+    [journey.title, journey.user_intent, journey.suggested_goal, ...journey.expected_evidence].join(
+      ' ',
+    ),
     description,
   );
 }
@@ -4438,7 +4514,10 @@ function classifyJourneyMateriality(
   if (contractBacked && isSeedGoalClass(computed)) return computed;
   if (computed === 'setup' || computed === 'peripheral' || computed === 'diagnostic')
     return computed;
-  if (isSeedGoalClass(computed) && (journey.goal_class === 'setup' || journey.goal_class === 'peripheral')) {
+  if (
+    isSeedGoalClass(computed) &&
+    (journey.goal_class === 'setup' || journey.goal_class === 'peripheral')
+  ) {
     return computed;
   }
   if (journey.goal_class === 'setup' || journey.goal_class === 'peripheral')
@@ -4738,10 +4817,22 @@ function stringArrayValue(value: unknown): string[] {
     : [];
 }
 
+const EXPLORER_CONTEXT_MAX_CHARS = 5000;
+
 export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
   const lines: string[] = [];
+  if (out.out_of_scope.length > 0) {
+    lines.push('OUT OF SCOPE / DO NOT DO:');
+    for (const item of out.out_of_scope) {
+      lines.push(`- ${item}`);
+    }
+  }
+  if (out.product_use_contract) {
+    lines.push(...formatScenarioAcceptanceLines(out));
+  }
+  const lowerPriorityLines: string[] = [];
   if (out.capabilities.length > 0) {
-    lines.push('PRODUCT CAPABILITY COVERAGE:');
+    lowerPriorityLines.push('PRODUCT CAPABILITY COVERAGE:');
     const selected = out.capabilities.filter((capability) => capability.status === 'selected');
     const gaps = out.capabilities.filter(
       (capability) =>
@@ -4750,7 +4841,7 @@ export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
         capability.selection_expectation !== 'not_normally_tested',
     );
     if (selected.length > 0) {
-      lines.push(
+      lowerPriorityLines.push(
         `- selected capabilities: ${selected
           .slice(0, 10)
           .map((capability) => capability.label)
@@ -4758,92 +4849,38 @@ export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
       );
     }
     if (gaps.length > 0) {
-      lines.push(
+      lowerPriorityLines.push(
         `- capability gaps to prefer when proposing follow-up work: ${gaps
           .slice(0, 10)
-          .map((capability) =>
-            `${capability.label} (${(capability.selection_expectation ?? 'should_test_or_explain').replace(/_/g, ' ')})`,
+          .map(
+            (capability) =>
+              `${capability.label} (${(capability.selection_expectation ?? 'should_test_or_explain').replace(/_/g, ' ')})`,
           )
           .join('; ')}`,
       );
       for (const capability of gaps.slice(0, 5)) {
         if (capability.skip_reason || capability.coverage_gap) {
-          lines.push(`  - ${capability.label}: ${capability.skip_reason || capability.coverage_gap}`);
+          lowerPriorityLines.push(
+            `  - ${capability.label}: ${capability.skip_reason || capability.coverage_gap}`,
+          );
         }
       }
     }
   }
-  if (out.product_use_contract) {
-    const contract = out.product_use_contract;
-    lines.push('SCENARIO ACCEPTANCE CRITERIA:');
-    if (contract.product_kinds.length > 0) {
-      lines.push(`- product kinds: ${contract.product_kinds.join(', ')}`);
-    }
-    if (contract.primary_value_loop) {
-      lines.push(`- primary journey: ${contract.primary_value_loop}`);
-    }
-    if (contract.core_artifacts.length > 0) {
-      lines.push(`- core artifacts/state changes: ${contract.core_artifacts.join('; ')}`);
-    }
-    for (const loop of contract.value_loops.slice(0, 4)) {
-      lines.push(
-        `- journey group ${loop.id}: ${loop.title}; artifact: ${loop.artifact || 'visible product outcome'}`,
-      );
-      if (loop.required_capabilities.length > 0) {
-        lines.push(`  required capabilities: ${loop.required_capabilities.join('; ')}`);
-      }
-      if (loop.proof_obligations.length > 0) {
-        lines.push(`  proof obligations: ${loop.proof_obligations.join('; ')}`);
-      }
-      if (loop.weak_evidence.length > 0) {
-        lines.push(
-          `  weak evidence that must NOT verify this journey: ${loop.weak_evidence.join('; ')}`,
-        );
-      }
-    }
-    for (const job of contract.user_jobs.slice(0, 8)) {
-      lines.push(
-        `- ${job.id}${job.journey_id ? ` (${job.journey_id})` : ''}: ${job.title}; scenario: ${job.scenario_brief || job.title}; required actions: ${job.required_actions.join(', ') || 'normal user actions'}; expected artifact/state: ${job.expected_artifact || 'visible outcome'}`,
-      );
-      const visibleData = scenarioVisibleDataTokens(job.test_data);
-      const instructionHints = scenarioInstructionHints(job.test_data);
-      if (visibleData.length > 0) {
-        lines.push(`  exact visible content/data to use: ${visibleData.join('; ')}`);
-      }
-      if (instructionHints.length > 0) {
-        lines.push(`  scenario constraints: ${instructionHints.join('; ')}`);
-      }
-      if (job.required_outputs.length > 0) {
-        lines.push(`  required visible outputs: ${job.required_outputs.join('; ')}`);
-      }
-      if (job.quality_bar.length > 0) {
-        lines.push(`  quality bar: ${job.quality_bar.join('; ')}`);
-      }
-      if (job.proof_obligations.length > 0) {
-        lines.push(`  proof obligations: ${job.proof_obligations.join('; ')}`);
-      }
-      if (job.acceptable_evidence.length > 0) {
-        lines.push(`  acceptable evidence: ${job.acceptable_evidence.join('; ')}`);
-      }
-      if (job.weak_evidence.length > 0) {
-        lines.push(`  weak evidence that must NOT verify: ${job.weak_evidence.join('; ')}`);
-      }
-    }
-  }
   if (out.surfaces.length > 0) {
-    lines.push('DISCOVERED SURFACES:');
+    lowerPriorityLines.push('DISCOVERED SURFACES:');
     for (const surface of out.surfaces.slice(0, 24)) {
-      lines.push(
+      lowerPriorityLines.push(
         `- ${surface.id} [${surface.value}/${surface.kind}/${surface.source}]: ${surface.label}`,
       );
     }
   }
   if (out.journeys.length > 0) {
-    lines.push('SELECTED JOURNEY GROUPS:');
+    lowerPriorityLines.push('SELECTED JOURNEY GROUPS:');
     const selected = new Set(out.coverage_plan?.selected_journey_ids ?? []);
     for (const journey of out.journeys.slice(0, 18)) {
       const marker = selected.has(journey.id) ? 'selected' : 'deferred';
-      lines.push(
+      lowerPriorityLines.push(
         `- ${journey.id} [${marker}/${journey.priority}]: ${journey.title} -> ${journey.suggested_goal}`,
       );
     }
@@ -4851,7 +4888,7 @@ export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
   const deferredIds = out.coverage_plan?.deferred_surface_ids ?? [];
   if (deferredIds.length > 0) {
     const labels = new Map(out.surfaces.map((surface) => [surface.id, surface.label]));
-    lines.push(
+    lowerPriorityLines.push(
       `DEFERRED SURFACES: ${deferredIds
         .slice(0, 20)
         .map((id) => `${id}${labels.get(id) ? ` (${labels.get(id)})` : ''}`)
@@ -4859,9 +4896,99 @@ export function formatDiscoveryExplorerContext(out: DiscoveryOutput): string {
     );
   }
   if (out.coverage_plan?.rationale) {
-    lines.push(`DISCOVERY COVERAGE RATIONALE: ${out.coverage_plan.rationale}`);
+    lowerPriorityLines.push(`DISCOVERY COVERAGE RATIONALE: ${out.coverage_plan.rationale}`);
   }
-  return lines.join('\n').slice(0, 5000);
+  appendLinesWithinBudget(lines, lowerPriorityLines, EXPLORER_CONTEXT_MAX_CHARS);
+  return lines.join('\n');
+}
+
+function formatScenarioAcceptanceLines(out: DiscoveryOutput): string[] {
+  const contract = out.product_use_contract;
+  if (!contract) return [];
+  const lines: string[] = ['SCENARIO ACCEPTANCE CRITERIA:'];
+  if (contract.product_kinds.length > 0) {
+    lines.push(`- product kinds: ${contract.product_kinds.join(', ')}`);
+  }
+  if (contract.primary_value_loop) {
+    lines.push(`- primary journey: ${contract.primary_value_loop}`);
+  }
+  if (contract.core_artifacts.length > 0) {
+    lines.push(`- core artifacts/state changes: ${contract.core_artifacts.join('; ')}`);
+  }
+  for (const loop of contract.value_loops.slice(0, 4)) {
+    lines.push(
+      `- journey group ${loop.id}: ${loop.title}; artifact: ${loop.artifact || 'visible product outcome'}`,
+    );
+    if (loop.required_capabilities.length > 0) {
+      lines.push(`  required capabilities: ${loop.required_capabilities.join('; ')}`);
+    }
+    if (loop.proof_obligations.length > 0) {
+      lines.push(`  proof obligations: ${loop.proof_obligations.join('; ')}`);
+    }
+    if (loop.weak_evidence.length > 0) {
+      lines.push(
+        `  weak evidence that must NOT verify this journey: ${loop.weak_evidence.join('; ')}`,
+      );
+    }
+  }
+  for (const job of productUseJobsForExplorerContext(out)) {
+    lines.push(
+      `- ${job.id}${job.journey_id ? ` (${job.journey_id})` : ''}: ${job.title}; scenario: ${job.scenario_brief || job.title}; required actions: ${job.required_actions.join(', ') || 'normal user actions'}; expected artifact/state: ${job.expected_artifact || 'visible outcome'}`,
+    );
+    const visibleData = scenarioVisibleDataTokens(job.test_data);
+    const instructionHints = scenarioInstructionHints(job.test_data);
+    if (visibleData.length > 0) {
+      lines.push(`  exact visible content/data to use: ${visibleData.join('; ')}`);
+    }
+    if (instructionHints.length > 0) {
+      lines.push(`  scenario constraints: ${instructionHints.join('; ')}`);
+    }
+    if (job.required_outputs.length > 0) {
+      lines.push(`  required visible outputs: ${job.required_outputs.join('; ')}`);
+    }
+    if (job.quality_bar.length > 0) {
+      lines.push(`  quality bar: ${job.quality_bar.join('; ')}`);
+    }
+    if (job.proof_obligations.length > 0) {
+      lines.push(`  proof obligations: ${job.proof_obligations.join('; ')}`);
+    }
+    if (job.acceptable_evidence.length > 0) {
+      lines.push(`  acceptable evidence: ${job.acceptable_evidence.join('; ')}`);
+    }
+    if (job.weak_evidence.length > 0) {
+      lines.push(`  weak evidence that must NOT verify: ${job.weak_evidence.join('; ')}`);
+    }
+  }
+  return lines;
+}
+
+function productUseJobsForExplorerContext(out: DiscoveryOutput): ProductUseJob[] {
+  const jobs = out.product_use_contract?.user_jobs ?? [];
+  const selectedJourneyIds = new Set(out.coverage_plan?.selected_journey_ids ?? []);
+  const selectedJobs = jobs.filter(
+    (job) => job.journey_id && selectedJourneyIds.has(job.journey_id),
+  );
+  if (selectedJobs.length === 0) return jobs.slice(0, 8);
+  const selectedJobIds = new Set(selectedJobs.map((job) => job.id));
+  const remainingJobs = jobs.filter((job) => !selectedJobIds.has(job.id));
+  return [...selectedJobs, ...remainingJobs.slice(0, Math.max(0, 8 - selectedJobs.length))];
+}
+
+function appendLinesWithinBudget(
+  lines: string[],
+  candidates: readonly string[],
+  maxChars: number,
+): void {
+  for (const line of candidates) {
+    const separatorLength = lines.length > 0 ? 1 : 0;
+    const nextLength = lines.join('\n').length + separatorLength + line.length;
+    if (nextLength > maxChars && !isExplorerContextSectionHeader(line)) continue;
+    lines.push(line);
+  }
+}
+
+function isExplorerContextSectionHeader(line: string): boolean {
+  return /^[A-Z][A-Z /]+:$/.test(line);
 }
 
 function formatDiscoverySurveyPayload(payload: unknown): string {

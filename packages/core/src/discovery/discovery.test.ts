@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { deriveDiscoveryCapabilitiesForReport, formatDiscoveryExplorerContext, runDiscovery } from './discovery.js';
+import {
+  deriveDiscoveryCapabilitiesForReport,
+  formatDiscoveryExplorerContext,
+  runDiscovery,
+} from './discovery.js';
 import { DISCOVERY_SYSTEM } from './prompts.js';
 
 describe('DISCOVERY_SYSTEM', () => {
@@ -26,6 +30,103 @@ describe('DISCOVERY_SYSTEM', () => {
     expect(DISCOVERY_SYSTEM).toContain('Only "core" and selected "secondary_workflow"');
     expect(DISCOVERY_SYSTEM).toContain('A word editor should type a real paragraph');
     expect(DISCOVERY_SYSTEM).toContain('normally perform as setup before a material goal');
+  });
+});
+
+describe('formatDiscoveryExplorerContext', () => {
+  it('puts discovery out-of-scope constraints in a high-priority do-not-do section', () => {
+    const context = formatDiscoveryExplorerContext({
+      v: 2,
+      target_kind_hint: 'web',
+      product_description: 'A checkout demo.',
+      goals: [],
+      surfaces: [],
+      journeys: [],
+      capabilities: [],
+      focus_areas: [],
+      hints: [],
+      out_of_scope: ['Do not submit real payment.'],
+    });
+
+    expect(context).toContain('OUT OF SCOPE / DO NOT DO:');
+    expect(context).toContain('- Do not submit real payment.');
+  });
+
+  it('preserves selected user-job acceptance fields before lower-priority inventory', () => {
+    const context = formatDiscoveryExplorerContext({
+      v: 2,
+      target_kind_hint: 'web',
+      product_description: 'A planning board.',
+      product_use_contract: {
+        product_kinds: ['canvas_editor'],
+        primary_value_loop: 'Create a realistic board.',
+        core_artifacts: ['board artifact'],
+        value_loops: [],
+        user_jobs: Array.from({ length: 9 }, (_, index) => ({
+          id: `PU${index + 1}`,
+          title: `Job ${index + 1}`,
+          journey_id: `J${index + 1}`,
+          scenario_brief: `Scenario ${index + 1}`,
+          required_actions: [],
+          proof_obligations: [],
+          expected_artifact: 'visible outcome',
+          acceptable_evidence: [],
+          test_data:
+            index === 8 ? ['Column labels: Backlog, In Review, Released'] : [`Data ${index + 1}`],
+          required_outputs:
+            index === 8 ? ['Backlog', 'In Review', 'Released'] : [`Output ${index + 1}`],
+          quality_bar: index === 8 ? ['Represents a realistic workflow'] : [`Quality ${index + 1}`],
+          weak_evidence: index === 8 ? ['toolbar selected only'] : [`Weak evidence ${index + 1}`],
+          risk: 'medium' as const,
+        })),
+      },
+      goals: [],
+      surfaces: Array.from({ length: 40 }, (_, index) => ({
+        id: `S${index + 1}`,
+        label: `Lower priority surface ${index + 1} ${'x'.repeat(240)}`,
+        kind: 'content' as const,
+        url: 'https://example.test',
+        source: 'initial' as const,
+        value: 'peripheral' as const,
+        confidence: 0.5,
+        evidence: [],
+        controls: [],
+        prerequisites: [],
+      })),
+      journeys: [],
+      capabilities: [
+        {
+          id: 'C1',
+          label: `Lower priority capability ${'x'.repeat(240)}`,
+          product_kind: 'canvas_editor',
+          importance: 'secondary',
+          status: 'discovered',
+          confidence: 0.5,
+          source: 'model',
+          evidence: [],
+          scenario_ids: [],
+          journey_ids: [],
+          surface_ids: [],
+          denominator_reason: '',
+          coverage_gap: '',
+        },
+      ],
+      coverage_plan: {
+        selected_journey_ids: ['J9'],
+        deferred_surface_ids: [],
+        rationale: 'Prefer the selected scenario.',
+        coverage_risk: 'medium',
+      },
+      focus_areas: [],
+      hints: [],
+      out_of_scope: [],
+    });
+
+    expect(context).toContain('- PU9 (J9): Job 9');
+    expect(context).toContain('exact visible content/data to use: Backlog; In Review; Released');
+    expect(context).toContain('required visible outputs: Backlog; In Review; Released');
+    expect(context).toContain('quality bar: Represents a realistic workflow');
+    expect(context).toContain('weak evidence that must NOT verify: toolbar selected only');
   });
 });
 
@@ -85,7 +186,8 @@ describe('runDiscovery', () => {
   it('synthesizes a canvas-editor capability denominator from product kind and surfaces', async () => {
     const result = await runDiscovery({
       url: 'https://www.tldraw.com/',
-      observation_summary: 'tldraw whiteboard canvas with toolbar, shape, text, arrow, color, export, and share controls.',
+      observation_summary:
+        'tldraw whiteboard canvas with toolbar, shape, text, arrow, color, export, and share controls.',
       screenshot_path: '/tmp/x.png',
       discoverer: async () => ({
         text: JSON.stringify({
@@ -111,12 +213,19 @@ describe('runDiscovery', () => {
                 id: 'PU1',
                 title: 'Create a launch planning board',
                 journey_id: 'J1',
-                scenario_brief: 'Create a launch planning board with two labeled steps, an arrow, and a style change.',
+                scenario_brief:
+                  'Create a launch planning board with two labeled steps, an arrow, and a style change.',
                 test_data: ['Launch plan', 'Draft', 'Review'],
                 required_actions: ['place shapes', 'add labels', 'draw connector', 'change color'],
                 proof_obligations: ['named board content appears on canvas'],
                 expected_artifact: 'styled launch planning diagram',
-                required_outputs: ['Launch plan', 'Draft', 'Review', 'visible connector', 'visible style change'],
+                required_outputs: [
+                  'Launch plan',
+                  'Draft',
+                  'Review',
+                  'visible connector',
+                  'visible style change',
+                ],
                 quality_bar: ['the result reads as a diagram'],
                 acceptable_evidence: ['post-action screenshot of diagram'],
                 weak_evidence: ['shape tool selected'],
@@ -125,10 +234,42 @@ describe('runDiscovery', () => {
             ],
           },
           surfaces: [
-            { id: 'S1', label: 'Blank whiteboard canvas', kind: 'content', url: 'https://www.tldraw.com/', source: 'initial', value: 'core', confidence: 0.9 },
-            { id: 'S2', label: 'Primary drawing toolbar with shape, text, arrow, draw, color, fill, size', kind: 'toolbar', url: 'https://www.tldraw.com/', source: 'initial', value: 'core', confidence: 0.9 },
-            { id: 'S3', label: 'Export and download menu', kind: 'menu', url: 'https://www.tldraw.com/', source: 'menu_peek', value: 'important_secondary', confidence: 0.8 },
-            { id: 'S4', label: 'Share and sign in to share', kind: 'account', url: 'https://www.tldraw.com/', source: 'initial', value: 'important_secondary', confidence: 0.8 },
+            {
+              id: 'S1',
+              label: 'Blank whiteboard canvas',
+              kind: 'content',
+              url: 'https://www.tldraw.com/',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'Primary drawing toolbar with shape, text, arrow, draw, color, fill, size',
+              kind: 'toolbar',
+              url: 'https://www.tldraw.com/',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S3',
+              label: 'Export and download menu',
+              kind: 'menu',
+              url: 'https://www.tldraw.com/',
+              source: 'menu_peek',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
+            {
+              id: 'S4',
+              label: 'Share and sign in to share',
+              kind: 'account',
+              url: 'https://www.tldraw.com/',
+              source: 'initial',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
           ],
           journeys: [
             {
@@ -138,7 +279,8 @@ describe('runDiscovery', () => {
               goal_class: 'core',
               surface_ids: ['S1', 'S2'],
               user_intent: 'Create a named diagram on the canvas.',
-              suggested_goal: 'Create a launch planning board with two labeled shapes, an arrow, and a style change.',
+              suggested_goal:
+                'Create a launch planning board with two labeled shapes, an arrow, and a style change.',
               sample_input: 'Launch plan; Draft; Review',
               expected_evidence: ['readable labels', 'connector', 'style change'],
               risk: 'high',
@@ -153,7 +295,8 @@ describe('runDiscovery', () => {
           goals: [
             {
               id: 'G1',
-              description: 'Create a launch planning board with two labeled shapes, an arrow, and a style change.',
+              description:
+                'Create a launch planning board with two labeled shapes, an arrow, and a style change.',
               priority: 'must',
               goal_class: 'core',
               journey_id: 'J1',
@@ -168,25 +311,113 @@ describe('runDiscovery', () => {
       }),
     });
     expect(result).not.toBeNull();
-    const labels = result?.output.capabilities.map((capability) => capability.label) ?? [];
-    expect(labels).toEqual(expect.arrayContaining([
-      'Create visible canvas content',
-      'Add readable text or notes',
-      'Connect or draw relationships',
-      'Style or format canvas objects',
-      'Use shape-library objects',
-      'Export or save the board',
-      'Share or collaborate on the board',
-    ]));
-    expect(result?.output.capabilities.find((capability) => capability.label === 'Create visible canvas content')?.status).toBe('selected');
-    expect(result?.output.capabilities.find((capability) => capability.label === 'Import media or embeds')?.status).toBe('discovered');
-    expect(formatDiscoveryExplorerContext(result!.output)).toContain('PRODUCT CAPABILITY COVERAGE');
+    if (!result) throw new Error('expected discovery result');
+    const labels = result.output.capabilities.map((capability) => capability.label);
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        'Create visible canvas content',
+        'Add readable text or notes',
+        'Connect or draw relationships',
+        'Style or format canvas objects',
+        'Use shape-library objects',
+        'Export or save the board',
+        'Share or collaborate on the board',
+      ]),
+    );
+    expect(
+      result.output.capabilities.find(
+        (capability) => capability.label === 'Create visible canvas content',
+      )?.status,
+    ).toBe('selected');
+    expect(
+      result.output.capabilities.find((capability) => capability.label === 'Import media or embeds')
+        ?.status,
+    ).toBe('discovered');
+    expect(formatDiscoveryExplorerContext(result.output)).toContain('PRODUCT CAPABILITY COVERAGE');
+  });
+
+  it('relinks product-use jobs with stale declared journey ids to matching selected journeys', async () => {
+    const result = await runDiscovery({
+      url: 'https://example.test/',
+      observation_summary: 'Planning board app with a visible board surface.',
+      screenshot_path: '/tmp/x.png',
+      discoverer: async () => ({
+        text: JSON.stringify({
+          v: 2,
+          target_kind_hint: 'web',
+          product_description: 'A planning board.',
+          product_use_contract: {
+            product_kinds: ['canvas_editor'],
+            primary_value_loop: 'Create a launch planning board.',
+            core_artifacts: ['visible board'],
+            value_loops: [],
+            user_jobs: [
+              {
+                id: 'PU1',
+                title: 'Create a launch board',
+                journey_id: 'J99',
+                scenario_brief: 'Create a launch board with Backlog and Released columns.',
+                test_data: ['Backlog', 'Released'],
+                required_actions: ['create columns'],
+                proof_obligations: [],
+                expected_artifact: 'visible board',
+                required_outputs: ['Backlog', 'Released'],
+                quality_bar: [],
+                acceptable_evidence: [],
+                weak_evidence: [],
+                risk: 'high',
+              },
+            ],
+          },
+          surfaces: [
+            {
+              id: 'S1',
+              label: 'Board',
+              kind: 'content',
+              url: 'https://example.test/',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+          ],
+          journeys: [
+            {
+              id: 'J1',
+              title: 'Create a launch board',
+              priority: 'must',
+              goal_class: 'core',
+              surface_ids: ['S1'],
+              user_intent: 'Create a launch board.',
+              suggested_goal: 'Create a launch board with Backlog and Released columns.',
+              sample_input: 'Backlog; Released',
+              expected_evidence: ['Backlog', 'Released'],
+              risk: 'high',
+            },
+          ],
+          coverage_plan: {
+            selected_journey_ids: ['J1'],
+            deferred_surface_ids: [],
+            rationale: 'Core journey.',
+            coverage_risk: 'medium',
+          },
+          goals: [],
+          focus_areas: [],
+          hints: [],
+          out_of_scope: [],
+        }),
+        cost_usd: 0,
+      }),
+    });
+
+    expect(result?.output.product_use_contract?.user_jobs[0]?.journey_id).toBe('J1');
+    expect(result?.output.goals[0]?.journey_id).toBe('J1');
   });
 
   it('synthesizes a content-product capability denominator without canvas-specific rules', async () => {
     const result = await runDiscovery({
       url: 'https://example.com/search',
-      observation_summary: 'Search input, article results, table of contents, and language selector.',
+      observation_summary:
+        'Search input, article results, table of contents, and language selector.',
       screenshot_path: '/tmp/x.png',
       discoverer: async () => ({
         text: JSON.stringify({
@@ -201,10 +432,42 @@ describe('runDiscovery', () => {
             user_jobs: [],
           },
           surfaces: [
-            { id: 'S1', label: 'Search input', kind: 'search', url: 'https://example.com/search', source: 'initial', value: 'core', confidence: 0.9 },
-            { id: 'S2', label: 'Article result page', kind: 'content', url: 'https://example.com/wiki/OpenAI', source: 'primary_journey', value: 'core', confidence: 0.9 },
-            { id: 'S3', label: 'Article table of contents and references', kind: 'nav', url: 'https://example.com/wiki/OpenAI', source: 'primary_journey', value: 'important_secondary', confidence: 0.8 },
-            { id: 'S4', label: 'Language selector', kind: 'menu', url: 'https://example.com/wiki/OpenAI', source: 'menu_peek', value: 'important_secondary', confidence: 0.8 },
+            {
+              id: 'S1',
+              label: 'Search input',
+              kind: 'search',
+              url: 'https://example.com/search',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'Article result page',
+              kind: 'content',
+              url: 'https://example.com/wiki/OpenAI',
+              source: 'primary_journey',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S3',
+              label: 'Article table of contents and references',
+              kind: 'nav',
+              url: 'https://example.com/wiki/OpenAI',
+              source: 'primary_journey',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
+            {
+              id: 'S4',
+              label: 'Language selector',
+              kind: 'menu',
+              url: 'https://example.com/wiki/OpenAI',
+              source: 'menu_peek',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
           ],
           journeys: [
             {
@@ -214,7 +477,8 @@ describe('runDiscovery', () => {
               goal_class: 'core',
               surface_ids: ['S1', 'S2'],
               user_intent: 'Find and consume content.',
-              suggested_goal: 'Search for OpenAI, open the article, and verify readable article content appears.',
+              suggested_goal:
+                'Search for OpenAI, open the article, and verify readable article content appears.',
               sample_input: 'OpenAI',
               expected_evidence: ['OpenAI article content'],
               risk: 'high',
@@ -229,7 +493,8 @@ describe('runDiscovery', () => {
           goals: [
             {
               id: 'G1',
-              description: 'Search for OpenAI, open the article, and verify readable article content appears.',
+              description:
+                'Search for OpenAI, open the article, and verify readable article content appears.',
               priority: 'must',
               goal_class: 'core',
               journey_id: 'J1',
@@ -244,14 +509,20 @@ describe('runDiscovery', () => {
       }),
     });
     const labels = result?.output.capabilities.map((capability) => capability.label) ?? [];
-    expect(labels).toEqual(expect.arrayContaining([
-      'Search for specific content',
-      'Consume visible content',
-      'Navigate within content',
-      'Use visible content tools',
-    ]));
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        'Search for specific content',
+        'Consume visible content',
+        'Navigate within content',
+        'Use visible content tools',
+      ]),
+    );
     expect(labels).not.toContain('Create visible canvas content');
-    expect(result?.output.capabilities.find((capability) => capability.label === 'Navigate within content')?.status).toBe('selected');
+    expect(
+      result?.output.capabilities.find(
+        (capability) => capability.label === 'Navigate within content',
+      )?.status,
+    ).toBe('selected');
     expect(result?.output.goals.map((goal) => goal.description).join('\n')).toMatch(
       /Search for OpenAI|OpenAI/,
     );
@@ -277,10 +548,42 @@ describe('runDiscovery', () => {
             user_jobs: [],
           },
           surfaces: [
-            { id: 'S1', label: 'Mortgage input form with Calculate', kind: 'form', url: 'https://calculator.example/mortgage', source: 'initial', value: 'core', confidence: 0.9 },
-            { id: 'S2', label: 'Mortgage result and amortization table', kind: 'content', url: 'https://calculator.example/mortgage', source: 'initial', value: 'core', confidence: 0.9 },
-            { id: 'S3', label: 'Educational article and related calculator links', kind: 'nav', url: 'https://calculator.example/mortgage', source: 'scroll', value: 'important_secondary', confidence: 0.8 },
-            { id: 'S4', label: 'Site search', kind: 'search', url: 'https://calculator.example/mortgage', source: 'scroll', value: 'important_secondary', confidence: 0.8 },
+            {
+              id: 'S1',
+              label: 'Mortgage input form with Calculate',
+              kind: 'form',
+              url: 'https://calculator.example/mortgage',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'Mortgage result and amortization table',
+              kind: 'content',
+              url: 'https://calculator.example/mortgage',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S3',
+              label: 'Educational article and related calculator links',
+              kind: 'nav',
+              url: 'https://calculator.example/mortgage',
+              source: 'scroll',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
+            {
+              id: 'S4',
+              label: 'Site search',
+              kind: 'search',
+              url: 'https://calculator.example/mortgage',
+              source: 'scroll',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
           ],
           journeys: [
             {
@@ -369,8 +672,24 @@ describe('runDiscovery', () => {
             ],
           },
           surfaces: [
-            { id: 'S1', label: 'BMI calculator form and result panel', kind: 'form', url: 'https://calculator.example/bmi', source: 'initial', value: 'core', confidence: 0.9 },
-            { id: 'S2', label: 'BMI article and site search', kind: 'content', url: 'https://calculator.example/bmi', source: 'scroll', value: 'important_secondary', confidence: 0.8 },
+            {
+              id: 'S1',
+              label: 'BMI calculator form and result panel',
+              kind: 'form',
+              url: 'https://calculator.example/bmi',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'BMI article and site search',
+              kind: 'content',
+              url: 'https://calculator.example/bmi',
+              source: 'scroll',
+              value: 'important_secondary',
+              confidence: 0.8,
+            },
           ],
           journeys: [
             {
@@ -403,9 +722,9 @@ describe('runDiscovery', () => {
     if (!result) throw new Error('expected discovery result');
     expect(result.output.product_use_contract?.product_kinds).toEqual(['calculator_tool']);
     expect(result.output.product_use_contract?.user_jobs[0]?.test_data).not.toContain('OpenAI');
-    expect(result.output.product_use_contract?.user_jobs[0]?.required_actions.join('\n')).not.toMatch(
-      /open and consume a content result/i,
-    );
+    expect(
+      result.output.product_use_contract?.user_jobs[0]?.required_actions.join('\n'),
+    ).not.toMatch(/open and consume a content result/i);
   });
 
   it('strips a leading prose preamble before the JSON object', async () => {
@@ -879,12 +1198,7 @@ describe('runDiscovery', () => {
       /readable text|second object/,
     );
     expect(contract?.user_jobs[0]?.proof_obligations.join('\n')).toMatch(/activated tool/);
-    expect(result?.output.coverage_plan?.selected_journey_ids).toEqual([
-      'J1',
-      'J3',
-      'J4',
-      'J5',
-    ]);
+    expect(result?.output.coverage_plan?.selected_journey_ids).toEqual(['J1', 'J3', 'J4', 'J5']);
     expect(result?.output.coverage_plan?.deferred_surface_ids).toContain('S3');
     expect(result?.output.goals.map((goal) => goal.description).join('\n')).not.toMatch(
       /SDK promo/,
@@ -2274,8 +2588,7 @@ describe('runDiscovery', () => {
               'settings_tool',
               'developer_tool',
             ],
-            primary_value_loop:
-              'Create and refine a visible whiteboard artifact on the canvas.',
+            primary_value_loop: 'Create and refine a visible whiteboard artifact on the canvas.',
             core_artifacts: ['labeled shapes, notes, connectors, and visible board styling'],
             user_jobs: [
               {
@@ -2414,7 +2727,8 @@ describe('runDiscovery', () => {
     });
 
     expect(result?.output.product_use_contract?.product_kinds).toEqual(['canvas_editor']);
-    const capabilityLabels = result?.output.capabilities.map((capability) => capability.label) ?? [];
+    const capabilityLabels =
+      result?.output.capabilities.map((capability) => capability.label) ?? [];
     expect(capabilityLabels).toContain('Create visible canvas content');
     expect(capabilityLabels).toContain('Import media or embeds');
     expect(capabilityLabels).not.toContain('Configure and run a developer workflow');
@@ -2435,8 +2749,7 @@ describe('runDiscovery', () => {
           product_description: 'A developer console for configuring and running projects.',
           product_use_contract: {
             product_kinds: ['developer_tool'],
-            primary_value_loop:
-              'Configure a project, run a build, and inspect the resulting logs.',
+            primary_value_loop: 'Configure a project, run a build, and inspect the resulting logs.',
             core_artifacts: ['project run result and visible log output'],
             user_jobs: [],
           },
@@ -2469,7 +2782,8 @@ describe('runDiscovery', () => {
     });
 
     expect(result?.output.product_use_contract?.product_kinds).toEqual(['developer_tool']);
-    const capabilityLabels = result?.output.capabilities.map((capability) => capability.label) ?? [];
+    const capabilityLabels =
+      result?.output.capabilities.map((capability) => capability.label) ?? [];
     expect(capabilityLabels).toContain('Configure and run a developer workflow');
     expect(capabilityLabels).toContain('Inspect logs, output, or errors');
   });
@@ -2902,9 +3216,9 @@ describe('runDiscovery', () => {
     expect(navigationCapability?.scenario_ids).not.toContain('PU2');
     expect(navigationCapability?.scenario_ids.every((id) => id.startsWith('G'))).toBe(true);
     expect(navigationCapability?.status).toBe('selected');
-    const navigationGoals = result?.output.goals.filter((goal) =>
-      navigationCapability?.scenario_ids.includes(goal.id),
-    ) ?? [];
+    const navigationGoals =
+      result?.output.goals.filter((goal) => navigationCapability?.scenario_ids.includes(goal.id)) ??
+      [];
     expect(navigationGoals).toHaveLength(1);
     expect(navigationGoals[0]?.description).toMatch(/contents|section/i);
     expect(navigationGoals[0]?.description).not.toContain('Search for OpenAI');
@@ -3027,7 +3341,8 @@ describe('runDiscovery', () => {
           journey_ids: ['J1'],
           surface_ids: ['S1'],
           denominator_reason: 'Developer documentation should support deeper lookup.',
-          coverage_gap: 'Manual/reference article consumption should be covered in a deeper documentation audit.',
+          coverage_gap:
+            'Manual/reference article consumption should be covered in a deeper documentation audit.',
         },
       ],
       product_use_contract: {
@@ -3245,8 +3560,24 @@ describe('runDiscovery', () => {
             ],
           },
           surfaces: [
-            { id: 'S1', label: 'Employee DataTable with Search, Age column, and entries selector', kind: 'table', url: 'https://datatables.example', source: 'initial', value: 'core', confidence: 0.9 },
-            { id: 'S2', label: 'Javascript source-code tab and CDN dependencies', kind: 'content', url: 'https://datatables.example', source: 'primary_journey', value: 'core', confidence: 0.9 },
+            {
+              id: 'S1',
+              label: 'Employee DataTable with Search, Age column, and entries selector',
+              kind: 'table',
+              url: 'https://datatables.example',
+              source: 'initial',
+              value: 'core',
+              confidence: 0.9,
+            },
+            {
+              id: 'S2',
+              label: 'Javascript source-code tab and CDN dependencies',
+              kind: 'content',
+              url: 'https://datatables.example',
+              source: 'primary_journey',
+              value: 'core',
+              confidence: 0.9,
+            },
           ],
           journeys: [
             {
@@ -3256,7 +3587,8 @@ describe('runDiscovery', () => {
               goal_class: 'core',
               surface_ids: ['S1'],
               user_intent: 'Filter grid rows.',
-              suggested_goal: 'Search London and verify the DataTable filtered count and rows update.',
+              suggested_goal:
+                'Search London and verify the DataTable filtered count and rows update.',
               expected_evidence: ['London', 'filtered from 57 total entries'],
               risk: 'high',
             },
@@ -3267,7 +3599,8 @@ describe('runDiscovery', () => {
               goal_class: 'secondary_workflow',
               surface_ids: ['S2'],
               user_intent: 'Learn how to reproduce the table.',
-              suggested_goal: "Inspect Javascript code and verify new DataTable('#example'); is visible.",
+              suggested_goal:
+                "Inspect Javascript code and verify new DataTable('#example'); is visible.",
               expected_evidence: ["new DataTable('#example');"],
               risk: 'medium',
             },
@@ -3307,7 +3640,8 @@ describe('runDiscovery', () => {
   it('does not silently drop product-native content tools when the model labels them setup', async () => {
     const result = await runDiscovery({
       url: 'https://wiki.example',
-      observation_summary: 'Searchable article product with article content, references, and View history.',
+      observation_summary:
+        'Searchable article product with article content, references, and View history.',
       screenshot_path: '/tmp/x.png',
       discoverer: async () => ({
         text: JSON.stringify({
@@ -3522,9 +3856,15 @@ describe('runDiscovery', () => {
       ],
     });
 
-    expect(capabilities.filter((capability) => capability.label === 'Search for specific content')).toHaveLength(1);
-    expect(capabilities.filter((capability) => capability.label === 'Open and read a content result')).toHaveLength(1);
-    expect(capabilities.filter((capability) => capability.label === 'Use visible content tools')).toHaveLength(1);
+    expect(
+      capabilities.filter((capability) => capability.label === 'Search for specific content'),
+    ).toHaveLength(1);
+    expect(
+      capabilities.filter((capability) => capability.label === 'Open and read a content result'),
+    ).toHaveLength(1);
+    expect(
+      capabilities.filter((capability) => capability.label === 'Use visible content tools'),
+    ).toHaveLength(1);
   });
 
   it('keeps non-could core and contract-backed journeys selected when coverage under-selects', async () => {
@@ -4421,9 +4761,11 @@ describe('runDiscovery', () => {
     expect(result.output.goals.map((goal) => goal.description)).toContain(
       'Apply a visible filter, sort, or drilldown and verify the chart, table, metric, or result set changes.',
     );
-    expect(result.output.capabilities.find((capability) => capability.label === 'Change a dashboard view')?.status).toBe(
-      'selected',
-    );
+    expect(
+      result.output.capabilities.find(
+        (capability) => capability.label === 'Change a dashboard view',
+      )?.status,
+    ).toBe('selected');
     expect(result.output.product_use_contract?.user_jobs[0]?.required_outputs).toContain(
       'changed chart, table, metric, or filtered data view',
     );
@@ -4487,12 +4829,15 @@ describe('runDiscovery', () => {
     const descriptions = result.output.goals.map((goal) => goal.description).join('\n');
     expect(descriptions).toContain('Create or update a realistic item named "Follow up with Maya"');
     expect(descriptions).not.toContain('open a form');
-    expect(result.output.capabilities.find((capability) => capability.label === 'Create a record or item')?.status).toBe(
-      'selected',
-    );
-    expect(result.output.capabilities.find((capability) => capability.label === 'Update existing state')?.status).toBe(
-      'selected',
-    );
+    expect(
+      result.output.capabilities.find(
+        (capability) => capability.label === 'Create a record or item',
+      )?.status,
+    ).toBe('selected');
+    expect(
+      result.output.capabilities.find((capability) => capability.label === 'Update existing state')
+        ?.status,
+    ).toBe('selected');
   });
 
   it('does not misclassify product-native clear/edit CRUD journeys as setup dismissal', async () => {
@@ -4590,7 +4935,8 @@ describe('runDiscovery', () => {
           coverage_plan: {
             selected_journey_ids: ['J2'],
             deferred_surface_ids: [],
-            rationale: 'Model underselected create and cleanup because it thought clear/edit were setup.',
+            rationale:
+              'Model underselected create and cleanup because it thought clear/edit were setup.',
             coverage_risk: 'high',
           },
           goals: [],
@@ -4611,9 +4957,10 @@ describe('runDiscovery', () => {
     expect(goals).toContain('Edit Email beta testers to Email 20 beta testers');
     expect(goals).toContain('Clear completed');
     expect(goals).not.toContain('Follow up with Maya');
-    expect(result.output.capabilities.find((capability) => capability.label === 'Update existing state')?.status).toBe(
-      'selected',
-    );
+    expect(
+      result.output.capabilities.find((capability) => capability.label === 'Update existing state')
+        ?.status,
+    ).toBe('selected');
   });
 
   it('repairs commerce products to the cart or checkout boundary without requiring payment', async () => {
@@ -4706,7 +5053,11 @@ describe('runDiscovery', () => {
                 journey_id: 'J1',
                 scenario_brief:
                   'Log in, add Sauce Labs Backpack to the cart, and complete checkout to the confirmation boundary.',
-                required_actions: ['Log in as a valid shopper', 'Add a product to cart', 'Complete checkout form'],
+                required_actions: [
+                  'Log in as a valid shopper',
+                  'Add a product to cart',
+                  'Complete checkout form',
+                ],
                 proof_obligations: ['Order confirmation is visible'],
                 expected_artifact: 'completed checkout confirmation',
                 acceptable_evidence: ['Confirmation page for the selected product'],
@@ -4767,7 +5118,10 @@ describe('runDiscovery', () => {
               user_intent: 'Reach a checkout confirmation for a selected product.',
               suggested_goal:
                 'Log in, add Sauce Labs Backpack to the cart, and complete checkout to the confirmation boundary.',
-              expected_evidence: ['Sauce Labs Backpack is selected', 'Thank you for your order is visible'],
+              expected_evidence: [
+                'Sauce Labs Backpack is selected',
+                'Thank you for your order is visible',
+              ],
               risk: 'high',
             },
             {

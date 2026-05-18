@@ -112,7 +112,7 @@ export function collectWebOutcomeEvidence(
   //   - vision_describe action_results — these carry a `description` field
   //     naming what the vision model saw on the post-interaction page. The
   //     description IS the outcome evidence the Judge needs to cite.
-  //   - ui_state / state_delta probe_results with post-interaction browser/product state
+  //   - ui_state / state_delta / notifications_visible probe_results with post-interaction browser/product state
   //     (hash, scroll, or matched visible selectors), useful for section-nav and
   //     selection-state goals where the state probe is the most precise proof.
   //   - the paired `action` events that produced the above results — the
@@ -173,12 +173,15 @@ export function collectWebOutcomeEvidence(
         note: uiStateOutcomeNote(p),
       });
     }
-    // The Judge often cites the `action` event id rather than the
-    // corresponding action_result. Accept the action id for screenshot /
-    // vision_describe actions taken after the interaction.
+    // The Judge sometimes cites the `action` event id rather than the
+    // corresponding action_result. Accept that only when the paired passive
+    // action_result succeeded; a failed screenshot/vision request is not proof.
     if (e.kind === 'action') {
       const tool = String(p.tool ?? '');
-      if (tool === 'screenshot' || tool === 'vision_describe') {
+      if (
+        (tool === 'screenshot' || tool === 'vision_describe') &&
+        hasSuccessfulPassiveActionResult(goal_events, i, tool)
+      ) {
         artifacts.push({ kind: 'screenshot', ref: e.id, note: `${tool} action event` });
       }
     }
@@ -187,10 +190,16 @@ export function collectWebOutcomeEvidence(
 }
 
 function isUiStateOutcomeProbe(payload: Record<string, unknown>): boolean {
+  if (payload.ok !== true) return false;
   const probe = String(payload.probe ?? '');
   if (probe === 'state_delta') {
     const summary = asRecord(payload.summary);
     return summary.changed === true;
+  }
+  if (probe === 'notifications_visible') {
+    const summary = asRecord(payload.summary);
+    const count = typeof summary.count === 'number' ? summary.count : 0;
+    return count > 0;
   }
   if (probe !== 'ui_state') return false;
   const summary = asRecord(payload.summary);
@@ -203,8 +212,31 @@ function isUiStateOutcomeProbe(payload: Record<string, unknown>): boolean {
   return found > 0;
 }
 
+function hasSuccessfulPassiveActionResult(
+  events: OutcomeContractTraceEvent[],
+  actionIndex: number,
+  tool: string,
+): boolean {
+  for (let i = actionIndex + 1; i < events.length; i++) {
+    const event = events[i];
+    if (!event) continue;
+    if (event.kind === 'action') return false;
+    if (event.kind !== 'action_result') continue;
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    if (String(payload.tool ?? '') !== tool) continue;
+    return payload.ok === true;
+  }
+  return false;
+}
+
 function uiStateOutcomeNote(payload: Record<string, unknown>): string {
   const summary = asRecord(payload.summary);
+  if (String(payload.probe ?? '') === 'notifications_visible') {
+    const count = typeof summary.count === 'number' ? summary.count : 0;
+    const texts = notificationTexts(payload.data);
+    const suffix = texts.length > 0 ? `: ${texts.join('; ')}` : '';
+    return `post-interaction notifications_visible count=${count}${suffix}`;
+  }
   if (String(payload.probe ?? '') === 'state_delta') {
     const parts = ['post-interaction state_delta'];
     if (summary.text_changed === true) parts.push('text_changed=true');
@@ -233,6 +265,21 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function notificationTexts(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      const record = asRecord(item);
+      const text = typeof record.text === 'string' ? record.text.replace(/\s+/g, ' ').trim() : '';
+      const source =
+        typeof record.source === 'string' ? record.source.replace(/\s+/g, ' ').trim() : '';
+      if (!text) return '';
+      return `${source ? `${source}: ` : ''}"${text.slice(0, 120)}"`;
+    })
+    .filter(Boolean)
+    .slice(0, 3);
 }
 
 export const WEB_OUTCOME_CONTRACT: OutcomeContract = {

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { WebTargetAdapter } from '@iris/adapter-web';
 import { judge as judgeMod, report as reportMod, trace as traceMod } from '@iris/core';
 import { Command } from 'commander';
 import { buildLlmClient } from '../llm-factory.js';
@@ -13,10 +14,17 @@ export function judgeCommand(): Command {
     .option('--spec <path>', 'spec file used in original run')
     .option('--rubrics <list>', 'comma-separated rubric profile names')
     .option('--judge-model <id>', 'model for Judge agent', 'claude-opus-4-7')
+    .option('--threshold <n>', 'threshold to preserve when replaying a prior run', (s) =>
+      Number.parseFloat(s),
+    )
     .option('--out <dir>', 'output directory')
     .option('--print-summary', 'print one-line JSON summary to stdout')
     .action(async (opts: Record<string, unknown>) => {
       const tracePath = resolve(opts.trace as string);
+      const threshold = resolveJudgeReplayThreshold({
+        tracePath,
+        explicitThreshold: opts.threshold,
+      });
       const specPath = opts.spec as string | undefined;
       const rubricsArg = opts.rubrics as string | undefined;
       const rubricNames = rubricsArg
@@ -60,6 +68,13 @@ export function judgeCommand(): Command {
         discarded_findings: [...(out.discarded_findings ?? []), ...validation.discarded],
         evidence_validation: validation.summary,
       };
+      const adapter = new WebTargetAdapter({ headless: true });
+      const goalClaimResult = judgeMod.validateGoalClaims({
+        judge: out,
+        trace: traceEvents,
+        outcome_contract: adapter.outcomeContract(),
+      });
+      out = judgeMod.applyGoalClaimValidationToJudgeOutput(out, goalClaimResult);
 
       mkdirSync(outDir, { recursive: true });
       writeFileSync(
@@ -85,6 +100,8 @@ export function judgeCommand(): Command {
           termination: 'replay',
           step_count: 0,
         },
+        trace_events: traceEvents,
+        ...(threshold !== undefined ? { threshold } : {}),
       });
       writeFileSync(join(outDir, 'report.json'), `${JSON.stringify(reportJson, null, 2)}\n`);
       writeFileSync(join(outDir, 'report.md'), reportMod.buildReportMd(reportJson));
@@ -112,4 +129,24 @@ export function judgeCommand(): Command {
         process.stdout.write(`iris judge: report → ${outDir}/report.json\n`);
       }
     });
+}
+
+export function resolveJudgeReplayThreshold(input: {
+  tracePath: string;
+  explicitThreshold?: unknown;
+}): number | undefined {
+  const explicit = numberValue(input.explicitThreshold);
+  if (explicit !== undefined) return explicit;
+  const configPath = join(dirname(input.tracePath), 'config.json');
+  if (!existsSync(configPath)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    return numberValue(parsed.threshold);
+  } catch {
+    return undefined;
+  }
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }

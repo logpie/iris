@@ -97,6 +97,18 @@ describe('collectWebOutcomeEvidence', () => {
     expect(arts.map((a) => a.ref)).toContain('C');
   });
 
+  it('does not include failed passive action ids as outcome evidence', () => {
+    const events = [
+      ev('A', 'action', { tool: 'click' }),
+      ev('B', 'action_result', { tool: 'click', ok: true }),
+      ev('C', 'action', { tool: 'screenshot' }),
+      ev('D', 'action_result', { tool: 'screenshot', ok: false, error: 'capture failed' }),
+    ];
+    const refs = collectWebOutcomeEvidence(events).map((a) => a.ref);
+    expect(refs).not.toContain('C');
+    expect(refs).not.toContain('D');
+  });
+
   it('includes post-interaction ui_state probes that prove navigation state', () => {
     const events = [
       ev('A', 'action', { tool: 'click', selector: "a[href='#Services']" }),
@@ -142,6 +154,64 @@ describe('collectWebOutcomeEvidence', () => {
       ev('A', 'action', { tool: 'click' }),
       ev('B', 'action_result', { tool: 'click', ok: true }),
       ev('C', 'probe_result', { ok: true, probe: 'state_delta', summary: { changed: false } }),
+    ];
+    expect(collectWebOutcomeEvidence(events).map((a) => a.ref)).not.toContain('C');
+  });
+
+  it('does not include failed probe results as outcome evidence', () => {
+    const events = [
+      ev('A', 'action', { tool: 'click' }),
+      ev('B', 'action_result', { tool: 'click', ok: true }),
+      ev('C', 'probe_result', {
+        ok: false,
+        probe: 'state_delta',
+        summary: { changed: true },
+        error: 'probe failed',
+      }),
+      ev('D', 'probe_result', {
+        ok: false,
+        probe: 'notifications_visible',
+        summary: { count: 1 },
+        error: 'probe failed',
+      }),
+    ];
+    const refs = collectWebOutcomeEvidence(events).map((a) => a.ref);
+    expect(refs).not.toContain('C');
+    expect(refs).not.toContain('D');
+  });
+
+  it('includes visible notifications as outcome evidence with useful note text', () => {
+    const events = [
+      ev('A', 'action', { tool: 'click', selector: 'button:has-text("Save")' }),
+      ev('B', 'action_result', { tool: 'click', ok: true }),
+      ev('C', 'probe_result', {
+        ok: true,
+        probe: 'notifications_visible',
+        summary: { count: 2 },
+        data: [
+          { source: 'aria_live', text: 'Saved successfully' },
+          { source: 'class_pattern', text: 'Exported as HTML' },
+        ],
+      }),
+    ];
+    const arts = collectWebOutcomeEvidence(events);
+    const note = arts.find((a) => a.ref === 'C')?.note ?? '';
+    expect(arts.map((a) => a.ref)).toContain('C');
+    expect(note).toContain('notifications_visible count=2');
+    expect(note).toContain('Saved successfully');
+    expect(note).toContain('Exported as HTML');
+  });
+
+  it('does not include empty notifications probes as outcome evidence', () => {
+    const events = [
+      ev('A', 'action', { tool: 'click' }),
+      ev('B', 'action_result', { tool: 'click', ok: true }),
+      ev('C', 'probe_result', {
+        ok: true,
+        probe: 'notifications_visible',
+        summary: { count: 0 },
+        data: [],
+      }),
     ];
     expect(collectWebOutcomeEvidence(events).map((a) => a.ref)).not.toContain('C');
   });

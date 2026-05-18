@@ -70,9 +70,16 @@ export function scenarioVisibleDataTokens(items: readonly string[] | undefined):
 export function scenarioProofVisibleTextTokens(items: readonly string[] | undefined): string[] {
   const out: string[] = [];
   for (const raw of items ?? []) {
-    const item = stripOuterPunctuation(raw.trim());
+    const trimmed = raw.trim();
+    const item = stripOuterPunctuation(trimmed);
     if (!item || isOptionalScenarioLine(item)) continue;
     if (isProofInputMetadataLine(item)) continue;
+
+    const codeLikeOutput = codeLikeProofVisibleOutput(trimmed) ?? codeLikeProofVisibleOutput(item);
+    if (codeLikeOutput) {
+      out.push(codeLikeOutput);
+      continue;
+    }
 
     const derived = derivedProofVisibleValues(item);
     if (derived.length > 0) {
@@ -170,7 +177,11 @@ function submittedVisibleDataValues(item: string): string[] {
 
 function derivedProofVisibleValues(item: string): string[] {
   const normalized = normalize(item);
-  if (/\bauthenticated\b.*\b(product|products|inventory|catalog)\b.*\b(visible|content|area|page)\b/.test(normalized)) {
+  if (
+    /\bauthenticated\b.*\b(product|products|inventory|catalog)\b.*\b(visible|content|area|page)\b/.test(
+      normalized,
+    )
+  ) {
     return ['Products'];
   }
   const visiblePrefix = item.match(
@@ -182,12 +193,34 @@ function derivedProofVisibleValues(item: string): string[] {
   return [];
 }
 
+function codeLikeProofVisibleOutput(raw: string): string | null {
+  const item = stripOuterWrappingPunctuation(raw.trim());
+  if (!item) return null;
+  const colon = item.indexOf(':');
+  if (colon >= 0 && colon <= 48) {
+    const prefix = item.slice(0, colon).trim();
+    const rest = stripOuterWrappingPunctuation(item.slice(colon + 1).trim());
+    if (
+      isCodeLikeVisibleOutput(rest) &&
+      (CATEGORY_DATA_PREFIX.test(prefix) || !INSTRUCTION_PREFIX.test(prefix))
+    ) {
+      return rest;
+    }
+  }
+  return isCodeLikeVisibleOutput(item) ? item : null;
+}
+
+function isCodeLikeVisibleOutput(value: string): boolean {
+  return /\b[A-Za-z_$][\w$]*\s*\([^)]*\)\s*;?$/.test(value);
+}
+
 function isProofInputMetadataLine(item: string): boolean {
   const normalized = normalize(item);
   const colon = item.indexOf(':');
   if (colon >= 0 && colon <= 48) {
     const prefix = normalize(item.slice(0, colon));
-    if (/^(user ?name|password|credential|input|age|gender|height|weight)$/.test(prefix)) return true;
+    if (/^(user ?name|password|credential|input|age|gender|height|weight)$/.test(prefix))
+      return true;
   }
   return (
     /^([a-z0-9_.@-]{3,})\s+(?:(?:credentials?|value|code)\s+)?submitted$/i.test(item) ||
@@ -196,10 +229,7 @@ function isProofInputMetadataLine(item: string): boolean {
   );
 }
 
-function splitVisibleDataList(
-  value: string,
-  opts: { filterInstruction?: boolean } = {},
-): string[] {
+function splitVisibleDataList(value: string, opts: { filterInstruction?: boolean } = {}): string[] {
   const filterInstruction = opts.filterInstruction ?? true;
   return value
     .split(/\s*(?:,|;|->|→|\/|\band\b)\s*/i)
@@ -259,9 +289,7 @@ function isGenericVisibleData(item: string): boolean {
     /\boriginal\b.*\blogin\b.*\bform\b.*\bnot\b.*\bonly\b.*\bvisible\b.*\bstate\b/.test(
       normalized,
     ) ||
-    /\b(login action|submit action|action)\b.*\b(submitted|performed|clicked)\b/.test(
-      normalized,
-    ) ||
+    /\b(login action|submit action|action)\b.*\b(submitted|performed|clicked)\b/.test(normalized) ||
     /\b(login|submit)\s+button\b.*\b(submitted|clicked|pressed)\b/.test(normalized) ||
     /\b(no|not|without|absent|absence|no longer)\b.*\b(visible|reached|present|available|content|page|access)\b/.test(
       normalized,
@@ -289,6 +317,7 @@ function isGenericVisibleData(item: string): boolean {
 }
 
 function isScenarioProofVisibleTextToken(item: string): boolean {
+  if (isCodeLikeVisibleOutput(item)) return true;
   const normalized = normalize(item);
   return (
     normalized.length >= 3 &&
@@ -302,6 +331,10 @@ function isScenarioProofVisibleTextToken(item: string): boolean {
 
 function stripOuterPunctuation(value: string): string {
   return value.replace(/^[\s"'“”‘’()[\]{}]+|[\s"'“”‘’()[\]{}.,;]+$/g, '');
+}
+
+function stripOuterWrappingPunctuation(value: string): string {
+  return value.replace(/^[\s"'“”‘’]+|[\s"'“”‘’.,]+$/g, '');
 }
 
 function uniqueStrings(values: string[]): string[] {

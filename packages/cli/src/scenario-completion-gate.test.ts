@@ -71,6 +71,8 @@ describe('scenario completion gate', () => {
         requiredVisibleText: ['Support Triage Flow', 'Customer blocked?', 'Reproduce'],
       },
     ]);
+    verifier.recordTraceEvent('ACTION1', 'action', { tool: 'click', args: { selector: '#save' } });
+    verifier.recordTraceEvent('RESULT1', 'action_result', { tool: 'click', ok: true });
     verifier.recordTraceEvent('OBS1', 'observation', {
       summary: 'Canvas shows Customer blocked? and Reproduce connected by arrows.',
     });
@@ -90,6 +92,8 @@ describe('scenario completion gate', () => {
         requiredVisibleText: ['Activation trend', 'Check onboarding drop-off'],
       },
     ]);
+    verifier.recordTraceEvent('ACTION1', 'action', { tool: 'click', args: { selector: '#save' } });
+    verifier.recordTraceEvent('RESULT1', 'action_result', { tool: 'click', ok: true });
     verifier.recordTraceEvent('OBS1', 'observation', {
       summary: 'Canvas shows Activation trend and Check onboarding drop-off annotation.',
     });
@@ -252,9 +256,10 @@ describe('scenario completion gate', () => {
 
     expect(gates[0]?.requiredVisibleText).toEqual(['Products']);
     const verifier = new ScenarioCompletionGateVerifier(gates);
+    verifier.recordTraceEvent('ACTION1', 'action', { tool: 'click', args: { selector: '#login' } });
+    verifier.recordTraceEvent('RESULT1', 'action_result', { tool: 'click', ok: true });
     verifier.recordTraceEvent('OBS1', 'observation', {
-      summary:
-        '## RICH CONTENT\n[input input[type=text]#user-name]\nstandard_user',
+      summary: '## RICH CONTENT\n[input input[type=text]#user-name]\nstandard_user',
     });
     expect(verifier.check('G1', ['OBS1'])).toEqual({
       ok: false,
@@ -279,6 +284,8 @@ describe('scenario completion gate', () => {
 
     verifier.recordTraceEvent('PROBE1', 'probe_result', {
       probe: 'ui_state',
+      ok: true,
+      phase: 'post-explorer',
       data: {
         text_sample: 'Your Cart',
         selectors: [
@@ -289,6 +296,102 @@ describe('scenario completion gate', () => {
     });
 
     expect(verifier.check('G2', ['PROBE1']).ok).toBe(true);
+  });
+
+  it('rejects stale pre-action evidence even when it contains the required text', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Dashboard saved'],
+        requiredVisibleText: ['Dashboard saved'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('OBS_PRE', 'observation', {
+      summary: 'Dashboard saved',
+    });
+    verifier.recordTraceEvent('ACTION1', 'action', { tool: 'click', args: { selector: '#save' } });
+
+    expect(verifier.check('G1', ['OBS_PRE'])).toEqual({
+      ok: false,
+      missing: ['Dashboard saved'],
+      required: ['Dashboard saved'],
+      unacceptableEvidenceEventIds: ['OBS_PRE'],
+    });
+  });
+
+  it('uses token boundaries so short labels do not pass on unrelated substrings', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Age'],
+        requiredVisibleText: ['Age'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('ACTION1', 'action', {
+      tool: 'click',
+      args: { selector: '#profile' },
+    });
+    verifier.recordTraceEvent('RESULT1', 'action_result', { tool: 'click', ok: true });
+    verifier.recordTraceEvent('OBS1', 'observation', {
+      summary: 'homepage profile settings',
+    });
+    expect(verifier.check('G1', ['OBS1'])).toEqual({
+      ok: false,
+      missing: ['Age'],
+      required: ['Age'],
+    });
+
+    verifier.recordTraceEvent('OBS2', 'observation', {
+      summary: 'Age: 42',
+    });
+    expect(verifier.check('G1', ['OBS2']).ok).toBe(true);
+  });
+
+  it('reports unknown and unacceptable evidence ids', () => {
+    const verifier = new ScenarioCompletionGateVerifier([]);
+    verifier.recordTraceEvent('OBS_PRE', 'observation', { summary: 'pre-action' });
+    verifier.recordTraceEvent('ACTION1', 'action', { tool: 'click', args: {} });
+    verifier.recordTraceEvent('RESULT1', 'action_result', { tool: 'click', ok: true });
+    verifier.recordTraceEvent('OBS_POST', 'observation', { summary: 'post-action' });
+
+    expect(verifier.checkEvidenceEventIds(['OBS_PRE', 'MISSING', 'OBS_POST'])).toEqual({
+      ok: false,
+      unknown: ['MISSING'],
+      unacceptable: ['OBS_PRE'],
+    });
+  });
+
+  it('does not accept failed actions or failed probes as verified evidence', () => {
+    const verifier = new ScenarioCompletionGateVerifier([
+      {
+        goalId: 'G1',
+        requiredOutputs: ['Dashboard saved'],
+        requiredVisibleText: ['Dashboard saved'],
+      },
+    ]);
+
+    verifier.recordTraceEvent('ACTION1', 'action', { tool: 'click', args: { selector: '#save' } });
+    verifier.recordTraceEvent('RESULT1', 'action_result', {
+      tool: 'click',
+      ok: false,
+      error: 'missing selector',
+    });
+    verifier.recordTraceEvent('OBS1', 'observation', { summary: 'Dashboard saved' });
+    verifier.recordTraceEvent('PROBE1', 'probe_result', {
+      ok: false,
+      probe: 'ui_state',
+      phase: 'post-explorer',
+      data: { text_sample: 'Dashboard saved' },
+    });
+
+    expect(verifier.checkEvidenceEventIds(['OBS1', 'PROBE1'])).toEqual({
+      ok: false,
+      unknown: [],
+      unacceptable: ['OBS1', 'PROBE1'],
+    });
+    expect(verifier.check('G1', ['OBS1', 'PROBE1']).ok).toBe(false);
   });
 
   it('renders a concise prompt checklist', () => {

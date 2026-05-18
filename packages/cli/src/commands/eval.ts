@@ -112,7 +112,7 @@ export function evalCommand(): Command {
       '--transport <kind>',
       'sdk | api | cli | codex-appserver | codex — which LLM transport to use. sdk = local Claude Code subscription via Agent SDK. api = raw Anthropic API. cli = `claude -p` fallback. codex/codex-appserver = Codex App Server dynamic-tool harness. Default: sdk if no API key set, else api.',
     )
-    .action(async (target: string, opts: Record<string, unknown>) => {
+    .action(async (target: string, opts: Record<string, unknown>, command: Command) => {
       const explicitMode = opts.mode as string | undefined;
       const specPath = opts.spec as string | undefined;
       const tasks = opts.task as string[];
@@ -165,6 +165,14 @@ export function evalCommand(): Command {
           `unknown --transport ${transportRaw}; expected sdk, api, cli, codex-appserver, or codex`,
         );
       }
+      const requestedParallel = opts.parallel as number;
+      const parallelWasExplicit = command.getOptionValueSource('parallel') === 'cli';
+      if (transport === 'codex-appserver' && parallelWasExplicit && requestedParallel !== 1) {
+        throw new Error(
+          '--parallel >1 is only implemented for --transport sdk; pass --parallel 1 for codex-appserver',
+        );
+      }
+      const effectiveParallel = transport === 'codex-appserver' ? 1 : requestedParallel;
       process.stderr.write(`iris: transport=${transport}\n`);
 
       if (opts.dryRun) {
@@ -187,7 +195,7 @@ export function evalCommand(): Command {
               discover: opts.discover !== false,
               expand_goals: opts.expand !== false,
               scenario_gate: !!opts.scenarioGate,
-              parallel: opts.parallel as number,
+              parallel: effectiveParallel,
             },
             null,
             2,
@@ -332,7 +340,7 @@ export function evalCommand(): Command {
             expand_goals: opts.expand !== false,
             max_expansion_goals: opts.maxExpansionGoals as number,
             scenario_gate: !!opts.scenarioGate,
-            parallel: opts.parallel as number,
+            parallel: effectiveParallel,
             ...(initialTasks.length > 0
               ? { initial_tasks: initialTasks.map((description) => ({ description })) }
               : {}),

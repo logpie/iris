@@ -330,6 +330,9 @@ export async function runIrisViaSdk(
     }
     // Non-SDK rejections: re-throw on next tick so Node logs them normally.
     process.stderr.write(`iris: unhandledRejection (non-SDK): ${msg.slice(0, 200)}\n`);
+    setImmediate(() => {
+      throw reason instanceof Error ? reason : new Error(msg);
+    });
   };
   process.on('unhandledRejection', sdkNoiseHandler);
 

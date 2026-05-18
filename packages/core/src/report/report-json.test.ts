@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { fakeJudge, fakeRun } from './_fakes.js';
-import { buildReportJson } from './report-json.js';
+import { buildReportJson, refreshReportJsonDerivedFields } from './report-json.js';
 
 describe('buildReportJson', () => {
   it('produces a v:2 report with headline counts', () => {
     const r = buildReportJson({ judge: fakeJudge(), run: fakeRun(), threshold: 7.0 });
     expect(r.v).toBe(2);
+    expect(r.threshold).toBe(7.0);
     expect(r.headline.blockers).toBe(1);
     expect(r.headline.nits).toBe(1);
     expect(r.headline.score).toBe(6.5);
@@ -157,7 +158,12 @@ describe('buildReportJson', () => {
     const judge = fakeJudge();
     judge.findings = [];
     judge.spec_compliance.goals = [
-      { id: 'G1', description: 'Search for OpenAI and read the article', status: 'verified', evidence: ['OBS-1'] },
+      {
+        id: 'G1',
+        description: 'Search for OpenAI and read the article',
+        status: 'verified',
+        evidence: ['OBS-1'],
+      },
     ];
     const r = buildReportJson({
       judge,
@@ -181,8 +187,24 @@ describe('buildReportJson', () => {
               user_jobs: [],
             },
             surfaces: [
-              { id: 'S1', label: 'Search input', kind: 'search', url: 'https://example.com', source: 'initial', value: 'core', confidence: 0.9 },
-              { id: 'S2', label: 'Article content and table of contents', kind: 'content', url: 'https://example.com/wiki/OpenAI', source: 'primary_journey', value: 'core', confidence: 0.9 },
+              {
+                id: 'S1',
+                label: 'Search input',
+                kind: 'search',
+                url: 'https://example.com',
+                source: 'initial',
+                value: 'core',
+                confidence: 0.9,
+              },
+              {
+                id: 'S2',
+                label: 'Article content and table of contents',
+                kind: 'content',
+                url: 'https://example.com/wiki/OpenAI',
+                source: 'primary_journey',
+                value: 'core',
+                confidence: 0.9,
+              },
             ],
             journeys: [
               {
@@ -404,6 +426,39 @@ describe('buildReportJson', () => {
     expect(r.scores.profiles.quality?.score).toBe(8.8);
     expect(r.scores.profiles.quality?.dimensions.correctness?.score).toBe(10);
     expect(r.headline.threshold_passed).toBe(true);
+  });
+
+  it('refreshes stale headline score and threshold pass after score normalization', () => {
+    const judge = fakeJudge();
+    judge.findings = [];
+    judge.scores.overall.score = 91;
+    judge.spec_compliance.goals = [
+      { id: 'G1', description: 'first task', status: 'verified', evidence: ['T1'] },
+      { id: 'G2', description: 'second task', status: 'verified', evidence: ['T2'] },
+    ];
+    judge.meta.confidence_caveats = [];
+    const report = buildReportJson({ judge, run: fakeRun(), threshold: 5 });
+    const staleReport = {
+      ...report,
+      threshold: 9.5,
+      scores: {
+        ...report.scores,
+        overall: { ...report.scores.overall, score: 91 },
+      },
+      headline: {
+        ...report.headline,
+        score: 91,
+        threshold_passed: true,
+      },
+    };
+
+    const refreshed = refreshReportJsonDerivedFields(staleReport);
+
+    expect(refreshed.threshold).toBe(9.5);
+    expect(refreshed.scores.overall.score).toBe(9.1);
+    expect(refreshed.headline.score).toBe(9.1);
+    expect(refreshed.evaluation?.product_score.value).toBe(9.1);
+    expect(refreshed.headline.threshold_passed).toBe(false);
   });
 
   it('repairs one-character trace id typos in report evidence references', () => {

@@ -283,7 +283,7 @@ function summarizeEvent(e: TraceEvent): string {
           return `${x.id}: ${String(x.description ?? '').slice(0, 60)}`;
         })
         .join('; ');
-      const contractSnippet = summarizeProductUseContractForDigest(p.product_use_contract);
+      const contractSnippet = summarizeProductUseContractForDigest(p.product_use_contract, p);
       return `product="${String(p.product_description ?? '').slice(0, 140)}" goals=[${goalSnippet}]${contractSnippet ? ` ${contractSnippet}` : ''}`;
     }
     case 'goal_proposed':
@@ -305,7 +305,7 @@ function summarizeEvent(e: TraceEvent): string {
   }
 }
 
-function summarizeProductUseContractForDigest(contract: unknown): string {
+function summarizeProductUseContractForDigest(contract: unknown, payload?: unknown): string {
   if (!isRecord(contract)) return '';
   const parts: string[] = [];
   const kinds = stringArray(contract.product_kinds).slice(0, 5);
@@ -317,7 +317,8 @@ function summarizeProductUseContractForDigest(contract: unknown): string {
     parts.push(`artifacts=[${artifacts.map((item) => clip(item, 60)).join('; ')}]`);
 
   const userJobs = Array.isArray(contract.user_jobs) ? contract.user_jobs : [];
-  const jobs = userJobs
+  const selectedJourneyIds = selectedJourneyIdsForDigest(payload);
+  const jobs = prioritizeProductUseJobsForDigest(userJobs, selectedJourneyIds)
     .slice(0, 8)
     .map((job) => summarizeProductUseJobForDigest(job))
     .filter(Boolean)
@@ -340,6 +341,35 @@ function summarizeProductUseContractForDigest(contract: unknown): string {
   if (loopSummary) parts.push(`value_loops=[${loopSummary}]`);
 
   return parts.length > 0 ? `product_use_contract{${parts.join(' ')}}` : '';
+}
+
+function selectedJourneyIdsForDigest(payload: unknown): Set<string> {
+  const selected = new Set<string>();
+  if (!isRecord(payload)) return selected;
+  const coveragePlan = isRecord(payload.coverage_plan) ? payload.coverage_plan : {};
+  for (const id of stringArray(coveragePlan.selected_journey_ids)) selected.add(id);
+  const goals = Array.isArray(payload.goals) ? payload.goals : [];
+  for (const goal of goals) {
+    if (!isRecord(goal)) continue;
+    const id = stringValue(goal.journey_id);
+    if (id) selected.add(id);
+  }
+  return selected;
+}
+
+function prioritizeProductUseJobsForDigest(
+  jobs: unknown[],
+  selectedJourneyIds: Set<string>,
+): unknown[] {
+  if (selectedJourneyIds.size === 0) return jobs;
+  const selected: unknown[] = [];
+  const other: unknown[] = [];
+  for (const job of jobs) {
+    const journey = isRecord(job) ? stringValue(job.journey_id) : '';
+    if (journey && selectedJourneyIds.has(journey)) selected.push(job);
+    else other.push(job);
+  }
+  return [...selected, ...other];
 }
 
 function summarizeProductUseJobForDigest(job: unknown): string {

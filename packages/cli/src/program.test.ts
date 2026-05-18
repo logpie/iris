@@ -52,6 +52,55 @@ describe('iris CLI program', () => {
     });
   });
 
+  it('eval --dry-run reports Codex App Server aliases and scenario gate without ignored parallelism', async () => {
+    const p = buildProgram();
+    p.exitOverride();
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    let output = '';
+    try {
+      await p.parseAsync([
+        'node',
+        'iris',
+        'eval',
+        'https://example.com',
+        '--transport',
+        'codex',
+        '--scenario-gate',
+        '--dry-run',
+      ]);
+      output = stdout.mock.calls.map((call) => String(call[0])).join('');
+    } finally {
+      stdout.mockRestore();
+    }
+
+    expect(JSON.parse(output)).toMatchObject({
+      dry_run: true,
+      transport: 'codex-appserver',
+      scenario_gate: true,
+      parallel: 1,
+    });
+  });
+
+  it('eval rejects explicit parallel Codex App Server runs instead of silently ignoring them', async () => {
+    const p = buildProgram();
+    p.exitOverride();
+
+    await expect(
+      p.parseAsync([
+        'node',
+        'iris',
+        'eval',
+        'https://example.com',
+        '--transport',
+        'codex-appserver',
+        '--parallel',
+        '2',
+        '--dry-run',
+      ]),
+    ).rejects.toThrow(/--parallel >1 is only implemented/);
+  });
+
   it('eval fails when a user-provided spec path is missing', async () => {
     const p = buildProgram();
     p.exitOverride();

@@ -74,4 +74,53 @@ describe('JUDGE_SYSTEM', () => {
     expect(digest).toContain('Launch Alpha board visible');
     expect(digest).toContain('toolbar opened');
   });
+
+  it('prioritizes selected product-use jobs before clipping the discovery trace digest', () => {
+    const digest = buildTraceDigest([
+      {
+        v: 1,
+        id: 'DISCOVERY',
+        ts: 0,
+        step: 0,
+        target_kind: 'web',
+        kind: 'discovery',
+        actor: 'system',
+        payload: {
+          product_description: 'Planning board',
+          goals: [{ id: 'G9', description: 'Verify selected scenario', journey_id: 'J9' }],
+          coverage_plan: {
+            selected_journey_ids: ['J9'],
+            deferred_surface_ids: [],
+            rationale: 'J9 is the selected scenario.',
+            coverage_risk: 'medium',
+          },
+          product_use_contract: {
+            product_kinds: ['canvas_editor'],
+            primary_value_loop: 'Create a realistic board.',
+            core_artifacts: ['board'],
+            user_jobs: Array.from({ length: 9 }, (_, index) => ({
+              id: `PU${index + 1}`,
+              journey_id: `J${index + 1}`,
+              title: `Job ${index + 1}`,
+              scenario_brief: `Scenario ${index + 1}`,
+              test_data:
+                index === 8
+                  ? ['Column labels: Backlog, In Review, Released']
+                  : [`Data ${index + 1}`],
+              required_actions: [],
+              required_outputs:
+                index === 8 ? ['Backlog', 'In Review', 'Released'] : [`Output ${index + 1}`],
+              quality_bar:
+                index === 8 ? ['Represents a realistic workflow'] : [`Quality ${index + 1}`],
+              weak_evidence: index === 8 ? ['toolbar selected only'] : [`Weak ${index + 1}`],
+            })),
+          },
+        },
+      },
+    ]);
+
+    expect(digest).toContain('PU9/J9');
+    expect(digest).toContain('Backlog');
+    expect(digest).toContain('toolbar selected only');
+  });
 });

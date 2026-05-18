@@ -286,7 +286,7 @@ function summarizeTokenUsage(phases: Record<string, CodexTokenUsageSnapshot>):
   };
 }
 
-function buildJudgeFailureOutput(input: {
+export function buildJudgeFailureOutput(input: {
   reason: string;
   goals: Array<{ description: string }>;
   rubricProfiles: RubricProfile[];
@@ -343,29 +343,24 @@ function buildJudgeFailureOutput(input: {
           evidence: status.evidence,
           notes: status.rationale,
         }));
-  const fallbackScore = fallbackScoreFromGoalRows(goalRows);
-  const profileNames = input.rubricProfiles.map((profile) => profile.name);
-  const fallbackRationale =
-    fallbackScore > 0
-      ? `Fallback score from goal_status after Judge JSON failure: ${input.reason}`
-      : `Judge did not complete: ${input.reason}`;
+  const fallbackRationale = `Judge did not complete; Explorer goal_status rows are diagnostic only: ${input.reason}`;
 
   return {
     v: 1,
     findings: [],
     discarded_findings: [],
     scores: {
-      overall: { score: fallbackScore, weighted_from: fallbackScore > 0 ? profileNames : [] },
+      overall: { score: 0, weighted_from: [] },
       profiles: Object.fromEntries(
         input.rubricProfiles.map((profile) => [
           profile.name,
           {
-            score: fallbackScore,
+            score: 0,
             dimensions: Object.fromEntries(
               profile.dimensions.map((dimension) => [
                 dimension.id,
                 {
-                  score: fallbackScore > 0 ? fallbackScore : null,
+                  score: null,
                   rationale: fallbackRationale,
                   evidence: goalRows.flatMap((goal) => goal.evidence).slice(0, 6),
                 },
@@ -378,41 +373,20 @@ function buildJudgeFailureOutput(input: {
     spec_compliance: {
       applicable: goalRows.length > 0,
       goals: goalRows,
-      summary:
-        fallbackScore > 0
-          ? `Judge scoring fell back to latest goal_status events: ${goalRows.filter((goal) => goal.status === 'verified').length}/${goalRows.length} verified.`
-          : `Judge did not complete: ${input.reason}`,
+      summary: `Judge did not complete; latest Explorer goal_status rows are diagnostic only: ${input.reason}`,
     },
     coverage_review: {
       surfaces_explored: input.events.filter((event) => event.kind === 'surface_seen').length,
       surfaces_unexplored: input.events.filter((event) => event.kind === 'surface_unexplored')
         .length,
-      judgement:
-        fallbackScore > 0
-          ? 'Coverage judgement is provisional because Judge JSON parsing failed.'
-          : `Judge did not complete: ${input.reason}`,
+      judgement: `Judge did not complete: ${input.reason}`,
     },
     meta: {
-      confidence_overall: fallbackScore > 0 ? 0.55 : 0,
+      confidence_overall: 0,
       confidence_caveats: [input.reason],
       would_re_explore_with: ['Rerun Judge with a lower-overhead Codex App Server configuration.'],
     },
   };
-}
-
-function fallbackScoreFromGoalRows(
-  goalRows: Array<{ status: 'verified' | 'partial' | 'blocked' | 'skipped' | 'untested' }>,
-): number {
-  const attempted = goalRows.filter((goal) =>
-    ['verified', 'partial', 'blocked'].includes(goal.status),
-  );
-  if (attempted.length === 0) return 0;
-  const verified = attempted.filter((goal) => goal.status === 'verified').length;
-  const partial = attempted.filter((goal) => goal.status === 'partial').length;
-  const blocked = attempted.filter((goal) => goal.status === 'blocked').length;
-  const raw = 4 + (verified / attempted.length) * 4 + (partial / attempted.length) * 1.5;
-  const penalty = blocked > 0 ? Math.min(2, (blocked / attempted.length) * 3) : 0;
-  return Math.max(0, Math.min(8, Math.round((raw - penalty) * 10) / 10));
 }
 
 export async function runIrisViaCodexAppServer(

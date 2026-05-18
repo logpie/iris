@@ -1,5 +1,14 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { report as reportMod } from '@iris/core';
 import { describe, expect, it } from 'vitest';
-import { findingsSnapshotFromReport, normalizeRevalidatedRunMetadata } from './report.js';
+import {
+  findingsSnapshotFromReport,
+  normalizeRevalidatedRunMetadata,
+  refreshStoredReportForRender,
+  resolveStoredReportThreshold,
+} from './report.js';
 
 function fakeRun(termination: string) {
   return {
@@ -27,6 +36,38 @@ function runEnd(termination: string) {
     actor: 'system',
     payload: { termination },
   };
+}
+
+function cleanReport(score: number) {
+  return reportMod.buildReportJson({
+    judge: {
+      v: 1,
+      findings: [],
+      discarded_findings: [],
+      scores: { overall: { score, weighted_from: [] }, profiles: {} },
+      spec_compliance: {
+        applicable: true,
+        goals: [
+          { id: 'G1', description: 'first task', status: 'verified', evidence: ['T1'] },
+          { id: 'G2', description: 'second task', status: 'verified', evidence: ['T2'] },
+        ],
+        summary: '2/2 verified',
+      },
+      coverage_review: { surfaces_explored: 1, surfaces_unexplored: 0, judgement: 'ok' },
+      meta: { confidence_overall: 0.9, confidence_caveats: [], would_re_explore_with: [] },
+      access_blocks: [],
+    },
+    run: fakeRun('done'),
+  } as never);
+}
+
+function withTempRunDir<T>(fn: (dir: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), 'iris-report-test-'));
+  try {
+    return fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe('normalizeRevalidatedRunMetadata', () => {
@@ -116,4 +157,40 @@ describe('findingsSnapshotFromReport', () => {
     expect(snapshot.evidence_validation).toEqual({ verified: 0, downgraded: 0, discarded: 1 });
     expect(snapshot._written_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
+});
+
+describe('stored report threshold and render refresh', () => {
+  it('prefers the persisted report threshold over an older run config fallback', () =>
+    withTempRunDir((dir) => {
+      writeFileSync(join(dir, 'config.json'), `${JSON.stringify({ threshold: 9.5 })}\n`);
+      const report = { ...cleanReport(8), threshold: 7.5 };
+
+      expect(resolveStoredReportThreshold(report, dir)).toBe(7.5);
+    }));
+
+  it('uses config threshold for old reports and refreshes stale normalized headline fields', () =>
+    withTempRunDir((dir) => {
+      writeFileSync(join(dir, 'config.json'), `${JSON.stringify({ threshold: 9.5 })}\n`);
+      const report = cleanReport(8);
+      const staleReport = {
+        ...report,
+        scores: {
+          ...report.scores,
+          overall: { ...report.scores.overall, score: 91 },
+        },
+        headline: {
+          ...report.headline,
+          score: 91,
+          threshold_passed: true,
+        },
+      };
+
+      const refreshed = refreshStoredReportForRender(staleReport, undefined, dir);
+
+      expect(refreshed.threshold).toBe(9.5);
+      expect(refreshed.scores.overall.score).toBe(9.1);
+      expect(refreshed.headline.score).toBe(9.1);
+      expect(refreshed.evaluation?.product_score.value).toBe(9.1);
+      expect(refreshed.headline.threshold_passed).toBe(false);
+    }));
 });

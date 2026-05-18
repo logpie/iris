@@ -97,6 +97,7 @@ export interface ReportJson {
   v: 2;
   _written_at: string;
   tool: { name: 'iris'; version: string };
+  threshold?: number;
   run: ReportRunMeta;
   headline: {
     score: number;
@@ -174,7 +175,14 @@ function countAttemptedGoals(judge: JudgeOutput): {
   attempted: number;
   verified: number;
 } {
-  const goals = judge.spec_compliance.goals;
+  return countGoalsForHeadline(judge.spec_compliance.goals);
+}
+
+function countGoalsForHeadline(goals: JudgeOutput['spec_compliance']['goals']): {
+  total: number;
+  attempted: number;
+  verified: number;
+} {
   let attempted = 0;
   let verified = 0;
   for (const g of goals) {
@@ -201,12 +209,13 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
   // least 50% of goals were attempted AND there are no blocker findings.
   // No explicit threshold means "passes with caveats" only when coverage and
   // findings are clean.
-  const COVERAGE_FLOOR = 0.5;
-  const coverageRatio = coverage.total > 0 ? coverage.attempted / coverage.total : 1;
-  const scorePass = inp.threshold === undefined ? true : score >= inp.threshold;
-  const coveragePass = coverage.total === 0 || coverageRatio >= COVERAGE_FLOOR;
-  const noBlockingFindings = counts.blocker === 0 && counts.major === 0;
-  const baseThresholdPassed = !inp.blocked && scorePass && coveragePass && noBlockingFindings;
+  const baseThresholdPassed = computeBaseThresholdPassed({
+    score,
+    blocked: Boolean(inp.blocked),
+    counts,
+    coverage,
+    ...(inp.threshold !== undefined ? { threshold: inp.threshold } : {}),
+  });
 
   // Phase 5 G4: compute a stable finding_hash for every finding. Uses content
   // hashes of the cited trace events when available, so the same finding from
@@ -276,6 +285,7 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
     v: 2,
     _written_at: new Date().toISOString(),
     tool: { name: 'iris', version: TOOL_VERSION },
+    ...(inp.threshold !== undefined ? { threshold: inp.threshold } : {}),
     run: inp.run,
     headline,
     scores,
@@ -298,6 +308,97 @@ export function buildReportJson(inp: BuildReportJsonInputs): ReportJson {
       : {}),
     next_actions: {
       for_builder,
+      for_re_evaluation: meta.would_re_explore_with,
+    },
+  };
+}
+
+function computeThresholdPassed(inp: {
+  score: number;
+  threshold?: number;
+  blocked: boolean;
+  counts: ReturnType<typeof countSeverities>;
+  coverage: ReturnType<typeof countGoalsForHeadline>;
+  scoreAuthority: ReportEvaluation['product_score']['authority'];
+}): boolean {
+  return computeBaseThresholdPassed(inp) && inp.scoreAuthority !== 'insufficient';
+}
+
+function computeBaseThresholdPassed(inp: {
+  score: number;
+  threshold?: number;
+  blocked: boolean;
+  counts: ReturnType<typeof countSeverities>;
+  coverage: ReturnType<typeof countGoalsForHeadline>;
+}): boolean {
+  const COVERAGE_FLOOR = 0.5;
+  const coverageRatio = inp.coverage.total > 0 ? inp.coverage.attempted / inp.coverage.total : 1;
+  const scorePass = inp.threshold === undefined ? true : inp.score >= inp.threshold;
+  const coveragePass = inp.coverage.total === 0 || coverageRatio >= COVERAGE_FLOOR;
+  const noBlockingFindings = inp.counts.blocker === 0 && inp.counts.major === 0;
+  return !inp.blocked && scorePass && coveragePass && noBlockingFindings;
+}
+
+export function refreshReportJsonDerivedFields(
+  report: ReportJson,
+  opts: {
+    threshold?: number;
+    run?: ReportRunMeta;
+    trace_events?: TraceEvent[];
+  } = {},
+): ReportJson {
+  const threshold = opts.threshold ?? report.threshold;
+  const meta = normalizeReportMeta(report.meta, opts.trace_events);
+  const scores = normalizeReportScores(report.scores, {
+    ...(opts.trace_events ? { traceEvents: opts.trace_events } : {}),
+    confidenceCaveats: meta.confidence_caveats,
+  });
+  const score = scores.overall.score;
+  const counts = countSeverities(report.findings);
+  const coverage = countGoalsForHeadline(report.spec_compliance.goals);
+  const evaluation = deriveReportEvaluation({
+    score,
+    scores,
+    goals: report.spec_compliance.goals,
+    findings: report.findings,
+    meta,
+    capabilities: report.discovery?.capabilities,
+  });
+  const blocked = report.headline.blocked === true;
+  const threshold_passed = computeThresholdPassed({
+    score,
+    blocked,
+    counts,
+    coverage,
+    scoreAuthority: evaluation.product_score.authority,
+    ...(threshold !== undefined ? { threshold } : {}),
+  });
+  return {
+    ...report,
+    ...(threshold !== undefined ? { threshold } : {}),
+    ...(opts.run ? { run: opts.run } : {}),
+    headline: {
+      ...report.headline,
+      score,
+      threshold_passed,
+      blockers: counts.blocker,
+      majors: counts.major,
+      minors: counts.minor,
+      nits: counts.nit,
+      suggestions: counts.suggestion,
+      ...(report.spec_compliance.applicable
+        ? {
+            goals_attempted: coverage.attempted,
+            goals_verified: coverage.verified,
+            goals_total: coverage.total,
+          }
+        : {}),
+    },
+    scores,
+    meta,
+    evaluation,
+    next_actions: {
+      ...report.next_actions,
       for_re_evaluation: meta.would_re_explore_with,
     },
   };

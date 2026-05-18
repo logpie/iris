@@ -4,8 +4,8 @@ import type { trace as iristrace } from '@iris/core';
 import { ulid } from 'ulid';
 import type { CodexAppServerClient, JsonRpcNotification } from './codex-app-server-client.js';
 import {
-  ScenarioCompletionGateVerifier,
   type ScenarioCompletionGate,
+  ScenarioCompletionGateVerifier,
 } from './scenario-completion-gate.js';
 
 type TraceWriter = iristrace.TraceWriter;
@@ -70,6 +70,20 @@ function isUnattemptedSkipRationale(rationale: string): boolean {
   return /\b(not (attempted|exercised|tested)|never reached|not reached|ran out|out of time|no time|before budget|budget ran out|budget was exhausted|did not (attempt|exercise|test|reach|visit)|not visited)\b/i.test(
     rationale,
   );
+}
+
+function invalidEvidenceEventIdsMessage(input: {
+  unknown: readonly string[];
+  unacceptable: readonly string[];
+}): string {
+  const parts: string[] = [];
+  if (input.unknown.length > 0) {
+    parts.push(`unknown event id(s): ${input.unknown.join(', ')}`);
+  }
+  if (input.unacceptable.length > 0) {
+    parts.push(`not accepted outcome evidence: ${input.unacceptable.join(', ')}`);
+  }
+  return `ERROR: goal_status evidence_event_ids must cite existing accepted outcome evidence events (post-action observation, screenshot/vision_describe action_result, or post-action/post-explorer probe_result). ${parts.join('; ')}.`;
 }
 
 function matchesThreadTurn(
@@ -560,8 +574,8 @@ export async function runCodexAppServerExplorer(
       'probe_result',
       'probe',
       result.ok
-        ? { probe: name, summary: result.summary, data: result.data }
-        : { probe: name, error: result.error },
+        ? { probe: name, ok: true, summary: result.summary, data: result.data }
+        : { probe: name, ok: false, error: result.error },
     );
     return {
       text: JSON.stringify(result.ok ? { summary: result.summary } : { error: result.error }),
@@ -629,6 +643,15 @@ export async function runCodexAppServerExplorer(
           text: 'ERROR: verified goal_status requires evidence_event_ids with a post-action observation/screenshot/vision_describe event id.',
           success: false,
         };
+      }
+      if (evidence.length > 0) {
+        const evidenceCheck = scenarioGate.checkEvidenceEventIds(evidence);
+        if (!evidenceCheck.ok) {
+          return {
+            text: invalidEvidenceEventIdsMessage(evidenceCheck),
+            success: false,
+          };
+        }
       }
       if (status === 'verified' && scenarioGate.enabled) {
         const check = scenarioGate.check(id, evidence);
@@ -1036,8 +1059,7 @@ function metaDynamicTools(
   if (hasGoals) {
     tools.push({
       name: 'goal_status',
-      description:
-        `Mark a spec goal as verified, partial, blocked, or skipped. Verified goals require outcome evidence_event_ids. Partial and blocked goals also require evidence_event_ids showing the incomplete outcome or blocker; do not close an unattempted goal as partial/blocked. Skipped means not applicable, not out of time.${scenarioGateEnabled ? ' Scenario completion gate is enabled: verified will be rejected unless cited evidence contains every required visible output for that goal.' : ''}`,
+      description: `Mark a spec goal as verified, partial, blocked, or skipped. Verified goals require outcome evidence_event_ids. Partial and blocked goals also require evidence_event_ids showing the incomplete outcome or blocker; do not close an unattempted goal as partial/blocked. Skipped means not applicable, not out of time.${scenarioGateEnabled ? ' Scenario completion gate is enabled: verified will be rejected unless cited evidence contains every required visible output for that goal.' : ''}`,
       inputSchema: {
         type: 'object',
         properties: {

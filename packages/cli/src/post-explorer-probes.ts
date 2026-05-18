@@ -26,14 +26,10 @@ export async function runMissingPostExplorerProbes(input: {
   const probes = input.probes ?? POST_EXPLORER_PROBES;
   const supported = new Set(input.adapter.listProbes().map((probe) => probe.name));
   const events = await iristrace.readTraceArray(input.tracePath);
-  const alreadyRan = new Set(
-    events
-      .filter((event) => event.kind === 'probe_result')
-      .map((event) => String((event.payload as { probe?: unknown }).probe ?? '')),
-  );
+  const lastExplorerPhaseMarker = findLastExplorerPhaseMarkerIndex(events);
 
   for (const probe of probes) {
-    if (alreadyRan.has(probe.name)) continue;
+    if (hasMatchingPostExplorerProbeResult(events, lastExplorerPhaseMarker, probe)) continue;
     if (!supported.has(probe.name)) {
       input.log?.(`iris: skipping unsupported post-Explorer probe ${probe.name}\n`);
       continue;
@@ -44,12 +40,15 @@ export async function runMissingPostExplorerProbes(input: {
       probe: probe.name,
       error: err instanceof Error ? err.message : String(err),
     }));
-    await appendProbeResult(input.traceWriter, result);
-    alreadyRan.add(probe.name);
+    await appendProbeResult(input.traceWriter, result, probe.args);
   }
 }
 
-async function appendProbeResult(traceWriter: TraceWriter, result: ProbeResult): Promise<void> {
+async function appendProbeResult(
+  traceWriter: TraceWriter,
+  result: ProbeResult,
+  args: Record<string, unknown>,
+): Promise<void> {
   await traceWriter.append({
     v: 1,
     id: ulid(),
@@ -59,12 +58,54 @@ async function appendProbeResult(traceWriter: TraceWriter, result: ProbeResult):
     kind: 'probe_result',
     actor: 'system',
     payload: result.ok
-      ? successfulProbePayload(result)
-      : { probe: result.probe, error: result.error, ok: false },
+      ? { ...successfulProbePayload(result), phase: 'post-explorer', args }
+      : { probe: result.probe, error: result.error, ok: false, phase: 'post-explorer', args },
   });
 }
 
-function successfulProbePayload(result: Extract<ProbeResult, { ok: true }>): Record<string, unknown> {
+function findLastExplorerPhaseMarkerIndex(
+  events: Awaited<ReturnType<typeof iristrace.readTraceArray>>,
+): number {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (!event) continue;
+    if (event.kind === 'probe_result' && isAutoPostExplorerProbePayload(event.payload)) continue;
+    if (
+      event.kind === 'action' ||
+      event.kind === 'action_result' ||
+      event.kind === 'probe_result'
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function hasMatchingPostExplorerProbeResult(
+  events: Awaited<ReturnType<typeof iristrace.readTraceArray>>,
+  afterIndex: number,
+  probe: PostExplorerProbeSpec,
+): boolean {
+  const expectedArgs = stableJson(probe.args);
+  return events.slice(afterIndex + 1).some((event) => {
+    if (event.kind !== 'probe_result') return false;
+    const payload = event.payload as Record<string, unknown>;
+    return (
+      payload.probe === probe.name &&
+      payload.ok === true &&
+      payload.phase === 'post-explorer' &&
+      stableJson(plainObject(payload.args) ? payload.args : {}) === expectedArgs
+    );
+  });
+}
+
+function isAutoPostExplorerProbePayload(payload: Record<string, unknown>): boolean {
+  return payload.phase === 'post-explorer';
+}
+
+function successfulProbePayload(
+  result: Extract<ProbeResult, { ok: true }>,
+): Record<string, unknown> {
   const viewport = viewportFromValue(result.summary) ?? viewportFromValue(result.data);
   return {
     probe: result.probe,
@@ -87,4 +128,15 @@ function viewportFromValue(value: unknown): { width: number; height?: number } |
 
 function plainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (plainObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
